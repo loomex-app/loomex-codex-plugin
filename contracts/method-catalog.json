@@ -4,6 +4,110 @@
   "maxFrameBytes": 1048576,
   "methods": [
     {
+      "name": "protocol.negotiate",
+      "mutating": false,
+      "idempotent": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "supportedProtocols": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "requiredCapabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "supportedProtocols",
+          "requiredCapabilities"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "selectedProtocol": {
+                "type": "string",
+                "const": "loomex.local-control/v2"
+              },
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "uniqueItems": true
+              },
+              "maxFrameBytes": {
+                "type": "integer",
+                "const": 1048576
+              },
+              "serverVersion": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "selectedProtocol",
+              "capabilities",
+              "maxFrameBytes",
+              "serverVersion"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "responseRef": {
+                "type": "string"
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "encoding": {
+                "const": "json"
+              },
+              "nextOffset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "checksumSha256": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "responseRef",
+              "sizeBytes",
+              "encoding",
+              "nextOffset",
+              "checksumSha256"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    {
       "name": "status.get",
       "mutating": false,
       "idempotent": true,
@@ -4797,5 +4901,58 @@
       },
       "transportRetry": "never_after_send"
     }
+  ],
+  "capabilities": [
+    "method:status.get",
+    "method:auth.status",
+    "method:auth.login",
+    "method:auth.poll",
+    "method:auth.logout",
+    "method:organizations.list",
+    "method:organizations.select",
+    "method:workspaces.list",
+    "method:workspaces.grant",
+    "method:workspaces.revoke",
+    "method:workflows.list",
+    "method:workflows.get",
+    "method:workflows.create",
+    "method:workflows.update",
+    "method:workflows.validate",
+    "method:workflows.publish",
+    "method:workflows.activate",
+    "method:builder.catalog",
+    "method:builder.validate",
+    "method:builder.prepare",
+    "method:builder.get",
+    "method:builder.respond",
+    "method:builder.finalize",
+    "method:editor.prepare",
+    "method:editor.respond",
+    "method:editor.finalize",
+    "method:runs.prepare",
+    "method:runs.commit",
+    "method:runs.list",
+    "method:runs.get",
+    "method:runs.wait",
+    "method:runs.events",
+    "method:runs.result",
+    "method:runs.cancel",
+    "method:runs.delete",
+    "method:interactions.list",
+    "method:interactions.get",
+    "method:interactions.respond",
+    "method:interactions.decide",
+    "method:artifacts.list",
+    "method:artifacts.read",
+    "method:artifacts.download",
+    "method:responses.read",
+    "method:responses.delete",
+    "method:daemon.drain",
+    "method:builder.commit",
+    "method:editor.commit",
+    "execution.host_user/v1",
+    "authorization.prepare-commit/v1",
+    "auth.device-v2/v1",
+    "transfer.chunked/v1"
   ]
 }

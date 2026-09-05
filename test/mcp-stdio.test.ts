@@ -9,7 +9,18 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 
 import { resultSchemaFor } from "../src/result-schemas.js";
-import { TOOL_DEFINITIONS, TOOL_NAMES } from "../src/tool-catalog.js";
+import { LocalControlClient, LocalControlError } from "../src/local-control.js";
+import {
+  REQUIRED_RUNNER_CAPABILITIES,
+  TOOL_DEFINITIONS,
+  TOOL_NAMES,
+} from "../src/tool-catalog.js";
+import {
+  LOCAL_PROTOCOL,
+  MAX_FRAME_BYTES,
+  NegotiationParamsSchema,
+  NegotiationResultSchema,
+} from "../src/protocol.js";
 import { FakeRunner } from "./fake-runner.js";
 
 const running: Array<{ client: Client; transport: StdioClientTransport; runner: FakeRunner }> = [];
@@ -37,6 +48,19 @@ async function connect(runner: FakeRunner): Promise<Client> {
   return client;
 }
 
+async function withDirectRunner<T>(runner: FakeRunner, operation: () => Promise<T>): Promise<T> {
+  await runner.start();
+  const previousStateDir = process.env.LOOMEX_STATE_DIR;
+  process.env.LOOMEX_STATE_DIR = runner.stateDir;
+  try {
+    return await operation();
+  } finally {
+    if (previousStateDir === undefined) delete process.env.LOOMEX_STATE_DIR;
+    else process.env.LOOMEX_STATE_DIR = previousStateDir;
+    await runner.stop();
+  }
+}
+
 afterEach(async () => {
   while (running.length > 0) {
     const item = running.pop();
@@ -56,6 +80,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 
   const catalog = JSON.parse(await readFile("contracts/method-catalog.json", "utf8")) as {
+    capabilities: string[];
     methods: Array<{
       name: string;
       inputSchema: { properties: Record<string, unknown>; required?: string[] };
@@ -64,7 +89,116 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
       };
     }>;
   };
-  const exposed = catalog.methods.filter((method) => method.name !== "daemon.drain");
+  const internal = new Set(["daemon.drain", "protocol.negotiate"]);
+  const exposed = catalog.methods.filter((method) => !internal.has(method.name));
+  assert.deepEqual(
+    catalog.methods.filter((method) => internal.has(method.name)).map((method) => method.name).sort(),
+    [...internal].sort(),
+  );
+  assert.deepEqual(
+    [...catalog.capabilities].sort(),
+    [...REQUIRED_RUNNER_CAPABILITIES, "method:daemon.drain"].sort(),
+  );
+  assert.equal(catalog.capabilities.includes("method:protocol.negotiate"), false);
+
+  const negotiation = catalog.methods.find((method) => method.name === "protocol.negotiate");
+  assert.ok(negotiation);
+  assert.equal(
+    (negotiation.inputSchema as { additionalProperties?: boolean }).additionalProperties,
+    false,
+  );
+  assert.deepEqual(Object.keys(negotiation.inputSchema.properties).sort(), [
+    "requiredCapabilities",
+    "supportedProtocols",
+  ]);
+  assert.deepEqual([...(negotiation.inputSchema.required ?? [])].sort(), [
+    "requiredCapabilities",
+    "supportedProtocols",
+  ]);
+  const protocolList = negotiation.inputSchema.properties.supportedProtocols as {
+    minItems?: number;
+    uniqueItems?: boolean;
+    items?: { minLength?: number; maxLength?: number };
+  };
+  assert.equal(protocolList.minItems, 1);
+  assert.equal(protocolList.uniqueItems, true);
+  assert.deepEqual(protocolList.items, { type: "string", minLength: 1, maxLength: 160 });
+  const capabilityList = negotiation.inputSchema.properties.requiredCapabilities as {
+    uniqueItems?: boolean;
+    items?: { minLength?: number; maxLength?: number };
+  };
+  assert.equal(capabilityList.uniqueItems, true);
+  assert.deepEqual(capabilityList.items, { type: "string", minLength: 1, maxLength: 160 });
+  assert.equal(
+    NegotiationParamsSchema.safeParse({
+      supportedProtocols: [LOCAL_PROTOCOL, LOCAL_PROTOCOL],
+      requiredCapabilities: [],
+    }).success,
+    false,
+  );
+  assert.equal(
+    NegotiationParamsSchema.safeParse({
+      supportedProtocols: [LOCAL_PROTOCOL],
+      requiredCapabilities: [],
+      extra: true,
+    }).success,
+    false,
+  );
+  const negotiationOutput = negotiation.outputSchema.oneOf[0];
+  assert.ok(negotiationOutput);
+  assert.equal(
+    (negotiationOutput as { additionalProperties?: boolean }).additionalProperties,
+    false,
+  );
+  assert.deepEqual(Object.keys(negotiationOutput.properties).sort(), [
+    "capabilities",
+    "maxFrameBytes",
+    "selectedProtocol",
+    "serverVersion",
+  ]);
+  assert.deepEqual(negotiationOutput.properties.selectedProtocol, {
+    type: "string",
+    const: LOCAL_PROTOCOL,
+  });
+  assert.deepEqual(negotiationOutput.properties.maxFrameBytes, {
+    type: "integer",
+    const: MAX_FRAME_BYTES,
+  });
+  assert.deepEqual(negotiationOutput.properties.serverVersion, { type: "string" });
+  assert.deepEqual([...(negotiationOutput.required ?? [])].sort(), [
+    "capabilities",
+    "maxFrameBytes",
+    "selectedProtocol",
+    "serverVersion",
+  ]);
+  const resultCapabilities = negotiationOutput.properties.capabilities as {
+    uniqueItems?: boolean;
+    items?: { minLength?: number; maxLength?: number };
+  };
+  assert.equal(resultCapabilities.uniqueItems, true);
+  assert.deepEqual(resultCapabilities.items, {
+    type: "string",
+    minLength: 1,
+    maxLength: 160,
+  });
+  assert.equal(
+    NegotiationResultSchema.safeParse({
+      selectedProtocol: LOCAL_PROTOCOL,
+      capabilities: ["method:status.get", "method:status.get"],
+      maxFrameBytes: MAX_FRAME_BYTES,
+      serverVersion: "informational",
+    }).success,
+    false,
+  );
+  assert.equal(
+    NegotiationResultSchema.safeParse({
+      selectedProtocol: LOCAL_PROTOCOL,
+      capabilities: [],
+      maxFrameBytes: MAX_FRAME_BYTES,
+      serverVersion: "informational and independently versioned",
+    }).success,
+    true,
+  );
   assert.deepEqual(
     TOOL_DEFINITIONS.map((definition) => definition.rpcMethod).sort(),
     exposed.map((method) => method.name).sort(),
@@ -117,6 +251,8 @@ test("SDK stdio discovery exposes only the focused 0.1.0 tool catalog", async ()
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [...TOOL_NAMES].sort());
+  assert.equal(names.length, 46);
+  assert.equal(names.includes("protocol.negotiate"), false);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.some((name) => /legacy|alias|v1/i.test(name)), false);
   for (const tool of tools.tools) {
@@ -159,6 +295,153 @@ test("readiness makes one owner-checked RPC call and returns structured IDs", as
   );
   assert.equal(runner.requests.length, 1);
   assert.equal(runner.requests[0]?.method, "status.get");
+  assert.equal(runner.negotiations.length, 1);
+  assert.equal(runner.negotiations[0]?.connectionId, runner.requests[0]?.connectionId);
+  assert.deepEqual(runner.negotiations[0]?.params.supportedProtocols, [LOCAL_PROTOCOL]);
+  assert.deepEqual(
+    runner.negotiations[0]?.params.requiredCapabilities,
+    [...REQUIRED_RUNNER_CAPABILITIES],
+  );
+});
+
+test("missing negotiated capabilities deny a mutation before its action frame", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner(
+    (request, socket) => runner.respond(socket, request, {}),
+    { capabilities: [] },
+  );
+  const client = await connect(runner);
+  const result = await client.callTool({
+    name: "loomex_workflow_create",
+    arguments: {
+      name: "Must not be created",
+      idempotencyKey: "33937720-ea1a-4c06-adcc-095bb3693f5f",
+    },
+  });
+  const structured = result.structuredContent as Record<string, unknown>;
+  assert.equal(result.isError, true);
+  assert.equal((structured.error as Record<string, unknown>).code, "COMPATIBILITY_ERROR");
+  assert.equal(runner.negotiations.length, 1);
+  assert.equal(runner.requests.length, 0);
+});
+
+test("a different runner release is accepted when its negotiated contract is compatible", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner(
+    (request, socket) =>
+      runner.respond(socket, request, {
+        version: "9.0.0",
+        protocol: LOCAL_PROTOCOL,
+        activeJobs: 0,
+        draining: false,
+        updateDeferred: false,
+      }),
+    { serverVersion: "9.0.0" },
+  );
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_readiness", arguments: {} });
+  assert.equal(result.isError, undefined);
+  assert.equal(runner.requests.length, 1);
+});
+
+test("an incompatible negotiated frame bound denies the action frame", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner(
+    (request, socket) => runner.respond(socket, request, {}),
+    { maxFrameBytes: MAX_FRAME_BYTES / 2 },
+  );
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_readiness", arguments: {} });
+  const structured = result.structuredContent as Record<string, unknown>;
+  assert.equal(result.isError, true);
+  assert.equal((structured.error as Record<string, unknown>).code, "COMPATIBILITY_ERROR");
+  assert.equal(runner.negotiations.length, 1);
+  assert.equal(runner.requests.length, 0);
+});
+
+test("an incompatible selected protocol denies the action frame", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner(
+    (request, socket) => runner.respond(socket, request, {}),
+    { selectedProtocol: "loomex.local-control/v3" },
+  );
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_readiness", arguments: {} });
+  const structured = result.structuredContent as Record<string, unknown>;
+  assert.equal(result.isError, true);
+  assert.equal((structured.error as Record<string, unknown>).code, "COMPATIBILITY_ERROR");
+  assert.equal(runner.negotiations.length, 1);
+  assert.equal(runner.requests.length, 0);
+});
+
+test("unsolicited bytes after negotiation deny a mutation before its action frame", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner(
+    (request, socket) => runner.respond(socket, request, {}),
+    { negotiationTrailingFrame: "\n" },
+  );
+  const client = await connect(runner);
+  const result = await client.callTool({
+    name: "loomex_workflow_create",
+    arguments: {
+      name: "Must not be created",
+      idempotencyKey: "e70644f1-e65a-46f8-ad44-31e6fa17d175",
+    },
+  });
+  const structured = result.structuredContent as Record<string, unknown>;
+  assert.equal(result.isError, true);
+  assert.equal((structured.error as Record<string, unknown>).code, "INVALID_RESPONSE");
+  assert.equal(runner.negotiations.length, 1);
+  assert.equal(runner.requests.length, 0);
+});
+
+test("a mutation deadline while negotiation is pending sends no action and is not retried", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner(
+    (request, socket) => runner.respond(socket, request, {}),
+    { holdNegotiation: true },
+  );
+  await withDirectRunner(runner, async () => {
+    const client = new LocalControlClient();
+    await assert.rejects(
+      client.call(
+        "workflows.create",
+        {
+          name: "Must not be created",
+          idempotencyKey: "07586a1b-18e0-471e-83c9-06ac38611a9a",
+        },
+        { mutating: true, timeoutMs: 25 },
+      ),
+      (error: unknown) =>
+        error instanceof LocalControlError && error.code === "RUNNER_UNAVAILABLE",
+    );
+  });
+  assert.equal(runner.negotiations.length, 1);
+  assert.equal(runner.requests.length, 0);
+});
+
+test("aborting after a mutation action is sent preserves its ambiguous key", async () => {
+  const controller = new AbortController();
+  const runner = new FakeRunner(() => {
+    controller.abort();
+  });
+  const idempotencyKey = "5ea2ac29-f4aa-45bf-ae92-bef8f721b68b";
+  await withDirectRunner(runner, async () => {
+    const client = new LocalControlClient();
+    await assert.rejects(
+      client.call(
+        "workflows.create",
+        { name: "Unknown outcome", idempotencyKey },
+        { mutating: true, signal: controller.signal, timeoutMs: 1_000 },
+      ),
+      (error: unknown) =>
+        error instanceof LocalControlError &&
+        error.code === "NETWORK_AMBIGUOUS" &&
+        error.idempotencyKey === idempotencyKey,
+    );
+  });
+  assert.equal(runner.negotiations.length, 1);
+  assert.equal(runner.requests.length, 1);
 });
 
 test("strict input validation rejects unknown fields and unsupported secret inputs", async () => {
@@ -232,6 +515,25 @@ test("disconnect after sending a mutation is ambiguous and is never retried", as
     "NETWORK_AMBIGUOUS",
   );
   assert.equal(runner.requests.length, 1);
+  assert.equal(runner.negotiations.length, 1);
+});
+
+test("a malformed post-mutation response stays ambiguous and retains its key", async () => {
+  const runner = new FakeRunner((_request, socket) => {
+    socket.end("{}\n");
+  });
+  const client = await connect(runner);
+  const idempotencyKey = "c2969b0b-24cc-40c6-bea8-e333b534c257";
+  const result = await client.callTool({
+    name: "loomex_workflow_create",
+    arguments: { name: "Ambiguous response", idempotencyKey },
+  });
+  const structured = result.structuredContent as Record<string, unknown>;
+  assert.equal(result.isError, true);
+  assert.equal(structured.idempotencyKey, idempotencyKey);
+  assert.equal((structured.error as Record<string, unknown>).code, "NETWORK_AMBIGUOUS");
+  assert.equal(runner.negotiations.length, 1);
+  assert.equal(runner.requests.length, 1);
 });
 
 test("a read retries exactly once after a classified transport disconnect", async () => {
@@ -255,7 +557,11 @@ test("a read retries exactly once after a classified transport disconnect", asyn
   const result = await client.callTool({ name: "loomex_readiness", arguments: {} });
   assert.equal(result.isError, undefined);
   assert.equal(runner.requests.length, 2);
+  assert.equal(runner.negotiations.length, 2);
   assert.notEqual(runner.requests[0]?.id, runner.requests[1]?.id);
+  assert.notEqual(runner.requests[0]?.connectionId, runner.requests[1]?.connectionId);
+  assert.equal(runner.negotiations[0]?.connectionId, runner.requests[0]?.connectionId);
+  assert.equal(runner.negotiations[1]?.connectionId, runner.requests[1]?.connectionId);
 });
 
 test("runner error messages are replaced with safe credential-free text", async () => {

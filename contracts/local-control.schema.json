@@ -20,6 +20,7 @@
         },
         "method": {
           "enum": [
+            "protocol.negotiate",
             "status.get",
             "auth.status",
             "auth.login",

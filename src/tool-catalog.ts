@@ -663,3 +663,15 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 ] as const;
 
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((definition) => definition.name);
+
+const SEMANTIC_CAPABILITIES = [
+  "execution.host_user/v1",
+  "authorization.prepare-commit/v1",
+  "auth.device-v2/v1",
+  "transfer.chunked/v1",
+] as const;
+
+export const REQUIRED_RUNNER_CAPABILITIES = Object.freeze([
+  ...TOOL_DEFINITIONS.map((definition) => `method:${definition.rpcMethod}`),
+  ...SEMANTIC_CAPABILITIES,
+]);

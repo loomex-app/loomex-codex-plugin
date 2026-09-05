@@ -7,6 +7,8 @@ import { createConnection, type Socket } from "node:net";
 import {
   LOCAL_PROTOCOL,
   MAX_FRAME_BYTES,
+  NegotiationParamsSchema,
+  NegotiationResultSchema,
   RpcErrorCodeSchema,
   RpcRequestSchema,
   RpcResponseSchema,
@@ -16,6 +18,7 @@ import {
   type ToolOutput,
 } from "./protocol.js";
 import { parseMethodResult } from "./result-schemas.js";
+import { REQUIRED_RUNNER_CAPABILITIES } from "./tool-catalog.js";
 
 export interface LocalControlCallOptions {
   readonly mutating: boolean;
@@ -145,27 +148,45 @@ export class LocalControlClient {
     params: Record<string, JsonValue>,
     options: LocalControlCallOptions,
   ): Promise<ToolOutput> {
+    const negotiationId = randomUUID();
     const requestId = randomUUID();
     const path = socketPath();
     await assertOwnerCheckedSocket(path);
 
+    const negotiation = RpcRequestSchema.parse({
+      protocol: LOCAL_PROTOCOL,
+      id: negotiationId,
+      method: "protocol.negotiate",
+      params: NegotiationParamsSchema.parse({
+        supportedProtocols: [LOCAL_PROTOCOL],
+        requiredCapabilities: [...REQUIRED_RUNNER_CAPABILITIES],
+      }),
+    });
     const request = RpcRequestSchema.parse({
       protocol: LOCAL_PROTOCOL,
       id: requestId,
       method,
       params,
     });
-    const frame = `${JSON.stringify(request)}\n`;
-    if (Buffer.byteLength(frame) > MAX_FRAME_BYTES) {
+    const negotiationFrame = `${JSON.stringify(negotiation)}\n`;
+    const requestFrame = `${JSON.stringify(request)}\n`;
+    if (
+      Buffer.byteLength(negotiationFrame) > MAX_FRAME_BYTES ||
+      Buffer.byteLength(requestFrame) > MAX_FRAME_BYTES
+    ) {
       throw new LocalControlError({ code: "FRAME_TOO_LARGE", requestId });
     }
 
     return await new Promise<ToolOutput>((resolve, reject) => {
       let socket: Socket | undefined;
-      let sent = false;
+      let phase: "negotiation" | "action" = "negotiation";
+      let actionSent = false;
       let settled = false;
       let received = Buffer.alloc(0);
       const timeoutMs = options.timeoutMs ?? 30_000;
+
+      const activeRequestId = (): string =>
+        phase === "negotiation" ? negotiationId : requestId;
 
       const finish = (callback: () => void): void => {
         if (settled) return;
@@ -181,20 +202,32 @@ export class LocalControlClient {
           reject(
             transportError({
               mutating: options.mutating,
-              sent,
-              requestId,
+              sent: actionSent,
+              requestId: activeRequestId(),
               params,
             }),
           ),
         );
       };
 
-      const onAbort = (): void => {
-        if (options.mutating && sent) {
+      const failNonDefinitiveResponse = (code: RpcErrorCode): void => {
+        if (options.mutating && actionSent) {
           failTransport();
           return;
         }
-        finish(() => reject(new LocalControlError({ code: "CANCELLED", requestId })));
+        finish(() =>
+          reject(new LocalControlError({ code, requestId: activeRequestId() })),
+        );
+      };
+
+      const onAbort = (): void => {
+        if (options.mutating && actionSent) {
+          failTransport();
+          return;
+        }
+        finish(() =>
+          reject(new LocalControlError({ code: "CANCELLED", requestId: activeRequestId() })),
+        );
       };
 
       const timer = setTimeout(failTransport, timeoutMs);
@@ -208,70 +241,111 @@ export class LocalControlClient {
       socket = createConnection(path);
       socket.setNoDelay(true);
       socket.once("connect", () => {
-        sent = true;
-        socket?.write(frame);
+        socket?.write(negotiationFrame);
       });
       socket.on("data", (chunk: Buffer) => {
         received = Buffer.concat([received, chunk]);
-        if (received.byteLength > MAX_FRAME_BYTES) {
-          finish(() => reject(new LocalControlError({ code: "FRAME_TOO_LARGE", requestId })));
-          return;
-        }
+        while (!settled) {
+          const newline = received.indexOf(0x0a);
+          if (newline < 0) {
+            if (received.byteLength > MAX_FRAME_BYTES) {
+              failNonDefinitiveResponse("FRAME_TOO_LARGE");
+            }
+            return;
+          }
+          if (newline + 1 > MAX_FRAME_BYTES) {
+            failNonDefinitiveResponse("FRAME_TOO_LARGE");
+            return;
+          }
 
-        const newline = received.indexOf(0x0a);
-        if (newline < 0) return;
-        const trailing = received.subarray(newline + 1).toString("utf8").trim();
-        if (trailing.length > 0) {
-          finish(() => reject(new LocalControlError({ code: "INVALID_RESPONSE", requestId })));
-          return;
-        }
+          const frame = received.subarray(0, newline).toString("utf8");
+          received = received.subarray(newline + 1);
+          let decoded: unknown;
+          try {
+            decoded = JSON.parse(frame);
+          } catch {
+            failNonDefinitiveResponse("INVALID_RESPONSE");
+            return;
+          }
 
-        let decoded: unknown;
-        try {
-          decoded = JSON.parse(received.subarray(0, newline).toString("utf8"));
-        } catch {
-          finish(() => reject(new LocalControlError({ code: "INVALID_RESPONSE", requestId })));
-          return;
-        }
+          const parsed = RpcResponseSchema.safeParse(decoded);
+          const expectedId = activeRequestId();
+          if (!parsed.success || parsed.data.id !== expectedId) {
+            failNonDefinitiveResponse("INVALID_RESPONSE");
+            return;
+          }
 
-        const parsed = RpcResponseSchema.safeParse(decoded);
-        if (!parsed.success || parsed.data.id !== requestId) {
-          finish(() => reject(new LocalControlError({ code: "INVALID_RESPONSE", requestId })));
-          return;
-        }
+          if ("error" in parsed.data) {
+            const rpcError = parsed.data.error;
+            const code = RpcErrorCodeSchema.parse(rpcError.code);
+            const idempotencyKey =
+              phase === "action" && options.mutating ? idempotencyKeyFrom(params) : undefined;
+            finish(() =>
+              reject(
+                new LocalControlError({
+                  code,
+                  correlationId: rpcError.correlationId,
+                  retryable: rpcError.retryable,
+                  requestId: expectedId,
+                  ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+                }),
+              ),
+            );
+            return;
+          }
 
-        if ("error" in parsed.data) {
-          const rpcError = parsed.data.error;
-          const code = RpcErrorCodeSchema.parse(rpcError.code);
-          const idempotencyKey = options.mutating ? idempotencyKeyFrom(params) : undefined;
+          if (phase === "negotiation") {
+            const negotiated = NegotiationResultSchema.safeParse(parsed.data.result);
+            const capabilities = negotiated.success
+              ? new Set(negotiated.data.capabilities)
+              : undefined;
+            const compatible =
+              negotiated.success &&
+              negotiated.data.maxFrameBytes === MAX_FRAME_BYTES &&
+              REQUIRED_RUNNER_CAPABILITIES.every((capability) =>
+                capabilities?.has(capability),
+              );
+            if (!compatible) {
+              finish(() =>
+                reject(
+                  new LocalControlError({
+                    code: "COMPATIBILITY_ERROR",
+                    requestId: negotiationId,
+                  }),
+                ),
+              );
+              return;
+            }
+            if (received.byteLength > 0) {
+              failNonDefinitiveResponse("INVALID_RESPONSE");
+              return;
+            }
+            phase = "action";
+            actionSent = true;
+            socket?.write(requestFrame);
+            continue;
+          }
+
+          if (received.byteLength > 0) {
+            failNonDefinitiveResponse("INVALID_RESPONSE");
+            return;
+          }
+          const rpcResult = parseMethodResult(method, parsed.data.result);
+          if (rpcResult === undefined) {
+            failNonDefinitiveResponse("INVALID_RESPONSE");
+            return;
+          }
           finish(() =>
-            reject(
-              new LocalControlError({
-                code,
-                correlationId: rpcError.correlationId,
-                retryable: rpcError.retryable,
-                requestId,
-                ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
-              }),
-            ),
+            resolve({
+              ok: true,
+              protocol: LOCAL_PROTOCOL,
+              method,
+              requestId,
+              data: rpcResult,
+            }),
           );
           return;
         }
-
-        const rpcResult = parseMethodResult(method, parsed.data.result);
-        if (rpcResult === undefined) {
-          finish(() => reject(new LocalControlError({ code: "INVALID_RESPONSE", requestId })));
-          return;
-        }
-        finish(() =>
-          resolve({
-            ok: true,
-            protocol: LOCAL_PROTOCOL,
-            method,
-            requestId,
-            data: rpcResult,
-          }),
-        );
       });
       socket.once("error", failTransport);
       socket.once("end", () => {

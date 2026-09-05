@@ -10,34 +10,73 @@ export interface FakeRequest {
   readonly id: string;
   readonly method: string;
   readonly params: Record<string, JsonValue>;
+  readonly connectionId: number;
 }
 
 export type FakeHandler = (request: FakeRequest, socket: Socket) => void | Promise<void>;
 
+export interface FakeRunnerOptions {
+  readonly capabilities?: readonly string[];
+  readonly selectedProtocol?: string;
+  readonly maxFrameBytes?: number;
+  readonly serverVersion?: string;
+  readonly negotiationTrailingFrame?: string;
+  readonly holdNegotiation?: boolean;
+}
+
 export class FakeRunner {
   readonly requests: FakeRequest[] = [];
+  readonly negotiations: FakeRequest[] = [];
   stateDir = "";
   socketPath = "";
   private server: Server | undefined;
+  private nextConnectionId = 1;
 
-  constructor(private readonly handler: FakeHandler) {}
+  constructor(
+    private readonly handler: FakeHandler,
+    private readonly options: FakeRunnerOptions = {},
+  ) {}
 
   async start(): Promise<void> {
     this.stateDir = await mkdtemp(join(tmpdir(), "loomex-plugin-test-"));
     await chmod(this.stateDir, 0o700);
     this.socketPath = join(this.stateDir, "control.sock");
     this.server = createServer((socket) => {
+      const connectionId = this.nextConnectionId++;
       let received = Buffer.alloc(0);
       socket.on("data", (chunk: Buffer) => {
         received = Buffer.concat([received, chunk]);
-        const newline = received.indexOf(0x0a);
-        if (newline < 0) return;
-        const parsed = RpcRequestSchema.parse(
-          JSON.parse(received.subarray(0, newline).toString("utf8")),
-        );
-        const request: FakeRequest = parsed;
-        this.requests.push(request);
-        void this.handler(request, socket);
+        while (true) {
+          const newline = received.indexOf(0x0a);
+          if (newline < 0) return;
+          const parsed = RpcRequestSchema.parse(
+            JSON.parse(received.subarray(0, newline).toString("utf8")),
+          );
+          received = received.subarray(newline + 1);
+          const request: FakeRequest = { ...parsed, connectionId };
+          if (request.method === "protocol.negotiate") {
+            this.negotiations.push(request);
+            if (this.options.holdNegotiation === true) continue;
+            const required = request.params.requiredCapabilities;
+            const capabilities =
+              this.options.capabilities ?? (Array.isArray(required) ? required : []);
+            socket.write(
+              `${JSON.stringify({
+                protocol: LOCAL_PROTOCOL,
+                id: request.id,
+                result: {
+                  selectedProtocol: this.options.selectedProtocol ?? LOCAL_PROTOCOL,
+                  capabilities,
+                  maxFrameBytes: this.options.maxFrameBytes ?? 1024 * 1024,
+                  serverVersion: this.options.serverVersion ?? "0.1.0",
+                },
+              })}\n${this.options.negotiationTrailingFrame ?? ""}`,
+            );
+            continue;
+          }
+          this.requests.push(request);
+          void this.handler(request, socket);
+        }
       });
     });
     await new Promise<void>((resolve, reject) => {

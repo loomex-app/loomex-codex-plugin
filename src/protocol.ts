@@ -61,6 +61,27 @@ export const RpcResponseSchema = z.union([
     .strict(),
 ]);
 
+const NegotiationStringSchema = z.string().min(1).max(160);
+const UniqueNegotiationStringsSchema = z
+  .array(NegotiationStringSchema)
+  .refine((values) => new Set(values).size === values.length);
+
+export const NegotiationParamsSchema = z
+  .object({
+    supportedProtocols: UniqueNegotiationStringsSchema.min(1),
+    requiredCapabilities: UniqueNegotiationStringsSchema,
+  })
+  .strict();
+
+export const NegotiationResultSchema = z
+  .object({
+    selectedProtocol: z.literal(LOCAL_PROTOCOL),
+    capabilities: UniqueNegotiationStringsSchema,
+    maxFrameBytes: z.literal(MAX_FRAME_BYTES),
+    serverVersion: z.string(),
+  })
+  .strict();
+
 export const ToolErrorSchema = z
   .object({
     code: RpcErrorCodeSchema,
@@ -88,6 +109,7 @@ const SAFE_MESSAGES: Readonly<Record<string, string>> = {
   INVALID_REQUEST: "The local runner rejected the request shape.",
   INVALID_RESPONSE: "The local runner returned an invalid response.",
   PROTOCOL_MISMATCH: "The plugin and local runner protocol versions are incompatible.",
+  COMPATIBILITY_ERROR: "The installed local runner does not provide the capabilities required by this plugin.",
   FRAME_TOO_LARGE: "The local control message exceeded the transport page size.",
   METHOD_NOT_FOUND: "The installed local runner does not support this operation.",
   RUNNER_UNAVAILABLE: "The owner-checked local Loomex runner is unavailable.",

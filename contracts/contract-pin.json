@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "source": "../runner/contracts",
   "files": {
-    "local-control.schema.json": "105ef239c12a8de22d85d7446004b2bf3013c12699c6ea580dc054836d9a2915",
-    "method-catalog.json": "a13d649b838a96d7f8f395eeb1c1186b915b00f1263cdceb9a0839f80cddb07d"
+    "local-control.schema.json": "b3aa923b9b0fdf05b4c391e4ab2130c249d75255ba4d425fac3e9ccbb3ead6b5",
+    "method-catalog.json": "a17671958b8f6b4cb41655322b529de285442f4b3d9864e01d4ea73069dfc134"
   }
 }

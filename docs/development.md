@@ -30,7 +30,7 @@ The runner owns `loomex.local-control/v2`. Change its canonical `runner/contract
 1. Copy both canonical files byte-for-byte into the plugin's `contracts/` directory.
 2. Recompute their SHA-256 values and update `contracts/contract-pin.json`.
 3. Update `src/tool-catalog.ts` for every externally exposed input and `src/result-schemas.ts` for every result shape.
-4. Keep `daemon.drain` runner-internal unless a new current decision explicitly exposes it.
+4. Keep `protocol.negotiate` and `daemon.drain` runner-internal unless a new current decision explicitly exposes them.
 5. Run type checking and the full MCP integration test.
 
 The current release script packages the checked-in contract directory; it does not perform step 1. Never treat a successful package build alone as proof that the two repositories agree.
@@ -63,9 +63,9 @@ The test suite currently checks:
 
 - exact contract hashes and catalog/schema coverage;
 - unique focused 0.1.0 tool discovery and strict schemas;
-- one owner-checked local RPC for a tool call;
+- same-connection capability negotiation before each owner-checked local action;
 - rejection of unknown inputs and secret-source definitions before RPC;
-- no automatic replay after an ambiguous mutation;
+- exactly one classified read transport retry and no automatic replay after an ambiguous mutation;
 - safe error redaction and malformed-result rejection;
 - large-response spool projections;
 - refusal of a group/world-accessible socket; and
