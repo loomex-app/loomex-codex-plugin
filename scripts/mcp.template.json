@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "loomex": {
+      "command": "__LOOMEX_NODE__",
+      "args": ["__LOOMEX_PLUGIN_SERVER__"]
+    }
+  }
+}

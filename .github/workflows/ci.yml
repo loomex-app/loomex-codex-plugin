@@ -1,0 +1,33 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: macos-14-xlarge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.20.0
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: ./scripts/test-packaging.sh
+      - run: ./scripts/test-node-runtime.sh
+      - name: Validate with Codex plugin installer
+        env:
+          LOOMEX_ALLOW_UNSAFE_DEV_INSTALL: "1"
+        run: |
+          npm install --global @openai/codex@0.146.0
+          ./scripts/build-release.sh --unsigned-development --output "$RUNNER_TEMP/release"
+          ./scripts/install.sh "$RUNNER_TEMP/release" --allow-unsigned-development --install-base "$RUNNER_TEMP/loomex-plugin"
+          version="$(node -p 'require("./package.json").version')"
+          codex plugin marketplace add "$RUNNER_TEMP/loomex-plugin/current" --json
+          codex plugin add loomex@loomex-private --json
+          codex plugin list | grep -F loomex
+          codex plugin remove loomex
+          codex plugin marketplace remove loomex-private

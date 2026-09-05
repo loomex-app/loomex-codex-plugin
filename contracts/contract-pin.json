@@ -1,0 +1,9 @@
+{
+  "protocol": "loomex.local-control/v2",
+  "version": "0.1.0",
+  "source": "../runner/contracts",
+  "files": {
+    "local-control.schema.json": "105ef239c12a8de22d85d7446004b2bf3013c12699c6ea580dc054836d9a2915",
+    "method-catalog.json": "a13d649b838a96d7f8f395eeb1c1186b915b00f1263cdceb9a0839f80cddb07d"
+  }
+}

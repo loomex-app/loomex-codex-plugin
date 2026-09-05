@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Loomex</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: CanvasText; background: Canvas; }
+    main { display: grid; gap: 12px; padding: 14px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    h1 { margin: 0; font-size: 17px; }
+    #connection { font-size: 12px; opacity: .72; }
+    #summary { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    pre { margin: 0; max-height: 330px; overflow: auto; border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 9px; padding: 10px; background: color-mix(in srgb, CanvasText 4%, Canvas); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .actions, .field { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .field { align-items: stretch; flex-direction: column; }
+    button, input, select, textarea { font: inherit; border-radius: 7px; border: 1px solid color-mix(in srgb, CanvasText 24%, transparent); padding: 7px 10px; color: inherit; background: Canvas; }
+    button { cursor: pointer; background: #6857f5; color: white; border-color: #6857f5; font-weight: 650; }
+    button.secondary { background: transparent; color: inherit; }
+    button.danger { background: #bb2d3b; border-color: #bb2d3b; }
+    button:disabled { cursor: not-allowed; opacity: .48; }
+    textarea { min-height: 84px; resize: vertical; }
+    label { font-weight: 600; }
+    .notice { border-left: 3px solid #6857f5; padding: 8px 10px; background: color-mix(in srgb, #6857f5 9%, Canvas); }
+    .error { border-left-color: #bb2d3b; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body data-mode="__LOOMEX_MODE__">
+<main>
+  <header><h1 id="title">Loomex</h1><span id="connection">Connecting…</span></header>
+  <p id="summary" class="notice">Waiting for the authoritative tool result.</p>
+  <pre id="state" aria-label="Loomex state">{}</pre>
+  <section id="form" class="field" hidden></section>
+  <div class="actions">
+    <button id="refresh" class="secondary" type="button" disabled>Refresh server state</button>
+    <button id="secondary" class="secondary" type="button" hidden disabled></button>
+    <button id="primary" type="button" hidden disabled></button>
+  </div>
+</main>
+<script>
+(() => {
+  "use strict";
+  const mode = document.body.dataset.mode;
+  const connection = document.getElementById("connection");
+  const summary = document.getElementById("summary");
+  const stateView = document.getElementById("state");
+  const form = document.getElementById("form");
+  const refresh = document.getElementById("refresh");
+  const primary = document.getElementById("primary");
+  const secondary = document.getElementById("secondary");
+  const title = document.getElementById("title");
+  const pending = new Map();
+  const mutationKeys = new Map();
+  let nextId = 1;
+  let connected = false;
+  let latest = null;
+  let latestMethod = "";
+  let latestToolName = "";
+
+  const labels = {
+    authoring: "Workflow authoring review",
+    prepare: "Prepared run review",
+    monitor: "Run monitor",
+    interaction: "Human interaction"
+  };
+  title.textContent = labels[mode] || "Loomex";
+
+  function send(method, params, expectReply = true) {
+    const message = { jsonrpc: "2.0", method, params };
+    if (!expectReply) {
+      window.parent.postMessage(message, "*");
+      return Promise.resolve();
+    }
+    const id = nextId++;
+    message.id = id;
+    window.parent.postMessage(message, "*");
+    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+  }
+
+  function uuid() {
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+      return globalThis.crypto.randomUUID();
+    }
+    throw new Error("This host cannot generate a safe idempotency UUID.");
+  }
+
+  function safeView(value, key = "") {
+    if (/secret|token|credential|authorization|confirmationkey/i.test(key)) return "[not displayed]";
+    if (Array.isArray(value)) return value.map((item) => safeView(item));
+    if (!value || typeof value !== "object") return value;
+    const output = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      output[childKey] = safeView(childValue, childKey);
+    }
+    return output;
+  }
+
+  function dataOf(result) {
+    const structured = result && result.structuredContent ? result.structuredContent : result;
+    return structured && structured.data ? structured.data : structured;
+  }
+
+  function methodOf(result) {
+    const structured = result && result.structuredContent ? result.structuredContent : result;
+    return structured && typeof structured.method === "string" ? structured.method : "";
+  }
+
+  function errorCodeOf(result) {
+    const structured = result && result.structuredContent ? result.structuredContent : result;
+    return structured && structured.error && typeof structured.error.code === "string"
+      ? structured.error.code
+      : undefined;
+  }
+
+  function preparedCommitTool() {
+    if (latestMethod === "builder.prepare" || latestToolName === "loomex_builder_prepare") return "loomex_builder_commit";
+    if (latestMethod === "editor.prepare" || latestToolName === "loomex_editor_prepare") return "loomex_editor_commit";
+    return "loomex_run_commit";
+  }
+
+  function findId(data, name) {
+    if (!data || typeof data !== "object") return undefined;
+    if (typeof data[name] === "string") return data[name];
+    for (const value of Object.values(data)) {
+      if (value && typeof value === "object") {
+        const found = findId(value, name);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  }
+
+  function executionId(data) {
+    return data && data.execution && typeof data.execution.id === "string"
+      ? data.execution.id
+      : undefined;
+  }
+
+  function humanRequest(data) {
+    return data && data.humanRequest && typeof data.humanRequest === "object"
+      ? data.humanRequest
+      : undefined;
+  }
+
+  function interactionId(data) {
+    const request = humanRequest(data);
+    return request && typeof request.id === "string" ? request.id : undefined;
+  }
+
+  function builderSessionId(data) {
+    return data && data.builderSession && typeof data.builderSession.id === "string"
+      ? data.builderSession.id
+      : undefined;
+  }
+
+  function setError(error) {
+    summary.classList.add("error");
+    summary.textContent = error && error.message ? String(error.message) : "The host could not complete this action.";
+  }
+
+  function typedForm(schema, initial) {
+    form.replaceChildren();
+    const properties = schema && schema.properties && typeof schema.properties === "object" ? schema.properties : null;
+    const supported = properties && Object.values(properties).every((field) =>
+      field && typeof field === "object" &&
+      (Array.isArray(field.enum) || ["string", "boolean", "integer", "number"].includes(field.type))
+    );
+    if (!properties || !supported) {
+      const label = document.createElement("label");
+      label.textContent = "Structured response (JSON)";
+      const area = document.createElement("textarea");
+      area.id = "json-answer";
+      area.value = JSON.stringify(initial || {}, null, 2);
+      label.append(area);
+      form.append(label);
+      form.hidden = false;
+      return;
+    }
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    for (const [name, field] of Object.entries(properties)) {
+      const label = document.createElement("label");
+      label.textContent = name;
+      let control;
+      if (Array.isArray(field.enum)) {
+        control = document.createElement("select");
+        for (const optionValue of field.enum) {
+          const option = document.createElement("option");
+          option.value = String(optionValue);
+          option.textContent = String(optionValue);
+          control.append(option);
+        }
+      } else if (field.type === "boolean") {
+        control = document.createElement("select");
+        for (const bool of ["true", "false"]) {
+          const option = document.createElement("option");
+          option.value = bool;
+          option.textContent = bool;
+          control.append(option);
+        }
+      } else {
+        control = document.createElement("input");
+        control.type = field.type === "integer" || field.type === "number" ? "number" : "text";
+      }
+      control.dataset.field = name;
+      control.dataset.type = field.type || "string";
+      control.dataset.required = required.has(name) ? "true" : "false";
+      if (initial && initial[name] !== undefined) control.value = String(initial[name]);
+      label.append(control);
+      form.append(label);
+    }
+    form.hidden = false;
+  }
+
+  function collectAnswer() {
+    const area = document.getElementById("json-answer");
+    if (area) return JSON.parse(area.value);
+    const answer = {};
+    for (const control of form.querySelectorAll("[data-field]")) {
+      const field = control.dataset.field;
+      const type = control.dataset.type;
+      const required = control.dataset.required === "true";
+      if (control.value === "" && !required) continue;
+      if (control.value === "" && required) throw new Error(`Enter ${field}.`);
+      if (type === "boolean") answer[field] = control.value === "true";
+      else if (type === "integer") answer[field] = Number.parseInt(control.value, 10);
+      else if (type === "number") answer[field] = Number(control.value);
+      else answer[field] = control.value;
+    }
+    return answer;
+  }
+
+  function render(result) {
+    latestMethod = methodOf(result) || latestMethod;
+    const failed = Boolean(result && result.isError);
+    const incoming = dataOf(result);
+    if (!failed) latest = incoming;
+    const output = latest || {};
+    summary.classList.toggle("error", failed);
+    summary.textContent = failed
+      ? "Loomex returned an error. Review the safe details below."
+      : "Authoritative state loaded from the local runner.";
+    stateView.textContent = JSON.stringify(safeView(failed ? incoming : output), null, 2);
+    refresh.disabled = !connected;
+    primary.hidden = true;
+    secondary.hidden = true;
+    form.hidden = true;
+    form.replaceChildren();
+
+    if (mode === "prepare") {
+      if (!failed) summary.textContent = "Review the exact operation, canonical workspace, organization, provider configuration, and host_user/v1 authority before starting.";
+      primary.textContent = "Start this exact prepared operation";
+      primary.hidden = false;
+      primary.disabled = !connected || !findId(output, "preparationId") || !findId(output, "bindingDigest") || !findId(output, "confirmationKey");
+    } else if (mode === "monitor") {
+      const runId = executionId(output);
+      secondary.textContent = "Wait for change";
+      secondary.hidden = false;
+      secondary.disabled = !connected || !runId;
+      primary.textContent = "Request cancellation";
+      primary.className = "danger";
+      primary.hidden = false;
+      primary.disabled = !connected || !runId;
+      typedForm({ properties: { reason: { type: "string" } } }, { reason: "Cancelled by user" });
+    } else if (mode === "interaction") {
+      const request = humanRequest(output) || {};
+      const requestId = interactionId(output);
+      const requestType = request.type;
+      const schema = request.responseSchema || request.outputSchema;
+      if (requestType === "approval" || output.decisionRequired === true) {
+        secondary.textContent = "Reject";
+        secondary.hidden = false;
+        secondary.disabled = !connected || !requestId;
+        primary.textContent = "Approve";
+        primary.hidden = false;
+        primary.disabled = !connected || !requestId;
+      } else {
+        typedForm(schema, request.answer);
+        primary.textContent = "Submit response";
+        primary.hidden = false;
+        primary.disabled = !connected || !requestId;
+      }
+    } else if (mode === "authoring") {
+      const sessionId = builderSessionId(output);
+      const request = humanRequest(output) || {};
+      const schema = request.responseSchema || request.outputSchema;
+      if (sessionId && schema) {
+        typedForm(schema, {});
+        primary.textContent = "Respond to authoring session";
+        primary.hidden = false;
+        primary.disabled = !connected;
+      }
+    }
+  }
+
+  async function callTool(name, args) {
+    const result = await send("tools/call", { name, arguments: args });
+    render(result);
+    return result;
+  }
+
+  async function callMutation(name, slot, args) {
+    let idempotencyKey = mutationKeys.get(slot);
+    if (!idempotencyKey) {
+      idempotencyKey = uuid();
+      mutationKeys.set(slot, idempotencyKey);
+    }
+    const result = await callTool(name, { ...args, idempotencyKey });
+    const uncertain = ["NETWORK_AMBIGUOUS", "IDEMPOTENCY_REQUEST_IN_PROGRESS"].includes(errorCodeOf(result));
+    if (!uncertain) mutationKeys.delete(slot);
+    return result;
+  }
+
+  refresh.addEventListener("click", async () => {
+    try {
+      const data = latest || {};
+      if (mode === "monitor" && executionId(data)) {
+        await callTool("loomex_run_get", { runId: executionId(data) });
+      } else if (mode === "interaction" && interactionId(data)) {
+        await callTool("loomex_interaction_get", { requestId: interactionId(data) });
+      } else if (mode === "authoring" && builderSessionId(data)) {
+        await callTool("loomex_builder_get", { sessionId: builderSessionId(data) });
+      } else if (mode === "authoring" && findId(data, "workflowId")) {
+        await callTool("loomex_workflow_get", { workflowId: findId(data, "workflowId") });
+      } else {
+        await callTool("loomex_readiness", {});
+      }
+    } catch (error) { setError(error); }
+  });
+
+  secondary.addEventListener("click", async () => {
+    try {
+      const data = latest || {};
+      if (mode === "monitor") {
+        await callTool("loomex_run_wait", { runId: executionId(data), timeoutSeconds: 30 });
+      } else if (mode === "interaction") {
+        const requestId = interactionId(data);
+        await callMutation("loomex_interaction_decide", `interaction:reject:${requestId}`, {
+          requestId, decision: "reject"
+        });
+      }
+    } catch (error) { setError(error); }
+  });
+
+  primary.addEventListener("click", async () => {
+    try {
+      const data = latest || {};
+      if (mode === "prepare") {
+        const preparationId = findId(data, "preparationId");
+        const commitTool = preparedCommitTool();
+        await callMutation(commitTool, `${commitTool}:${preparationId}`, {
+          preparationId,
+          bindingDigest: findId(data, "bindingDigest"),
+          confirmationKey: findId(data, "confirmationKey")
+        });
+      } else if (mode === "monitor") {
+        const answer = collectAnswer();
+        if (!answer.reason) throw new Error("Enter a cancellation reason.");
+        const runId = executionId(data);
+        await callMutation("loomex_run_cancel", `run:cancel:${runId}`, {
+          runId, reason: answer.reason
+        });
+      } else if (mode === "interaction") {
+        const approval = primary.textContent === "Approve";
+        if (approval) {
+          const requestId = interactionId(data);
+          await callMutation("loomex_interaction_decide", `interaction:approve:${requestId}`, {
+            requestId, decision: "approve"
+          });
+        } else {
+          const requestId = interactionId(data);
+          await callMutation("loomex_interaction_respond", `interaction:respond:${requestId}`, {
+            requestId, answer: collectAnswer()
+          });
+        }
+      } else if (mode === "authoring") {
+        const sessionId = builderSessionId(data);
+        await callMutation("loomex_builder_respond", `builder:respond:${sessionId}`, {
+          sessionId, response: collectAnswer()
+        });
+      }
+    } catch (error) { setError(error); }
+  });
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.id !== undefined && pending.has(message.id)) {
+      const waiter = pending.get(message.id);
+      pending.delete(message.id);
+      if (message.error) waiter.reject(message.error);
+      else waiter.resolve(message.result);
+      return;
+    }
+    if (message.method === "ui/notifications/tool-input") {
+      const toolName = message.params && (message.params.name || message.params.toolName);
+      if (typeof toolName === "string") latestToolName = toolName;
+    }
+    if (message.method === "ui/notifications/tool-result") render(message.params);
+  }, { passive: true });
+
+  const handshake = send("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    appInfo: { name: "loomex", version: "0.1.0" },
+    appCapabilities: { availableDisplayModes: ["inline"] }
+  });
+  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));
+  Promise.race([handshake, timeout]).then(() => {
+    connected = true;
+    connection.textContent = "Connected";
+    refresh.disabled = false;
+    send("ui/notifications/initialized", {}, false);
+    if (latest) render(latest);
+  }).catch((error) => {
+    connected = false;
+    connection.textContent = "Headless tools remain available";
+    setError(error);
+  });
+})();
+</script>
+</body>
+</html>

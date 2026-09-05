@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" role="img" aria-label="Loomex">
+  <rect width="80" height="80" rx="20" fill="#6857F5"/>
+  <path d="M22 19v35c0 4 3 7 7 7h29V50H35V19H22Z" fill="#fff"/>
+  <circle cx="54" cy="29" r="10" fill="#B8FFF1"/>
+  <text x="101" y="55" font-family="ui-sans-serif, system-ui, sans-serif" font-size="48" font-weight="700" fill="#171624">Loomex</text>
+</svg>

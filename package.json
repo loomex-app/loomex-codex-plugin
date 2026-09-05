@@ -1,0 +1,25 @@
+{
+  "name": "@loomex/codex-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Loomex MCP bridge for Codex desktop and CLI",
+  "type": "module",
+  "engines": {
+    "node": ">=24.20.0 <25"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test:compile": "esbuild test/*.test.ts --bundle --packages=external --platform=node --format=esm --target=node24 --outdir=.test-dist",
+    "test": "npm run build && npm run test:compile && node --test .test-dist/*.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.1",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.2"
+  }
+}
