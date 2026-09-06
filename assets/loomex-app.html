@@ -24,11 +24,10 @@
     h1 { margin: 0; font-size: 18px; line-height: 1.25; letter-spacing: -.015em; }
     #connection { flex: none; font-size: 12px; color: var(--muted); }
     #summary { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-    details { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-    details > summary { padding: 9px 11px; cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 650; }
-    details[open] > summary { border-bottom: 1px solid var(--line); }
-    pre { margin: 0; max-height: 250px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 11px; background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
-    details pre { border: 0; border-radius: 0 0 10px 10px; }
+    .review-list { margin: 0; display: grid; gap: 8px; }
+    .review-list dt { font-weight: 650; }
+    .review-list dd { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .review-list .review-list { margin-left: 12px; border-left: 2px solid var(--line); padding-left: 10px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .field { display: grid; gap: 13px; }
     button, input, select, textarea { font: inherit; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); padding: 8px 10px; color: inherit; background: Canvas; }
@@ -79,7 +78,8 @@
 <main>
   <header><h1 id="title">Loomex</h1><span id="connection">Connecting…</span></header>
   <p id="summary" class="notice" role="status" aria-live="polite">Waiting for the authoritative tool result.</p>
-  <details id="diagnostics"><summary>Technical details</summary><pre id="state" aria-label="Loomex state">{}</pre></details>
+  <p id="support-reference" class="hint" hidden></p>
+  <section id="context" aria-label="Review details" hidden></section>
   <section id="form" class="field" hidden></section>
   <div class="actions">
     <button id="refresh" class="secondary" type="button" disabled>Refresh server state</button>
@@ -93,8 +93,8 @@
   const mode = document.body.dataset.mode;
   const connection = document.getElementById("connection");
   const summary = document.getElementById("summary");
-  const diagnostics = document.getElementById("diagnostics");
-  const stateView = document.getElementById("state");
+  const context = document.getElementById("context");
+  const supportReference = document.getElementById("support-reference");
   const form = document.getElementById("form");
   const refresh = document.getElementById("refresh");
   const primary = document.getElementById("primary");
@@ -138,15 +138,44 @@
     throw new Error("This host cannot generate a safe idempotency UUID.");
   }
 
-  function safeView(value, key = "") {
-    if (/secret|token|credential|authorization|confirmationkey/i.test(key)) return "[not displayed]";
-    if (Array.isArray(value)) return value.map((item) => safeView(item));
-    if (!value || typeof value !== "object") return value;
-    const output = {};
-    for (const [childKey, childValue] of Object.entries(value)) {
-      output[childKey] = safeView(childValue, childKey);
+  // Render only the deliberately selected review fields, never the transport envelope.
+  function reviewValue(value, key = "") {
+    if (/secret|token|credential|authorization|confirmationkey/i.test(key)) return element("span", {}, "Sensitive value hidden");
+    if (value === null || value === undefined) return element("span", {}, "Not specified");
+    if (typeof value !== "object") return element("span", {}, typeof value === "boolean" ? (value ? "Yes" : "No") : String(value));
+    const entries = Object.entries(value);
+    if (!entries.length) return element("span", {}, "None");
+    const list = element("dl", { className: "review-list" });
+    for (const [key, item] of entries) {
+      list.append(element("dt", {}, Array.isArray(value) ? `Item ${Number(key) + 1}` : key.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ")));
+      const detail = element("dd");
+      detail.append(reviewValue(item, key));
+      list.append(detail);
     }
-    return output;
+    return list;
+  }
+
+  function reviewFields(fields) {
+    context.replaceChildren();
+    const list = element("dl", { className: "review-list" });
+    for (const [label, value] of fields) {
+      if (value === undefined) continue;
+      list.append(element("dt", {}, label));
+      const detail = element("dd");
+      detail.append(reviewValue(value));
+      list.append(detail);
+    }
+    context.append(list);
+    context.hidden = !list.childElementCount;
+  }
+
+  function preparationReviewable(output) {
+    const binding = output.binding;
+    return binding && ["organizationId", "installationId", "workflowId", "versionId", "workspacePath"]
+      .every((key) => typeof binding[key] === "string" && binding[key].length) &&
+      binding.executionPolicy === "host_user/v1" &&
+      binding.inputs && typeof binding.inputs === "object" &&
+      binding.providerConfiguration && typeof binding.providerConfiguration === "object";
   }
 
   function dataOf(result) {
@@ -459,10 +488,10 @@
     if (spec && typeof spec === "object" && Object.keys(spec).length) {
       form.replaceChildren();
       appendRequestCopy(request);
-      form.append(element("p", { className: "notice error", role: "alert" }, "This request uses an unsupported or invalid question type."));
+      form.append(element("p", { className: "notice error", role: "alert" }, "This question cannot be displayed here. Continue in the conversation for help with this request."));
       form.dataset.formKind = "invalid-questions";
       form.hidden = false;
-      setError(new Error("This request uses an unsupported or invalid question type."));
+      setError(new Error("This question cannot be displayed here. Continue in the conversation for help with this request."));
       return false;
     }
     form.replaceChildren();
@@ -473,18 +502,12 @@
       (Array.isArray(field.enum) || ["string", "boolean", "integer", "number"].includes(field.type))
     );
     if (!properties || !supported) {
-      const label = document.createElement("label");
-      label.className = "field-label";
-      label.htmlFor = "json-answer";
-      label.textContent = "Structured response (JSON)";
-      const area = document.createElement("textarea");
-      area.id = "json-answer";
-      area.value = JSON.stringify(initial || {}, null, 2);
-      label.append(area);
-      form.append(label);
+      form.append(element("p", { className: "notice", role: "status" }, "This form cannot be displayed here. Continue in the conversation to provide your answer."));
+      form.dataset.formKind = "unsupported";
       form.hidden = false;
-      return true;
+      return false;
     }
+    form.dataset.formKind = "generic";
     const required = new Set(Array.isArray(schema.required) ? schema.required : []);
     for (const [name, field] of Object.entries(properties)) {
       const label = document.createElement("label");
@@ -612,8 +635,9 @@
   }
 
   function collectAnswer() {
-    const area = document.getElementById("json-answer");
-    if (area) return JSON.parse(area.value);
+    if (["unsupported", "invalid-questions"].includes(form.dataset.formKind)) {
+      throw new Error("This form cannot be displayed here. Continue in the conversation to provide your answer.");
+    }
     const questionFields = [...form.querySelectorAll("fieldset[data-question-id]")];
     if (questionFields.length) {
       clearQuestionErrors();
@@ -652,28 +676,43 @@
     summary.classList.toggle("error", failed);
     summary.setAttribute("role", failed ? "alert" : "status");
     summary.textContent = failed
-      ? "Loomex returned an error. Review the safe details below."
+      ? "Loomex could not complete this action. Refresh to check its current status before trying again."
       : mode === "interaction"
         ? "Your response is needed to continue."
         : mode === "authoring"
           ? "Answer the questions to continue authoring."
           : "Current Loomex state loaded.";
-    stateView.textContent = JSON.stringify(safeView(failed ? incoming : output), null, 2);
-    diagnostics.open = false;
+    const envelope = result && result.structuredContent ? result.structuredContent : result;
+    const reference = envelope && envelope.requestId;
+    supportReference.hidden = !(failed && typeof reference === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reference));
+    supportReference.textContent = supportReference.hidden ? "" : `Support reference: ${reference}`;
     refresh.disabled = !connected;
     if (failed && latest) return;
     primary.hidden = true;
     secondary.hidden = true;
     form.hidden = true;
     form.replaceChildren();
+    context.replaceChildren();
+    context.hidden = true;
 
     if (mode === "prepare") {
       if (!failed) summary.textContent = "Review the exact operation, canonical workspace, organization, provider configuration, and host_user/v1 authority before starting.";
+      const binding = output.binding || {};
+      reviewFields([
+        ["Workflow", binding.workflowId], ["Version", binding.versionId],
+        ["Organization", binding.organizationId], ["Installation", binding.installationId],
+        ["Workspace", binding.workspacePath], ["Inputs", binding.inputs],
+        ["Providers", binding.providerConfiguration], ["Authoring", binding.authoring],
+        ["Execution authority", binding.executionPolicy === "host_user/v1" ? "Runs as your macOS user in the selected workspace, with host access and no sandbox guarantee." : binding.executionPolicy],
+      ]);
+      if (!preparationReviewable(output)) summary.textContent = "The complete execution details are unavailable here. Continue in the conversation to review and prepare this operation.";
       primary.textContent = "Start this exact prepared operation";
       primary.hidden = false;
-      primary.disabled = !connected || !findId(output, "preparationId") || !findId(output, "bindingDigest") || !findId(output, "confirmationKey");
+      primary.disabled = !connected || !preparationReviewable(output) || !findId(output, "preparationId") || !findId(output, "bindingDigest") || !findId(output, "confirmationKey");
     } else if (mode === "monitor") {
       const runId = executionId(output);
+      const run = output.execution || {};
+      reviewFields([["Run", run.name || run.id], ["Status", run.status], ["Started", run.startedAt], ["Completed", run.completedAt]]);
       secondary.textContent = "Wait for change";
       secondary.hidden = false;
       secondary.disabled = !connected || !runId;
@@ -690,6 +729,8 @@
       if (humanRequestResolved(request)) {
         summary.textContent = "Response received. This request is complete.";
       } else if (requestType === "approval" || output.decisionRequired === true) {
+        appendRequestCopy(request);
+        form.hidden = false;
         secondary.textContent = "Reject";
         secondary.hidden = false;
         secondary.disabled = !connected || !requestId;
@@ -793,8 +834,7 @@
     }
     latestMethod = methodOf(result) || latestMethod;
     latest = incoming;
-    stateView.textContent = JSON.stringify(safeView(incoming), null, 2);
-    diagnostics.open = false;
+
     lockUncertainOperation(operation, true);
   }
 
@@ -908,6 +948,7 @@
         return;
       }
       if (mode === "prepare") {
+        if (!preparationReviewable(data)) throw new Error("Review the complete execution details in the conversation before starting.");
         const preparationId = findId(data, "preparationId");
         const commitTool = preparedCommitTool();
         await callMutation(commitTool, `${commitTool}:${preparationId}`, {
@@ -951,7 +992,7 @@
     if (message.id !== undefined && pending.has(message.id)) {
       const waiter = pending.get(message.id);
       pending.delete(message.id);
-      if (message.error) waiter.reject(message.error);
+      if (message.error) waiter.reject(new Error("The host could not complete this action. Continue in the conversation for help."));
       else waiter.resolve(message.result);
       return;
     }
@@ -964,7 +1005,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.0" },
+    appInfo: { name: "loomex", version: "0.2.1" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

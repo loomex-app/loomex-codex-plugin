@@ -45,7 +45,7 @@ Each public runner method needs one focused MCP definition and one method-specif
 
 All operations must work headlessly. Adding a UI resource cannot be the only way to complete a lifecycle step. UI resources must call registered tools through the MCP Apps bridge, render tool results as untrusted data, remain self-contained, and retain a CSP with no external network. The current resources support only inline display and must fail back to headless tools when initialization is unavailable.
 
-Human-question resources treat the runner's `humanRequest.inputSpec` as the authoritative presentation contract. They render text, long text, date, rating, boolean, radio, and checkbox questions in single or mixed batch forms. The response schema supplies required-field hints and remains the generic custom-schema fallback when an input spec is absent. Unknown or malformed typed input specs fail visibly instead of being reinterpreted as another question type. Submissions contain answer fields only; prompt text, option labels, input types, and other server-authored metadata are never copied into the response. Technical JSON is collapsed behind a details control while a question is active.
+Human-question resources treat the runner's `humanRequest.inputSpec` as the authoritative presentation contract. They render text, long text, date, rating, boolean, radio, and checkbox questions in single or mixed batch forms. The response schema supplies required-field hints and remains the generic custom-schema fallback when an input spec is absent. Unknown or malformed typed input specs fail visibly instead of being reinterpreted as another question type. Submissions contain answer fields only; prompt text, option labels, input types, and other server-authored metadata are never copied into the response. The UI never displays transport JSON or a raw JSON answer editor. Unsupported custom schemas direct users to the conversation and disable submission. Prepared runs retain readable authorization details; errors expose only a friendly message and an optional validated support reference.
 
 After `NETWORK_AMBIGUOUS` or `IDEMPOTENCY_REQUEST_IN_PROGRESS`, the UI retains an immutable copy of the complete tool arguments, including the UUID. It locks the displayed answer controls and offers an explicit server-state refresh. If the request remains pending, retry sends that exact retained argument object even if the DOM was changed outside the UI. If refresh reports an answered or resolved request, the form and retry action are removed.
 
@@ -75,7 +75,7 @@ npm test
 The test suite currently checks:
 
 - exact contract hashes and catalog/schema coverage;
-- unique focused 0.2.0 tool discovery and strict schemas;
+- unique focused 0.2.1 tool discovery and strict schemas;
 - same-connection capability negotiation before each owner-checked local action;
 - rejection of unknown inputs and secret-source definitions before RPC;
 - exactly one classified read transport retry and no automatic replay after an ambiguous mutation;

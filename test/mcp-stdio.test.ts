@@ -237,7 +237,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.2.0 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.2.1 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -827,7 +827,7 @@ test("MCP Apps resources use the portable bridge and no external network", async
     assert.match(text, /long_text/);
     assert.match(text, /validDate/);
     assert.match(text, /questionId/);
-    assert.match(text, /<details id="diagnostics">/);
+    assert.doesNotMatch(text, /id="diagnostics"|id="state"|json-answer/);
     assert.match(text, /!properties \|\| !supported/);
     assert.match(text, /mutationKeys/);
     assert.match(text, /mutationOperations/);

@@ -47,7 +47,7 @@ async function browserTools(): Promise<{ tools: BrowserTools; executablePath: st
 
 async function mountApp(
   page: any,
-  mode: "interaction" | "authoring",
+  mode: "interaction" | "authoring" | "prepare" | "monitor",
   data: Record<string, unknown>,
   failFirstMutation = false,
   resolveOnRead = false,
@@ -212,8 +212,8 @@ test("question UI collects seven mixed answer types, validates, preserves drafts
   const app = await mountApp(page, "interaction", initialData, true);
   await captureRequestedScreenshots(page);
 
-  assert.equal(await app.locator("#diagnostics").getAttribute("open"), null);
-  assert.equal(await app.locator("#state").isVisible(), false);
+  assert.equal(await app.locator("#diagnostics").count(), 0);
+  assert.equal(await app.locator("#state").count(), 0);
   await app.getByText("7 questions · * Required", { exact: true }).waitFor();
   await app.getByText("Your response is needed to continue.", { exact: true }).waitFor();
   assert.equal(await app.locator("fieldset").count(), 7);
@@ -365,7 +365,7 @@ test("ambiguous approval keeps rejection locked and retries the exact approval o
   assert.equal(calls[0].arguments.decision, "approve");
 });
 
-test("authoring uses inputSpec aliases and unsupported specs retain the generic schema fallback", async (t) => {
+test("authoring supports aliases and simple schemas while rejecting invalid question specs", async (t) => {
   const available = await browserTools();
   if (!available) {
     if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Playwright requires an installed Chromium browser");
@@ -417,6 +417,51 @@ test("authoring uses inputSpec aliases and unsupported specs retain the generic 
       responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
     },
   });
-  await invalid.getByRole("alert").getByText("unsupported or invalid question type", { exact: false }).first().waitFor();
+  await invalid.getByRole("alert").getByText("This question cannot be displayed here", { exact: false }).first().waitFor();
   assert.equal(await invalid.getByRole("button", { name: "Submit response" }).isDisabled(), true);
+});
+
+test("no-JSON views retain readable reviews and reject unsupported forms", async (t) => {
+  const available = await browserTools();
+  if (!available) { assert.fail("Chromium is required for this UI gate"); }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  for (const mode of ["interaction", "authoring"] as const) {
+    const app = await mountApp(page, mode, {
+      builderSession: { id: "session-1" },
+      humanRequest: { id: "request-1", type: "input", responseSchema: {
+        type: "object", properties: { nested: { type: "object" } },
+      } },
+    });
+    await app.getByText("This form cannot be displayed here. Continue in the conversation to provide your answer.", { exact: true }).waitFor();
+    assert.equal(await app.locator("textarea, pre, #diagnostics, #state").count(), 0);
+    assert.equal(await app.locator("#primary").isDisabled(), true);
+    await app.locator("#primary").evaluate((button: any) => button.dispatchEvent(new Event("click")));
+    await app.locator('#summary[role="alert"]').waitFor();
+    assert.equal(await page.evaluate(() => window.__loomexCalls.length), 0);
+  }
+  const prepared = {
+    preparationId: "prepared-1", bindingDigest: "digest", confirmationKey: "never-display-this",
+    binding: { organizationId: "Organization A", installationId: "My Mac", workflowId: "Weekly report",
+      versionId: "Version 3", workspacePath: "/Users/example/report", executionPolicy: "host_user/v1",
+      inputs: { title: "Quarterly report", includeCharts: false, nested: { secret: "hidden-input" } }, providerConfiguration: { codex: { model: "chosen-model", credentials: { value: "hidden-provider" }, apiToken: "hidden-token" } } },
+  };
+  let app = await mountApp(page, "prepare", prepared);
+  await app.getByText("Weekly report", { exact: true }).waitFor();
+  await app.getByText("Quarterly report", { exact: true }).waitFor();
+  await app.getByText("chosen-model", { exact: true }).waitFor();
+  assert.match(await app.locator("#context").innerText(), /no sandbox guarantee/);
+  assert.doesNotMatch(await app.locator("body").innerText(), /never-display-this|bindingDigest|Technical details|hidden-input|hidden-provider|hidden-token/);
+  assert.equal(await app.locator("#primary").isDisabled(), false);
+  app = await mountApp(page, "prepare", { ...prepared, binding: {} });
+  assert.equal(await app.locator("#primary").isDisabled(), true);
+  await app.locator("#primary").evaluate((button: any) => button.dispatchEvent(new Event("click")));
+  await app.locator('#summary[role="alert"]').waitFor();
+  assert.equal(await page.evaluate(() => window.__loomexCalls.length), 0);
+  app = await mountApp(page, "interaction", { humanRequest: { id: "approval-1", type: "approval", title: "Publish report?", prompt: "This report will be available to your team." } });
+  await app.getByRole("heading", { name: "Publish report?" }).waitFor();
+  await app.getByText("This report will be available to your team.", { exact: true }).waitFor();
+  app = await mountApp(page, "monitor", { execution: { id: "run-1", status: "running" } });
+  await app.getByText("running", { exact: true }).waitFor();
 });
