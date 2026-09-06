@@ -37,13 +37,26 @@ The current release script packages the checked-in contract directory; it does n
 
 A mutating tool must accept a UUID `idempotencyKey`, must be marked mutating in the canonical catalog, and must preserve the key in an ambiguous result. Do not add automatic mutation retries. Any retry after `NETWORK_AMBIGUOUS` represents the same logical operation and uses the original key.
 
-All input objects are strict. If a workflow-definition field can recursively contain arbitrary JSON, retain the 0.1.0 rejection of objects whose `source` is `secret`. There is no secret-input or provider-credential feature in this release.
+All input objects are strict. If a workflow-definition field can recursively contain arbitrary JSON, reject objects whose `source` is `secret`. There is no secret-input or provider-credential feature in this release.
 
 ## Tool and UI rules
 
 Each public runner method needs one focused MCP definition and one method-specific strict result schema. Tool text must state full-host authority wherever the user grants a workspace or approves execution. Keep the prepare and commit operations separate; commit may only send the IDs and digest produced by the reviewed preparation.
 
 All operations must work headlessly. Adding a UI resource cannot be the only way to complete a lifecycle step. UI resources must call registered tools through the MCP Apps bridge, render tool results as untrusted data, remain self-contained, and retain a CSP with no external network. The current resources support only inline display and must fail back to headless tools when initialization is unavailable.
+
+Human-question resources treat the runner's `humanRequest.inputSpec` as the authoritative presentation contract. They render text, long text, date, rating, boolean, radio, and checkbox questions in single or mixed batch forms. The response schema supplies required-field hints and remains the generic custom-schema fallback when an input spec is absent. Unknown or malformed typed input specs fail visibly instead of being reinterpreted as another question type. Submissions contain answer fields only; prompt text, option labels, input types, and other server-authored metadata are never copied into the response. Technical JSON is collapsed behind a details control while a question is active.
+
+After `NETWORK_AMBIGUOUS` or `IDEMPOTENCY_REQUEST_IN_PROGRESS`, the UI retains an immutable copy of the complete tool arguments, including the UUID. It locks the displayed answer controls and offers an explicit server-state refresh. If the request remains pending, retry sends that exact retained argument object even if the DOM was changed outside the UI. If refresh reports an answered or resolved request, the form and retry action are removed.
+
+The browser suite uses the pinned Playwright dependency. A normal `npm test` runs it when a local Chromium browser is available and otherwise records a skip. The release gate is explicit and does not skip:
+
+```sh
+npx playwright install chromium
+npm run test:ui
+```
+
+Set `LOOMEX_BROWSER_EXECUTABLE` to exercise another local Chromium executable. Set `LOOMEX_UI_SCREENSHOT_DIR` when running `npm run test:ui` to capture light, dark, and narrow-viewport review images.
 
 The plugin must not read Keychain, accept backend or provider credentials, call the backend, execute provider binaries, or infer authority from UI state. Its socket client should expose only safe error codes and correlation IDs, never arbitrary runner error text.
 
@@ -62,14 +75,15 @@ npm test
 The test suite currently checks:
 
 - exact contract hashes and catalog/schema coverage;
-- unique focused 0.1.0 tool discovery and strict schemas;
+- unique focused 0.2.0 tool discovery and strict schemas;
 - same-connection capability negotiation before each owner-checked local action;
 - rejection of unknown inputs and secret-source definitions before RPC;
 - exactly one classified read transport retry and no automatic replay after an ambiguous mutation;
 - safe error redaction and malformed-result rejection;
 - large-response spool projections;
-- refusal of a group/world-accessible socket; and
-- four portable UI resources with CSP and no external URL or legacy host bridge.
+- refusal of a group/world-accessible socket;
+- four portable UI resources with CSP and no external URL or legacy host bridge; and
+- authoritative seven-type question rendering and answer-only submissions in a real browser, including mixed batches, Other fields, accessible control names, validation, draft preservation, duplicate-click suppression, immutable ambiguous retry, and read reconciliation.
 
 Packaging tests build deterministic fixture manifests, reject forbidden development or credential-like paths, detect tampering, verify explicit unsafe-development installation, and uninstall only the versioned fixture. The Node runtime test downloads the exact `darwin-arm64` archive pinned in `scripts/node-runtime.lock.json`, verifies its SHA-256, and starts the compiled server with that runtime. It requires network access to the pinned Node distribution URL.
 

@@ -24,7 +24,7 @@ The backend remains authoritative for identities, organizations, workflow graphs
 
 ## Trust boundaries
 
-| Boundary | Enforcement in 0.1.0 |
+| Boundary | Enforcement in 0.2.0 |
 | --- | --- |
 | Codex host to plugin | MCP SDK validates the registered strict Zod input schema. Unknown fields fail before local RPC. Workflow definitions containing an object with `source: "secret"` are rejected. |
 | Plugin to runner | The plugin requires an absolute state directory, then checks that the socket parent is an owner-only directory and the socket is an owner-only Unix socket owned by the effective UID. The runner independently checks the peer UID. |
@@ -43,7 +43,7 @@ The wire protocol is `loomex.local-control/v2`. The runner project owns the cano
 
 The plugin vendors exact copies in `contracts/` and records their SHA-256 digests in `contracts/contract-pin.json`. The catalog contains 48 runner methods. The plugin exposes 46 as focused `loomex_*` MCP tools. Internal `protocol.negotiate` verifies required capabilities on each action connection before sending the action; `daemon.drain` remains reserved for runner installation and operations. Neither internal method appears as an MCP tool. Tests compare the exposed methods and top-level input/output fields to the pinned catalog and reject a hash mismatch.
 
-The checked-in build script packages the plugin's vendored copies. It does not fetch or regenerate contracts and does not currently copy them from `../runner` during packaging. A protocol change therefore requires an explicit synchronized update and pin before either product is released. Product version `0.1.0` and protocol version `v2` are separate version axes.
+The checked-in build script packages the plugin's vendored copies. It does not fetch or regenerate contracts and does not currently copy them from `../runner` during packaging. A protocol change therefore requires an explicit synchronized update and pin before either product is released. Product version `0.2.0` and protocol version `v2` are separate version axes.
 
 ## MCP tools and results
 
@@ -67,11 +67,13 @@ The resources use `ui/initialize`, tool result notifications, and `tools/call` t
 
 The UI is a convenience surface, not proof of user authorization. In particular, the runner's persisted confirmation binding controls whether a prepared operation can start.
 
+For interaction and authoring requests, `humanRequest.inputSpec` owns question copy and control selection. The UI supports short text, long text, calendar dates, bounded integer ratings, explicit Yes/No booleans, one-choice radios, and multi-choice checkboxes. Mixed batches return stable `questionId` values. Selecting Other reveals a required text field. The UI validates without inventing a default answer, retains the draft after a runner error, and sends only `value`, `values`, `otherText`, and batch `questionId` answer fields. The trusted response schema remains available for custom schemas without an input spec and for headless clients. An ambiguous mutation freezes its entire argument object and answer controls. Refresh reconciles authoritative state; a still-pending request may retry the frozen arguments, while a resolved request removes the form.
+
 ## Execution policy and excluded features
 
 The plugin only describes and transports `host_user/v1` work. Under that policy, a runner child has the full permissions of the signed-in macOS user. A workspace grant binds an exact root for working-directory validation and artifact references; it is not a filesystem or network sandbox. Provider and command processes may affect other host paths, services, and external systems available to that user.
 
-The 0.1.0 policy has no product deadline, global or per-workspace concurrency cap, cumulative stdout/stderr/provider-output cap, artifact count cap, or artifact byte cap. Pagination and chunk sizes remain bounded so work can resume safely. The plugin adds no secret-input model, secret prompt, secret store, or provider-login flow. Provider authentication remains in each provider CLI's host-owned store.
+The 0.2.0 policy has no product deadline, global or per-workspace concurrency cap, cumulative stdout/stderr/provider-output cap, artifact count cap, or artifact byte cap. Pagination and chunk sizes remain bounded so work can resume safely. The plugin adds no secret-input model, secret prompt, secret store, or provider-login flow. Provider authentication remains in each provider CLI's host-owned store.
 
 ## Current decisions and release status
 

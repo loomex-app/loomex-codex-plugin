@@ -16,6 +16,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npx playwright install chromium
+      - run: npm run test:ui
       - run: ./scripts/test-packaging.sh
       - run: ./scripts/test-node-runtime.sh
       - name: Validate with Codex plugin installer

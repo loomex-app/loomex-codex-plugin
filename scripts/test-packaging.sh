@@ -9,6 +9,13 @@ payload="$fixture/payload"
 base="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$fixture/install")"; root="$base/versions/0.1.0"
 mkdir -p "$payload/plugin/.codex-plugin" "$payload/plugin/dist" "$payload/plugin/skills/a" "$payload/runtime/bin"
 cp "$repo/.codex-plugin/plugin.json" "$payload/plugin/.codex-plugin/plugin.json"
+# The upgrade fixture uses two fixed synthetic versions, independent of the release under test.
+python3 - "$payload/plugin/.codex-plugin/plugin.json" <<'PYFIXTURE'
+import json,sys
+from pathlib import Path
+path=Path(sys.argv[1]); manifest=json.loads(path.read_text()); manifest['version']='0.1.0'
+path.write_text(json.dumps(manifest)+'\n')
+PYFIXTURE
 printf '# test\n' > "$payload/plugin/skills/a/SKILL.md"
 printf 'console.log("test")\n' > "$payload/plugin/dist/server.js"
 printf '#!/bin/sh\n' > "$payload/runtime/bin/node"; chmod 0755 "$payload/runtime/bin/node"

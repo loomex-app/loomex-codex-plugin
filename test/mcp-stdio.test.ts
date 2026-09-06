@@ -237,7 +237,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.1.0 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.2.0 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -462,6 +462,7 @@ test("strict input validation rejects unknown fields and unsupported secret inpu
   assert.equal(secret.isError, true);
   const secretContent = secret.content as Array<{ type: string; text?: string }>;
   assert.match(String(secretContent[0]?.text ?? ""), /secret input/i);
+  assert.doesNotMatch(String(secretContent[0]?.text ?? ""), /Loomex 0\.1\.0/);
   assert.equal(runner.requests.length, 0);
 });
 
@@ -614,6 +615,73 @@ test("run projections accept canonical string wait states and nested execution I
   assert.equal((structured.data as Record<string, unknown>).waitState, "human_action_required");
 });
 
+test("run projections preserve authoritative seven-type input specs for UI and headless clients", async () => {
+  const runId = "5e06cb51-c39e-485b-83ca-c2f2d12b1eb8";
+  const inputSpec = {
+    schemaVersion: "loomex.human-input/v2",
+    collectionMode: "batch",
+    inputType: "text",
+    question: "Complete every question",
+    questions: [
+      { id: "plain", inputType: "text", question: "Short answer?", options: [], allowOther: false, otherLabel: "Other" },
+      { id: "details", inputType: "long_text", question: "Detailed answer?", options: [], allowOther: false, otherLabel: "Other" },
+      { id: "due", inputType: "date", question: "Due date?", options: [], allowOther: false, otherLabel: "Other" },
+      { id: "score", inputType: "rating", question: "Score?", options: [], allowOther: false, otherLabel: "Other", minimum: 0, maximum: 5 },
+      { id: "enabled", inputType: "boolean", question: "Enable it?", options: [], allowOther: false, otherLabel: "Other" },
+      { id: "choice", inputType: "radio", question: "Choose one?", options: [{ id: "a", label: "A" }], allowOther: true, otherLabel: "Another" },
+      { id: "features", inputType: "checkbox", question: "Choose several?", options: [{ id: "a", label: "A" }], allowOther: true, otherLabel: "Another" },
+    ],
+  };
+  const runner = new FakeRunner((request, socket) => {
+    runner.respond(socket, request, {
+      execution: { id: runId },
+      humanRequest: {
+        id: "63f4d335-0280-4e80-9fb8-7036072cc5e5",
+        title: "Mixed input",
+        description: "Seven supported question types",
+        prompt: "Complete every question",
+        inputSpec,
+        responseSchema: {
+          type: "object",
+          properties: { answers: { type: "array" } },
+          required: ["answers"],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: "object",
+          properties: { answers: { type: "array" } },
+          required: ["answers"],
+          additionalProperties: false,
+        },
+        workflowOutputSchema: { type: "object" },
+      },
+      waitState: "human_action_required",
+      automation: null,
+      runner: {},
+      events: [],
+      latestSequence: 0,
+      hasMoreEvents: false,
+      timedOut: false,
+    });
+  });
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_run_get", arguments: { runId } });
+  const structured = result.structuredContent as Record<string, unknown>;
+  const request = ((structured.data as Record<string, unknown>).humanRequest as Record<string, unknown>);
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(request.inputSpec, inputSpec);
+  assert.deepEqual(Object.keys(request).sort(), [
+    "description",
+    "id",
+    "inputSpec",
+    "outputSchema",
+    "prompt",
+    "responseSchema",
+    "title",
+    "workflowOutputSchema",
+  ]);
+});
+
 test("canonical nonnegative paging and wait values are forwarded without hidden client caps", async () => {
   const runId = "088c7ed5-2a2f-42c4-af9c-92f2d3243db9";
   const artifactId = "95ea94d7-a402-4da2-8d3b-088a43a1905e";
@@ -755,8 +823,15 @@ test("MCP Apps resources use the portable bridge and no external network", async
     assert.match(text, /data\.humanRequest/);
     assert.match(text, /data\.builderSession/);
     assert.match(text, /request\.responseSchema/);
+    assert.match(text, /request\.inputSpec/);
+    assert.match(text, /long_text/);
+    assert.match(text, /validDate/);
+    assert.match(text, /questionId/);
+    assert.match(text, /<details id="diagnostics">/);
     assert.match(text, /!properties \|\| !supported/);
     assert.match(text, /mutationKeys/);
+    assert.match(text, /mutationOperations/);
+    assert.match(text, /immutableCopy/);
     assert.match(text, /NETWORK_AMBIGUOUS/);
     assert.match(text, /IDEMPOTENCY_REQUEST_IN_PROGRESS/);
     const meta = content?._meta as Record<string, unknown>;

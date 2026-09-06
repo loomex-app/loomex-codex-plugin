@@ -15,8 +15,7 @@ Prefer the builder or editor lifecycle when the user is developing a workflow
 conversationally. Prepare builder and editor sessions, present the exact
 workspace/provider/`host_user/v1` binding, and commit only after the user accepts
 it. Pass the preparation ID, digest, and confirmation key unchanged. Validate
-before publishing. Secret input mappings are not a supported feature in version
-0.1.0; report the validation error instead of treating a secret reference as an
+before publishing. Secret input mappings are not a supported feature; report the validation error instead of treating a secret reference as an
 ordinary value.
 
 Finalize an editor with `confirm: false` to preview its exact proposed update.
@@ -40,3 +39,13 @@ size. Use `loomex_run_wait`, paged events, paged results, and artifact lists
 rather than assuming a terminal result fits in one response. Surface typed
 human interactions promptly and answer them only from the user's stated choice.
 Treat run deletion and workspace revocation as destructive actions.
+
+For human questions, get the current interaction before answering. Treat
+`inputSpec` as the authoritative question text, type, options and rating bounds;
+`responseSchema` describes the answer payload. Supported typed controls include
+text, long_text, date, rating, boolean, radio and checkbox, including mixed
+question batches and Other text. Dates are calendar dates in YYYY-MM-DD form;
+ratings are integers within the supplied minimum/maximum (default 1–5). Submit
+only answer values and stable question IDs, not copied prompts or option labels.
+Do not infer a boolean, rating or choice from a default control value. Use the
+optional interaction view when available; the same response tools work headlessly.
