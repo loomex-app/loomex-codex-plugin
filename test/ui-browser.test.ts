@@ -488,7 +488,7 @@ test("single questions remove repeated copy and safe presentations add progress 
       context: { previousOutputs: { privateTransportData: "must-not-render" } },
       presentation: {
         version: 1,
-        kind: "progress",
+        kind: "clarification",
         question,
         stageLabel: "Clarify",
         summary: "We have the goal and are narrowing the workflow behavior.",
@@ -507,6 +507,12 @@ test("single questions remove repeated copy and safe presentations add progress 
   await app.getByRole("heading", { name: "Describe Your Idea", exact: true }).waitFor();
   assert.equal(await app.locator("h2").count(), 1);
   await app.locator('[aria-current="step"]').getByText("Clarify", { exact: true }).waitFor();
+  const requirementsContext = app.locator("#context details.ui-disclosure");
+  await app.getByText("Requirements context (2 items)", { exact: true }).waitFor();
+  assert.equal(await requirementsContext.evaluate((details: any) => details.open), false);
+  assert.equal(await app.getByText("Use the existing Loomex workspace.", { exact: true }).isVisible(), false);
+  assert.equal(await app.getByText("Which output should be easiest to review?", { exact: true }).isVisible(), false);
+  await app.getByText("Requirements context (2 items)", { exact: true }).click();
   await app.getByText("Use the existing Loomex workspace.", { exact: true }).waitFor();
   await app.getByText("Which output should be easiest to review?", { exact: true }).waitFor();
   assert.doesNotMatch(await app.locator("body").innerText(), /must-not-render/);
@@ -534,6 +540,7 @@ test("single questions remove repeated copy and safe presentations add progress 
         verification: ["Chrome interaction check passed."],
         limitations: ["No hosted preview is available."],
         artifacts: ["Local dashboard source"],
+        decisions: ["Keep the existing API contract."],
       },
       inputSpec: { inputType: "boolean", question: "Does this meet your requirements?" },
       responseSchema: { type: "object", properties: { value: { type: "boolean" } }, required: ["value"] },
@@ -541,6 +548,10 @@ test("single questions remove repeated copy and safe presentations add progress 
   });
   await app.getByRole("heading", { name: "Review Implementation", exact: true }).waitFor();
   assert.equal(await app.locator("h2").count(), 1);
+  assert.equal(await app.getByText(/Requirements context \(/).count(), 0);
+  await app.getByRole("heading", { name: "Decisions", exact: true }).waitFor();
+  await app.getByText("Keep the existing API contract.", { exact: true }).waitFor();
+  assert.equal(await app.getByText("Keep the existing API contract.", { exact: true }).locator("xpath=ancestor::details").count(), 0);
   assert.equal(await app.getByText("The requested dashboard is ready for review.", { exact: true }).count(), 1);
   await app.getByText("Choose whether to accept this implementation.", { exact: true }).waitFor();
   await app.getByText(noncanonicalStage, { exact: true }).waitFor();

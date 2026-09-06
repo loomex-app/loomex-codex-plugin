@@ -241,13 +241,25 @@
 
   function appendTextList(parent, label, values, excluded = new Set()) {
     const items = (safeTextList(values) || []).filter((item) => !excluded.has(normalizedCopy(item)));
-    if (!items.length) return;
+    if (!items.length) return 0;
     const section = element("section", { className: "ui-section" });
     section.append(element("h3", { className: "ui-label" }, label));
     const list = element("ul", { className: "ui-list" });
     for (const item of items) list.append(element("li", {}, item));
     section.append(list);
     parent.append(section);
+    return items.length;
+  }
+
+  function appendRequirementsContext(parent, presentation, excluded) {
+    const content = element("div", { className: "ui-stack" });
+    const count = appendTextList(content, "Requirements gathered", presentation.priorRequirements, excluded) +
+      appendTextList(content, "Decisions", presentation.decisions, excluded) +
+      appendTextList(content, "Open questions", presentation.openQuestions, excluded);
+    if (!count) return;
+    const details = element("details", { className: "ui-disclosure" });
+    details.append(element("summary", {}, `Requirements context (${count} ${count === 1 ? "item" : "items"})`), content);
+    parent.append(details);
   }
 
   function appendProgress(parent, stageLabel) {
@@ -284,9 +296,13 @@
     appendTextList(wrapper, "Checks", presentation.verification, questionTexts);
     appendTextList(wrapper, "Limitations", presentation.limitations, questionTexts);
     appendTextList(wrapper, "Artifacts", presentation.artifacts, questionTexts);
-    appendTextList(wrapper, "Requirements gathered", presentation.priorRequirements, questionTexts);
-    appendTextList(wrapper, "Decisions", presentation.decisions, questionTexts);
-    appendTextList(wrapper, "Open questions", presentation.openQuestions, questionTexts);
+    if (presentation.kind === "review") {
+      appendTextList(wrapper, "Requirements gathered", presentation.priorRequirements, questionTexts);
+      appendTextList(wrapper, "Decisions", presentation.decisions, questionTexts);
+      appendTextList(wrapper, "Open questions", presentation.openQuestions, questionTexts);
+    } else {
+      appendRequirementsContext(wrapper, presentation, questionTexts);
+    }
     context.className = "ui-stack";
     context.replaceChildren(wrapper);
     context.hidden = false;
@@ -1441,7 +1457,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.5" },
+    appInfo: { name: "loomex", version: "0.2.6" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));
