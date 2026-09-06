@@ -27,6 +27,9 @@ mkdir -p "$versions"
 [[ "$(cd "$versions" && pwd -P)" == "$versions" ]] || { echo "versions directory escaped the install base" >&2; exit 1; }
 install_root="$versions/$version"
 current="$base/current"
+marketplace_dir="$base/.agents/plugins"
+marketplace="$marketplace_dir/marketplace.json"
+ownership_receipt="$base/install-receipt.json"
 stage="$(mktemp -d "$base/.stage.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 verify=(extract --release "$release" --project loomex-plugin --platform darwin-arm64 --extract "$stage/payload")
@@ -41,14 +44,57 @@ if [[ "$development" == false ]]; then codesign --verify --deep --strict --verbo
 python3 "$repo/scripts/validate_package.py" "$stage/payload" --template --expected-version "$version"
 python3 "$repo/scripts/render_mcp.py" --payload-root "$stage/payload" --installed-root "$base/current" --output "$stage/payload/plugin/.mcp.json"
 python3 "$repo/scripts/validate_package.py" "$stage/payload" --expected-root "$base/current" --expected-version "$version"
+python3 "$repo/scripts/render_marketplace.py" --template "$stage/payload/.agents/plugins/marketplace.json" --expected-version "$version" --output "$stage/marketplace.json"
+
+for directory in "$base/.agents" "$marketplace_dir"; do
+  [[ ! -L "$directory" ]] || { echo "marketplace metadata directory may not be a symlink" >&2; exit 1; }
+done
+if [[ -e "$current" || -L "$current" ]]; then
+  [[ -L "$current" && -f "$marketplace" && ! -L "$marketplace" && -f "$ownership_receipt" && ! -L "$ownership_receipt" ]] || { echo "incomplete plugin ownership metadata" >&2; exit 1; }
+  python3 - "$base" "$versions" "$current" "$marketplace" "$ownership_receipt" <<'PY'
+import json,re,sys
+from pathlib import Path
+base,versions,current,marketplace,receipt=map(Path,sys.argv[1:])
+versions=versions.resolve(strict=True)
+raw=Path(current.readlink())
+if not raw.is_absolute(): raw=current.parent/raw
+if raw.is_symlink(): raise SystemExit('current target may not be a symlink')
+target=raw.resolve(strict=True)
+if target.parent!=versions or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',target.name): raise SystemExit('current target is not an installed version')
+owned=json.loads(receipt.read_text())
+expected={'schema':'app.loomex.plugin.install-receipt/v1','currentPath':str(current),'versionsPath':str(versions),'marketplacePath':str(marketplace)}
+if owned!=expected: raise SystemExit('unexpected plugin ownership receipt')
+catalog=json.loads(marketplace.read_text()); entries=catalog.get('plugins')
+plugin=json.loads((target/'plugin/.codex-plugin/plugin.json').read_text())
+if catalog.get('name')!='loomex-private' or not isinstance(entries,list) or len(entries)!=1 or entries[0].get('name')!='loomex' or entries[0].get('version')!=plugin.get('version') or entries[0].get('source')!={'source':'local','path':'./current/plugin'}: raise SystemExit('unexpected installed marketplace metadata')
+PY
+else
+  for path in "$marketplace" "$marketplace.new" "$ownership_receipt" "$ownership_receipt.new"; do
+    [[ ! -e "$path" && ! -L "$path" ]] || { echo "unowned marketplace metadata already exists: $path" >&2; exit 1; }
+  done
+fi
 if [[ -e "$install_root" ]]; then
   echo "version $version is already installed; refusing to overwrite signed files" >&2
   exit 1
 fi
+mkdir -p "$marketplace_dir"
+python3 - "$base" "$versions" "$current" "$marketplace" "$stage/install-receipt.json" <<'PY'
+import json,os,sys
+from pathlib import Path
+base,versions,current,marketplace,out=map(Path,sys.argv[1:])
+data={'schema':'app.loomex.plugin.install-receipt/v1','currentPath':str(current),'versionsPath':str(versions.resolve(strict=True)),'marketplacePath':str(marketplace)}
+with out.open('x') as handle:
+ json.dump(data,handle,sort_keys=True); handle.write('\n'); handle.flush(); os.fsync(handle.fileno())
+PY
 old=""; [[ -L "$current" ]] && old="$(readlink "$current")"
 mv "$stage/payload" "$install_root"
 ln -s "$install_root" "$base/.current.new"
 mv -fh "$base/.current.new" "$current"
+rm -f "$marketplace.new" "$ownership_receipt.new"
+cp "$stage/marketplace.json" "$marketplace.new"
+mv -f "$marketplace.new" "$marketplace"
+cp "$stage/install-receipt.json" "$ownership_receipt.new"
+mv -f "$ownership_receipt.new" "$ownership_receipt"
 if [[ -n "$old" && "$old" != "$install_root" ]]; then
   old="$(python3 - "$versions" "$current" "$old" <<'PY'
 import re,sys
@@ -68,5 +114,5 @@ fi
 trap - EXIT
 rm -rf "$stage"
 echo "Installed Loomex plugin $version at $install_root"
-echo "Private marketplace root: $base/current"
+echo "Private marketplace root: $base"
 echo "Register it with Codex, then install the loomex plugin from loomex-private."

@@ -26,7 +26,7 @@ jobs:
           ./scripts/build-release.sh --unsigned-development --output "$RUNNER_TEMP/release"
           ./scripts/install.sh "$RUNNER_TEMP/release" --allow-unsigned-development --install-base "$RUNNER_TEMP/loomex-plugin"
           version="$(node -p 'require("./package.json").version')"
-          codex plugin marketplace add "$RUNNER_TEMP/loomex-plugin/current" --json
+          codex plugin marketplace add "$RUNNER_TEMP/loomex-plugin" --json
           codex plugin add loomex@loomex-private --json
           codex plugin list | grep -F loomex
           codex plugin remove loomex
