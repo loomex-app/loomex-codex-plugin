@@ -1,11 +1,16 @@
 {
   "name": "loomex",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Build, review, run, and monitor Loomex workflows through the local Loomex runner.",
   "author": {
     "name": "Loomex"
   },
-  "keywords": ["workflows", "automation", "local-runner", "codex"],
+  "keywords": [
+    "workflows",
+    "automation",
+    "local-runner",
+    "codex"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -14,7 +19,11 @@
     "longDescription": "Discover, author, validate, publish, execute, and monitor Loomex workflows through an owner-checked local runner. Execution uses an explicitly reviewed workspace and host-user policy.",
     "developerName": "Loomex",
     "category": "Developer Tools",
-    "capabilities": ["Read", "Write", "Interactive"],
+    "capabilities": [
+      "Read",
+      "Write",
+      "Interactive"
+    ],
     "brandColor": "#6857F5",
     "composerIcon": "./assets/loomex-icon.svg",
     "logo": "./assets/loomex-logo.svg",

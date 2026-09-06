@@ -51,6 +51,7 @@ async function mountApp(
   data: Record<string, unknown>,
   failFirstMutation = false,
   resolveOnRead = false,
+  presentation: Record<string, unknown> | null = null,
 ) {
   const template = await readFile("assets/loomex-app.html", "utf8");
   const html = template.replace("__LOOMEX_MODE__", mode);
@@ -60,12 +61,16 @@ async function mountApp(
     body: '<iframe id="app" title="Loomex test app" style="display:block;width:100%;height:1200px;border:0"></iframe>',
   }));
   await page.goto(harnessUrl);
-  await page.evaluate(({ source, initialData, shouldFailFirst, shouldResolveOnRead }: any) => {
+  await page.evaluate(({ source, initialData, shouldFailFirst, shouldResolveOnRead, presentation }: any) => {
     const frame = document.getElementById("app");
     window.__loomexCalls = [];
     window.addEventListener("message", (event: any) => {
       if (event.source !== frame.contentWindow) return;
       const message = event.data;
+      if (message && message.method === "ui/notifications/size-changed") {
+        frame.style.height = `${message.params.height}px`;
+        return;
+      }
       if (!message || message.jsonrpc !== "2.0" || message.id === undefined) return;
       if (message.method === "ui/initialize") {
         event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {} }, "*");
@@ -102,7 +107,7 @@ async function mountApp(
       frame.contentWindow.postMessage({
         jsonrpc: "2.0",
         method: "ui/notifications/tool-result",
-        params: { structuredContent: { ok: true, data: initialData } },
+        params: { structuredContent: { ok: true, data: initialData }, _meta: { "loomex/preparationReview": presentation } },
       }, "*");
     }, { once: true });
     frame.srcdoc = source;
@@ -111,6 +116,7 @@ async function mountApp(
     initialData: data,
     shouldFailFirst: failFirstMutation,
     shouldResolveOnRead: resolveOnRead,
+    presentation,
   });
   try {
     await page.waitForFunction(() =>
@@ -447,10 +453,16 @@ test("no-JSON views retain readable reviews and reject unsupported forms", async
       versionId: "Version 3", workspacePath: "/Users/example/report", executionPolicy: "host_user/v1",
       inputs: { title: "Quarterly report", includeCharts: false, nested: { secret: "hidden-input" } }, providerConfiguration: { codex: { model: "chosen-model", credentials: { value: "hidden-provider" }, apiToken: "hidden-token" } } },
   };
-  let app = await mountApp(page, "prepare", prepared);
-  await app.getByText("Weekly report", { exact: true }).waitFor();
+  let app = await mountApp(page, "prepare", prepared, false, false, {
+    schemaVersion: "loomex/preparation-review/v1",
+    preparationId: prepared.preparationId, bindingDigest: prepared.bindingDigest,
+    workflowId: prepared.binding.workflowId, versionId: prepared.binding.versionId,
+    organizationId: prepared.binding.organizationId, workflowName: "Weekly report",
+    workflowVersion: 3, organizationName: "Organization A", providers: [{ name: "codex", model: "chosen-model" }],
+  });
+  await app.getByRole("heading", { name: "Weekly report", exact: true }).waitFor();
   await app.getByText("Quarterly report", { exact: true }).waitFor();
-  await app.getByText("chosen-model", { exact: true }).waitFor();
+  await app.locator(".provider-row").getByText("chosen-model", { exact: true }).waitFor();
   assert.match(await app.locator("#context").innerText(), /no sandbox guarantee/);
   assert.doesNotMatch(await app.locator("body").innerText(), /never-display-this|bindingDigest|Technical details|hidden-input|hidden-provider|hidden-token/);
   assert.equal(await app.locator("#primary").isDisabled(), false);
@@ -464,4 +476,71 @@ test("no-JSON views retain readable reviews and reject unsupported forms", async
   await app.getByText("This report will be available to your team.", { exact: true }).waitFor();
   app = await mountApp(page, "monitor", { execution: { id: "run-1", status: "running" } });
   await app.getByText("running", { exact: true }).waitFor();
+});
+
+test("prepared run uses bound names, hides UUIDs by default, and preserves exact commit after status check", async (t) => {
+  const available = await browserTools();
+  if (!available) { assert.fail("Chromium required for preparation UI gate"); }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 1150 } });
+  const prepared = {
+    preparationId: "5aae202b-f5d0-44fc-9dc2-3f50457932eb", bindingDigest: "exact-prepared-digest", confirmationKey: "private-confirmation",
+    binding: {
+      workflowId: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e", versionId: "8b29c880-1c68-4d47-a1ff-477ab28d3c49",
+      organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", installationId: "62e9d3fa-097b-46fb-9f87-34b4d8c1b40b",
+      workspacePath: "/Users/alireza/Projects/new-idea", inputs: {}, executionPolicy: "host_user/v1",
+      providerConfiguration: { requested: {}, installed: { codex: { path: "/opt/codex", checksumSha256: "internal-checksum", sizeBytes: 100 } } },
+    },
+  };
+  const presentation = {
+    schemaVersion: "loomex/preparation-review/v1", preparationId: prepared.preparationId, bindingDigest: prepared.bindingDigest,
+    workflowId: prepared.binding.workflowId, versionId: prepared.binding.versionId, organizationId: prepared.binding.organizationId,
+    workflowName: "Idea to Implementation", workflowVersion: 1, organizationName: "Loomex Studio",
+    providers: [{ name: "codex", model: "gpt-5.6-sol" }],
+  };
+  let app = await mountApp(page, "prepare", prepared, false, false, presentation);
+  await app.getByRole("heading", { name: "Idea to Implementation" }).waitFor();
+  await app.getByText("Version 1", { exact: true }).waitFor();
+  await app.getByText("Loomex Studio", { exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Start run", exact: true }).isEnabled(), true);
+  const visible = await app.locator("body").innerText();
+  for (const id of [prepared.binding.workflowId, prepared.binding.versionId, prepared.binding.organizationId, prepared.binding.installationId]) assert.ok(!visible.includes(id));
+  assert.doesNotMatch(visible, /private-confirmation|internal-checksum|sizeBytes|host_user/);
+  const screenshotDir = process.env.LOOMEX_PREPARE_SCREENSHOT_DIR;
+  if (screenshotDir) {
+    await mkdir(screenshotDir, { recursive: true });
+    for (const [name, width, theme] of [["light", 760, "light"], ["dark", 760, "dark"], ["mobile", 390, "light"]] as const) {
+      await page.setViewportSize({ width, height: 1150 });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.locator("#app").evaluate((frame: any) => { frame.style.height = `${frame.contentDocument.documentElement.scrollHeight}px`; });
+      await page.locator("#app").screenshot({ path: resolve(screenshotDir, `prepare-${name}.png`) });
+      assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
+    }
+  }
+  await app.getByRole("button", { name: "Check runner", exact: true }).click();
+  await waitForCallCount(page, 1);
+  await app.getByText("Runner status checked. Your prepared operation is unchanged.", { exact: true }).waitFor();
+  await app.getByRole("heading", { name: "Idea to Implementation" }).waitFor();
+  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await waitForCallCount(page, 2);
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.equal(calls[1].name, "loomex_run_commit");
+  assert.deepEqual(Object.keys(calls[1].arguments).sort(), ["preparationId", "bindingDigest", "confirmationKey", "idempotencyKey"].sort());
+  assert.equal(calls[1].arguments.preparationId, prepared.preparationId);
+  assert.equal(calls[1].arguments.bindingDigest, prepared.bindingDigest);
+  assert.equal(calls[1].arguments.confirmationKey, prepared.confirmationKey);
+  for (const invalid of [null,
+    { ...presentation, organizationId: "other-org", workflowName: "Wrong workflow" },
+    { ...presentation, workflowName: "" }, { ...presentation, workflowVersion: 0 },
+    { ...presentation, organizationName: null }, { ...presentation, providers: [{ name: "codex", model: 12 }] },
+  ]) {
+    app = await mountApp(page, "prepare", prepared, false, false, invalid);
+    await app.getByRole("heading", { name: "Prepared workflow", exact: true }).waitFor();
+    assert.doesNotMatch(await app.locator("body").innerText(), /Wrong workflow|Loomex Studio|Version 1/);
+    assert.equal(await app.locator("#primary").isDisabled(), true);
+    await app.locator("#primary").evaluate((button: any) => button.dispatchEvent(new Event("click")));
+    await app.locator('#summary[role="alert"]').waitFor();
+    assert.equal(await page.evaluate(() => window.__loomexCalls.length), 0);
+  }
 });

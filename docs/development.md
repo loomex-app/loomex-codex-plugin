@@ -75,7 +75,7 @@ npm test
 The test suite currently checks:
 
 - exact contract hashes and catalog/schema coverage;
-- unique focused 0.2.1 tool discovery and strict schemas;
+- unique focused 0.2.2 tool discovery and strict schemas;
 - same-connection capability negotiation before each owner-checked local action;
 - rejection of unknown inputs and secret-source definitions before RPC;
 - exactly one classified read transport retry and no automatic replay after an ambiguous mutation;
@@ -100,3 +100,11 @@ Do not put `.env` files, keys, credentials, logs, caches, source-control metadat
 ## Decision and release references
 
 Use the [clean-slate baseline](../../planning/plugin-runner-clean-slate/README.md), [runtime contract](../../planning/plugin-runner-clean-slate/runtime-contract.md), [requirements matrix](../../planning/plugin-runner-clean-slate/requirements-capability-acceptance.md), and [superseded decision index](../../planning/plugin-runner-clean-slate/superseded-decisions-index.md) when behavior changes. The [release gate list](../../planning/plugin-runner-clean-slate/release-gates.md) records verification that still needs real environments. A passing local test run must not be reported as satisfying those gates.
+
+### Prepared execution presentation
+
+The prepare view leads with verified workflow/organization names and the exact version number, workspace, AI provider/model, startup inputs and macOS execution authority. Internal identifiers and provider installation fingerprints are available in a collapsed reference section. Startup provider overrides remain visible. No raw JSON is shown.
+
+Successful preparation tools may attach `loomex/preparationReview` in MCP result `_meta`. Workflow and organization names use bounded read-only lookups; provider/model labels come only from the prepared root and referenced-workflow model-resolution snapshots. This display-only projection is resolved and is matched by schema version, preparation ID, binding digest, workflow/version IDs and organization ID before use. A failed or mismatched name lookup must never invent a label, modify the binding, or turn a successful preparation into a failed mutation. The UI disables Start until a complete, valid, matching name projection is available, and directs unresolved reviews to the conversation. Commit arguments remain the original preparation ID, digest, confirmation key and idempotency UUID.
+
+The prepare view's runner check is a read-only status check that retains preparation state. Content resize notifications use the standard [MCP Apps size-changed notification](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx) so hosts can fit the view as cards wrap or references expand. Browser tests cover mobile/light/dark layouts, hidden references, name binding, and unchanged commit arguments after a status check.

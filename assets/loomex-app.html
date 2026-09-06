@@ -61,6 +61,45 @@
     .rating-choice span { display: grid; place-items: center; min-width: 40px; min-height: 40px; border: 1px solid var(--line); border-radius: 9px; background: Canvas; cursor: pointer; font-weight: 700; }
     .rating-choice input:checked + span { color: white; border-color: var(--accent); background: var(--accent); }
     .rating-choice input:focus-visible + span { outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent); outline-offset: 2px; }
+    body[data-mode="prepare"] { --accent: #18765e; --accent-soft: color-mix(in srgb, var(--accent) 8%, Canvas); }
+    body[data-mode="prepare"] main { padding: 24px; gap: 18px; max-width: 720px; }
+    body[data-mode="prepare"] h1 { font-size: 13px; font-weight: 650; color: var(--muted); }
+    body[data-mode="prepare"] #connection { font-size: 11px; }
+    body[data-mode="prepare"] #summary { padding: 0; border: 0; background: transparent; font-size: 13px; color: var(--muted); }
+    body[data-mode="prepare"] #summary.error { color: var(--danger); }
+    .prepare-review { display: grid; gap: 18px; }
+    .prepare-hero { display: grid; gap: 10px; padding-bottom: 2px; }
+    .prepare-hero h2 { margin: 0; font-size: 27px; line-height: 1.2; font-weight: 700; letter-spacing: -.035em; overflow-wrap: anywhere; }
+    .prepare-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+    .version-badge { border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; font-size: 11px; font-weight: 650; }
+    .prepare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .prepare-card { min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; align-content: start; gap: 8px; }
+    .prepare-label { margin: 0; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .045em; text-transform: uppercase; }
+    .prepare-value { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+    .workspace-path { margin: 0; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow-wrap: anywhere; }
+    .provider-row { display: grid; gap: 2px; }
+    .prepare-caption { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+    .prepare-inputs { border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 10px; }
+    .prepare-inputs .review-list { gap: 4px; font-size: 13px; }
+    .prepare-inputs .review-list dt { font-weight: 550; }
+    .execution-access { display: grid; gap: 5px; padding: 14px 16px; background: var(--surface); border-radius: 10px; }
+    .execution-access h3 { margin: 0; font-size: 12px; font-weight: 650; }
+    .execution-access p { margin: 0; font-size: 12px; color: var(--muted); }
+    .execution-references { color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); padding-top: 12px; }
+    .execution-references summary { cursor: pointer; width: fit-content; padding: 4px 0; }
+    .execution-references summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+    .execution-references dl { padding-top: 10px; font-size: 11px; }
+    .execution-references dd { overflow-wrap: anywhere; }
+    body[data-mode="prepare"] .actions { justify-content: flex-end; border-top: 1px solid var(--line); padding-top: 16px; gap: 10px; }
+    body[data-mode="prepare"] .actions button { min-height: 42px; padding: 9px 18px; border-radius: 9px; }
+    body[data-mode="prepare"] #refresh { border-color: transparent; font-weight: 550; color: var(--muted); }
+    @media (prefers-color-scheme: dark) { body[data-mode="prepare"] { --accent: #237e66; } }
+    @media (max-width: 520px) {
+      body[data-mode="prepare"] main { padding: 16px; }
+      .prepare-hero h2 { font-size: 24px; }
+      .prepare-grid { grid-template-columns: 1fr; }
+      body[data-mode="prepare"] #primary { grid-row: 1; }
+    }
     [aria-invalid="true"] { border-color: var(--danger) !important; }
     [hidden] { display: none !important; }
     @media (max-width: 520px) {
@@ -110,10 +149,11 @@
   let latestToolName = "";
   let renderCount = 0;
   let lastRenderFailed = false;
+  let preparationPresentation = null;
 
   const labels = {
     authoring: "Workflow authoring review",
-    prepare: "Prepared run review",
+    prepare: "Run workflow",
     monitor: "Run monitor",
     interaction: "Human interaction"
   };
@@ -169,9 +209,94 @@
     context.hidden = !list.childElementCount;
   }
 
+  function validPresentation(presentation) {
+    const readable = (value) => typeof value === "string" && value.trim().length > 0;
+    return presentation && readable(presentation.workflowName) && readable(presentation.organizationName) &&
+      Number.isSafeInteger(presentation.workflowVersion) && presentation.workflowVersion > 0 &&
+      (presentation.providers === null || (Array.isArray(presentation.providers) && presentation.providers.every((provider) =>
+        provider && readable(provider.name) && (provider.model === null || readable(provider.model)))));
+  }
+
+  function presentationMatches(presentation, output) {
+    const binding = output.binding || {};
+    return validPresentation(presentation) && presentation.schemaVersion === "loomex/preparation-review/v1" && presentation.preparationId === output.preparationId &&
+      presentation.bindingDigest === output.bindingDigest &&
+      ["workflowId", "versionId", "organizationId"].every((key) => presentation[key] === binding[key]);
+  }
+
+  function preparationView(output) {
+    const binding = output.binding || {};
+    const info = presentationMatches(preparationPresentation, output) ? preparationPresentation : {};
+    const review = element("div", { className: "prepare-review" });
+    const hero = element("div", { className: "prepare-hero" });
+    hero.append(element("h2", {}, info.workflowName || "Prepared workflow"));
+    const meta = element("div", { className: "prepare-meta" });
+    meta.append(element("span", { className: "version-badge" }, Number.isSafeInteger(info.workflowVersion) ? `Version ${info.workflowVersion}` : "Pinned version"));
+    meta.append(element("span", {}, info.organizationName || "Organization name unavailable"));
+    hero.append(meta);
+    review.append(hero);
+    const grid = element("div", { className: "prepare-grid" });
+    const workspace = element("section", { className: "prepare-card", "aria-label": "Workspace" });
+    workspace.append(element("h3", { className: "prepare-label" }, "Workspace"));
+    const path = typeof binding.workspacePath === "string" ? binding.workspacePath : "";
+    workspace.append(element("p", { className: "prepare-value" }, path.split("/").filter(Boolean).at(-1) || "Workspace unavailable"));
+    workspace.append(element("p", { className: "workspace-path" }, path));
+    workspace.append(element("p", { className: "prepare-caption" }, "Local Loomex runner · This machine"));
+    grid.append(workspace);
+    const providers = element("section", { className: "prepare-card", "aria-label": "AI providers" });
+    providers.append(element("h3", { className: "prepare-label" }, "AI providers"));
+    const configured = Array.isArray(info.providers) ? info.providers : [];
+    const providerNames = { codex: "Codex", claude: "Claude", gemini: "Gemini" };
+    if (configured.length) {
+      for (const provider of configured) {
+        const row = element("div", { className: "provider-row" });
+        row.append(element("p", { className: "prepare-value" }, providerNames[provider.name] || provider.name));
+        row.append(element("p", { className: "prepare-caption" }, provider.model || "Model selected by workflow"));
+        providers.append(row);
+      }
+    } else if (Array.isArray(info.providers)) {
+      providers.append(element("p", { className: "prepare-value" }, "No AI steps"));
+      providers.append(element("p", { className: "prepare-caption" }, "This workflow does not select an AI provider."));
+    } else {
+      providers.append(element("p", { className: "prepare-value" }, "Workflow configuration"));
+      providers.append(element("p", { className: "prepare-caption" }, "Provider details for this workflow or its referenced workflows are unavailable. Review the workflow configuration in the conversation."));
+    }
+    const overrides = binding.providerConfiguration && binding.providerConfiguration.requested;
+    if (overrides && Object.keys(overrides).length) {
+      const overrideSection = element("div", { className: "prepare-inputs" });
+      overrideSection.append(element("h4", { className: "prepare-label" }, "Run overrides"), reviewValue(overrides));
+      providers.append(overrideSection);
+    }
+    grid.append(providers);
+    review.append(grid);
+    const inputs = element("section", { className: "prepare-inputs", "aria-label": "Run inputs" });
+    inputs.append(element("h3", { className: "prepare-label" }, "Run inputs"));
+    if (binding.inputs && Object.keys(binding.inputs).length) inputs.append(reviewValue(binding.inputs));
+    else inputs.append(element("p", { className: "prepare-caption" }, "No startup inputs required."));
+    review.append(inputs);
+    if (binding.authoring && Object.keys(binding.authoring).length) {
+      const authoring = element("section", { className: "prepare-inputs", "aria-label": "Authoring request" });
+      authoring.append(element("h3", { className: "prepare-label" }, "Authoring request"), reviewValue(binding.authoring));
+      review.append(authoring);
+    }
+    const access = element("section", { className: "execution-access" });
+    access.append(element("h3", {}, "Runs with your Mac’s permissions"));
+    access.append(element("p", {}, "Can read and change files and run commands as your macOS user. The workspace is the starting location, with no sandbox guarantee."));
+    access.append(element("p", {}, "No product time, output, or concurrency limits. You can request cancellation while it runs."));
+    review.append(access);
+    const references = element("details", { className: "execution-references" });
+    references.append(element("summary", {}, "Execution references and configuration"));
+    // Keep exact references available for disambiguation without dominating the review.
+    references.append(reviewValue({ Workflow: binding.workflowId, Version: binding.versionId, Organization: binding.organizationId,
+      Installation: binding.installationId, "Provider configuration": binding.providerConfiguration }));
+    review.append(references);
+    context.replaceChildren(review);
+    context.hidden = false;
+  }
+
   function preparationReviewable(output) {
     const binding = output.binding;
-    return binding && ["organizationId", "installationId", "workflowId", "versionId", "workspacePath"]
+    return presentationMatches(preparationPresentation, output) && binding && ["organizationId", "installationId", "workflowId", "versionId", "workspacePath"]
       .every((key) => typeof binding[key] === "string" && binding[key].length) &&
       binding.executionPolicy === "host_user/v1" &&
       binding.inputs && typeof binding.inputs === "object" &&
@@ -671,7 +796,12 @@
     const failed = Boolean(result && result.isError);
     lastRenderFailed = failed;
     const incoming = dataOf(result);
-    if (!failed) latest = incoming;
+    if (!failed) {
+      latest = incoming;
+      const supplied = result && result._meta && result._meta["loomex/preparationReview"];
+      if (supplied !== undefined) preparationPresentation = presentationMatches(supplied, incoming || {}) ? supplied : null;
+      else if (!presentationMatches(preparationPresentation, incoming || {})) preparationPresentation = null;
+    }
     const output = latest || {};
     summary.classList.toggle("error", failed);
     summary.setAttribute("role", failed ? "alert" : "status");
@@ -696,17 +826,11 @@
     context.hidden = true;
 
     if (mode === "prepare") {
-      if (!failed) summary.textContent = "Review the exact operation, canonical workspace, organization, provider configuration, and host_user/v1 authority before starting.";
-      const binding = output.binding || {};
-      reviewFields([
-        ["Workflow", binding.workflowId], ["Version", binding.versionId],
-        ["Organization", binding.organizationId], ["Installation", binding.installationId],
-        ["Workspace", binding.workspacePath], ["Inputs", binding.inputs],
-        ["Providers", binding.providerConfiguration], ["Authoring", binding.authoring],
-        ["Execution authority", binding.executionPolicy === "host_user/v1" ? "Runs as your macOS user in the selected workspace, with host access and no sandbox guarantee." : binding.executionPolicy],
-      ]);
-      if (!preparationReviewable(output)) summary.textContent = "The complete execution details are unavailable here. Continue in the conversation to review and prepare this operation.";
-      primary.textContent = "Start this exact prepared operation";
+      if (!failed) summary.textContent = "Review the details below before starting.";
+      preparationView(output);
+      if (!preparationReviewable(output)) summary.textContent = "The execution details could not be verified here. Continue in the conversation to review this preparation before starting.";
+      primary.textContent = preparedCommitTool() === "loomex_run_commit" ? "Start run" : "Start authoring";
+      refresh.textContent = "Check runner";
       primary.hidden = false;
       primary.disabled = !connected || !preparationReviewable(output) || !findId(output, "preparationId") || !findId(output, "bindingDigest") || !findId(output, "confirmationKey");
     } else if (mode === "monitor") {
@@ -896,6 +1020,16 @@
   refresh.addEventListener("click", () => withPending(refresh, async () => {
     try {
       const data = latest || {};
+      if (mode === "prepare") {
+        const readiness = await callTool("loomex_readiness", {}, false);
+        if (readiness && readiness.isError) setError(new Error("The runner could not be reached. Check its status in the conversation."));
+        else {
+          summary.classList.remove("error");
+          summary.setAttribute("role", "status");
+          summary.textContent = "Runner status checked. Your prepared operation is unchanged.";
+        }
+        return;
+      }
       let toolName;
       let args;
       if (mode === "monitor" && executionId(data)) {
@@ -1005,7 +1139,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.1" },
+    appInfo: { name: "loomex", version: "0.2.2" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));
@@ -1015,6 +1149,20 @@
     refresh.disabled = false;
     send("ui/notifications/initialized", {}, false);
     if (latest) render(latest);
+    if (mode === "prepare" && typeof ResizeObserver === "function") {
+      let lastSize = "";
+      const reportSize = () => {
+        const box = document.querySelector("main").getBoundingClientRect();
+        const size = { width: Math.ceil(document.documentElement.clientWidth), height: Math.ceil(box.height) };
+        const key = `${size.width}:${size.height}`;
+        if (key !== lastSize) {
+          lastSize = key;
+          send("ui/notifications/size-changed", size, false);
+        }
+      };
+      new ResizeObserver(reportSize).observe(document.querySelector("main"));
+      reportSize();
+    }
   }).catch((error) => {
     connected = false;
     connection.textContent = "Headless tools remain available";

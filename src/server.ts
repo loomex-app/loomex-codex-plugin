@@ -1,6 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { LocalControlClient, toolErrorOutput } from "./local-control.js";
+import {
+  buildPreparationReview,
+  preparationReviewBinding,
+  type PreparationReviewClient,
+} from "./preparation-review.js";
 import { ToolOutputSchema, type JsonValue, type ToolOutput } from "./protocol.js";
 import { resultSchemaFor } from "./result-schemas.js";
 import { TOOL_DEFINITIONS, type ToolDefinition } from "./tool-catalog.js";
@@ -54,9 +59,9 @@ function timeoutFor(definition: ToolDefinition, params: Record<string, JsonValue
   return 30_000;
 }
 
-export function createServer(client = new LocalControlClient()): McpServer {
+export function createServer(client: PreparationReviewClient = new LocalControlClient()): McpServer {
   const server = new McpServer(
-    { name: "loomex", version: "0.2.1" },
+    { name: "loomex", version: "0.2.2" },
     {
       capabilities: { tools: {}, resources: {} },
       instructions:
@@ -108,9 +113,19 @@ export function createServer(client = new LocalControlClient()): McpServer {
             signal: extra.signal,
             timeoutMs: timeoutFor(definition, params),
           });
+          const reviewBinding = preparationReviewBinding(definition.rpcMethod, output);
+          const preparationReview =
+            reviewBinding === undefined
+              ? undefined
+              : await buildPreparationReview(client, reviewBinding, extra.signal).catch(
+                  () => undefined,
+                );
           return {
             structuredContent: output,
             content: [{ type: "text", text: contentFor(output) }],
+            ...(preparationReview === undefined
+              ? {}
+              : { _meta: { "loomex/preparationReview": preparationReview } }),
           };
         } catch (error) {
           const output = toolErrorOutput(definition.rpcMethod, error);
