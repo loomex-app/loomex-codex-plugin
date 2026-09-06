@@ -274,7 +274,8 @@
     if (!presentation) return false;
     const wrapper = element("div", { className: "ui-stack" });
     const hero = element("div", { className: "ui-hero" });
-    hero.append(element("h2", {}, presentation.kind === "review" ? "Implementation review" : "Requirements progress"));
+    const heading = safeText(request && request.title) || (presentation.kind === "review" ? "Implementation review" : "Requirements progress");
+    hero.append(element("h2", {}, heading));
     appendProgress(hero, presentation.stageLabel);
     if (safeText(presentation.summary)) hero.append(element("p", { className: "ui-caption" }, safeText(presentation.summary)));
     wrapper.append(hero);
@@ -654,11 +655,17 @@
   }
 
   function appendRequestCopy(request, spec) {
+    const presentation = humanPresentation(request);
     const questionCopies = new Set(questionCopyValues(spec).map(normalizedCopy));
     const candidateHeading = typeof request.title === "string" ? request.title.trim() : "";
-    const heading = questionCopies.has(normalizedCopy(candidateHeading)) ? "" : candidateHeading;
+    const heading = presentation || questionCopies.has(normalizedCopy(candidateHeading)) ? "" : candidateHeading;
     const descriptions = [];
     const seen = new Set([normalizedCopy(heading), ...questionCopies]);
+    if (presentation) {
+      seen.add(normalizedCopy(safeText(request.title)));
+      seen.add(normalizedCopy(presentation.question));
+      seen.add(normalizedCopy(presentation.summary));
+    }
     for (const value of [request.description, request.prompt]) {
       if (typeof value !== "string" || !value.trim()) continue;
       const copy = value.trim();
@@ -1434,7 +1441,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.4" },
+    appInfo: { name: "loomex", version: "0.2.5" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

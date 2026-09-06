@@ -30,7 +30,7 @@ The shell is 720px wide with 24px padding; narrow screens use 16px padding and s
 
 Keyboard focus has a shared visible ring. Selected choices and ratings use the primary palette. Invalid controls and inline errors use the danger token. Locked answers retain their content and show a disabled state. Mobile visual order follows DOM/keyboard order. Every view sends the standard MCP Apps content-size notification after initialization and whenever the content size changes.
 
-Single-question screens rely on the fieldset legend as the accessible question label. Exact copies of that question are removed from the title, description and prompt, repeated title/description/prompt copy is collapsed even without an input specification, and the question count appears only for batches. Normal question and authoring actions use `Continue`; the read-only action uses `Refresh`. Versioned implementation reviews keep their boolean response unchanged while labeling its choices `Accept` and `Request changes`.
+Single-question screens rely on the fieldset legend as the accessible question label. Presentational screens use the authored request title as their single section heading, with the presentation-kind label only as a fallback. The form suppresses that repeated title and keeps distinct supporting description or prompt copy while removing copies of the question and presentation summary. Repeated title/description/prompt copy is also collapsed without an input specification, and the question count appears only for batches. Normal question and authoring actions use `Continue`; the read-only action uses `Refresh`. Versioned implementation reviews keep their boolean response unchanged while labeling its choices `Accept` and `Request changes`.
 
 ## Presentation contracts
 

@@ -482,7 +482,7 @@ test("single questions remove repeated copy and safe presentations add progress 
     humanRequest: {
       id: "27acbb74-e5ee-4896-b4b1-86ed6b048fe0",
       type: "manual_input",
-      title: "Tell us about your idea",
+      title: "Describe Your Idea",
       description: question,
       prompt: "A sentence or two is enough to begin.",
       context: { previousOutputs: { privateTransportData: "must-not-render" } },
@@ -504,7 +504,8 @@ test("single questions remove repeated copy and safe presentations add progress 
   assert.equal(await app.locator(".request-copy").getByText(question, { exact: true }).count(), 0);
   assert.equal(await app.getByText(/1 question/).count(), 0);
   await app.getByText("A sentence or two is enough to begin.", { exact: true }).waitFor();
-  await app.getByRole("heading", { name: "Requirements progress", exact: true }).waitFor();
+  await app.getByRole("heading", { name: "Describe Your Idea", exact: true }).waitFor();
+  assert.equal(await app.locator("h2").count(), 1);
   await app.locator('[aria-current="step"]').getByText("Clarify", { exact: true }).waitFor();
   await app.getByText("Use the existing Loomex workspace.", { exact: true }).waitFor();
   await app.getByText("Which output should be easiest to review?", { exact: true }).waitFor();
@@ -519,6 +520,9 @@ test("single questions remove repeated copy and safe presentations add progress 
     humanRequest: {
       id: "39f69fd1-e9ca-4700-8c31-0fa7fc009517",
       type: "manual_input",
+      title: "Review Implementation",
+      description: "The requested dashboard is ready for review.",
+      prompt: "Choose whether to accept this implementation.",
       context: { previousOutputs: { implementation: "raw-output-must-not-render" } },
       presentation: {
         version: 1,
@@ -535,7 +539,10 @@ test("single questions remove repeated copy and safe presentations add progress 
       responseSchema: { type: "object", properties: { value: { type: "boolean" } }, required: ["value"] },
     },
   });
-  await app.getByRole("heading", { name: "Implementation review", exact: true }).waitFor();
+  await app.getByRole("heading", { name: "Review Implementation", exact: true }).waitFor();
+  assert.equal(await app.locator("h2").count(), 1);
+  assert.equal(await app.getByText("The requested dashboard is ready for review.", { exact: true }).count(), 1);
+  await app.getByText("Choose whether to accept this implementation.", { exact: true }).waitFor();
   await app.getByText(noncanonicalStage, { exact: true }).waitFor();
   assert.equal(await app.locator('[aria-current="step"]').count(), 0);
   assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);

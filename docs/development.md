@@ -75,7 +75,7 @@ npm test
 The test suite currently checks:
 
 - exact contract hashes and catalog/schema coverage;
-- unique focused 0.2.4 tool discovery and strict schemas;
+- unique focused 0.2.5 tool discovery and strict schemas;
 - same-connection capability negotiation before each owner-checked local action;
 - rejection of unknown inputs and secret-source definitions before RPC;
 - exactly one classified read transport retry and no automatic replay after an ambiguous mutation;
