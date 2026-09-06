@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { JsonValueSchema, type JsonValue } from "./protocol.js";
+import {
+  JsonValueSchema,
+  VALIDATION_ERRORS_CAPABILITY,
+  type JsonValue,
+} from "./protocol.js";
 
 export const AUTHORING_UI_URI = "ui://loomex/authoring-0.2.4.html";
 export const PREPARE_UI_URI = "ui://loomex/prepare-0.2.4.html";
@@ -669,6 +673,7 @@ const SEMANTIC_CAPABILITIES = [
   "authorization.prepare-commit/v1",
   "auth.device-v2/v1",
   "transfer.chunked/v1",
+  VALIDATION_ERRORS_CAPABILITY,
 ] as const;
 
 export const REQUIRED_RUNNER_CAPABILITIES = Object.freeze([

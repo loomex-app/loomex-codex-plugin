@@ -20,6 +20,7 @@ import {
   MAX_FRAME_BYTES,
   NegotiationParamsSchema,
   NegotiationResultSchema,
+  VALIDATION_ERRORS_CAPABILITY,
 } from "../src/protocol.js";
 import { FakeRunner } from "./fake-runner.js";
 
@@ -78,6 +79,40 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
     const bytes = await readFile(join("contracts", file));
     assert.equal(createHash("sha256").update(bytes).digest("hex"), expected);
   }
+
+  const localContract = JSON.parse(
+    await readFile("contracts/local-control.schema.json", "utf8"),
+  ) as {
+    $defs: {
+      validationIssue: {
+        properties: Record<string, unknown>;
+        allOf: Array<{
+          oneOf: Array<{
+            properties: Record<string, { const?: unknown }>;
+          }>;
+        }>;
+      };
+    };
+  };
+  const validationIssue = localContract.$defs.validationIssue;
+  const validationAlternatives = validationIssue.allOf[0]?.oneOf ?? [];
+  assert.equal(validationAlternatives.length, 10);
+  assert.equal(new Set(validationAlternatives.map((item) => item.properties.code?.const)).size, 10);
+  assert.equal(
+    validationAlternatives.every(
+      (item) =>
+        typeof item.properties.code?.const === "string" &&
+        typeof item.properties.message?.const === "string" &&
+        typeof item.properties.nextAction?.const === "string",
+    ),
+    true,
+  );
+  assert.deepEqual(Object.keys(validationIssue.properties).sort(), [
+    "code",
+    "message",
+    "nextAction",
+    "nodeIndex",
+  ]);
 
   const catalog = JSON.parse(await readFile("contracts/method-catalog.json", "utf8")) as {
     capabilities: string[];
@@ -316,6 +351,31 @@ test("missing negotiated capabilities deny a mutation before its action frame", 
     arguments: {
       name: "Must not be created",
       idempotencyKey: "33937720-ea1a-4c06-adcc-095bb3693f5f",
+    },
+  });
+  const structured = result.structuredContent as Record<string, unknown>;
+  assert.equal(result.isError, true);
+  assert.equal((structured.error as Record<string, unknown>).code, "COMPATIBILITY_ERROR");
+  assert.equal(runner.negotiations.length, 1);
+  assert.equal(runner.requests.length, 0);
+});
+
+test("a runner without actionable validation errors is rejected before mutation send", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner(
+    (request, socket) => runner.respond(socket, request, {}),
+    {
+      capabilities: REQUIRED_RUNNER_CAPABILITIES.filter(
+        (capability) => capability !== VALIDATION_ERRORS_CAPABILITY,
+      ),
+    },
+  );
+  const client = await connect(runner);
+  const result = await client.callTool({
+    name: "loomex_workflow_create",
+    arguments: {
+      name: "Must not be created",
+      idempotencyKey: "33937720-ea6d-439c-8335-93efb4e4ce42",
     },
   });
   const structured = result.structuredContent as Record<string, unknown>;
@@ -578,7 +638,6 @@ test("runner error messages are replaced with safe credential-free text", async 
 });
 
 test("safe run validation issues remain actionable across local control", async () => {
-  const nodeId = "11111111-1111-4111-8111-111111111111";
   const runner = new FakeRunner((request, socket) => {
     runner.error(
       socket,
@@ -594,8 +653,7 @@ test("safe run validation issues remain actionable across local control", async 
             message:
               "The selected provider does not support a required workflow capability.",
             nextAction: "choose_supported_provider",
-            nodeId,
-            nodeName: "Draft response",
+            nodeIndex: 2,
           },
         ],
       },
@@ -618,8 +676,7 @@ test("safe run validation issues remain actionable across local control", async 
       code: "RUN_VALIDATION_PROVIDER_UNSUPPORTED",
       message: "The selected provider does not support a required workflow capability.",
       nextAction: "choose_supported_provider",
-      nodeId,
-      nodeName: "Draft response",
+      nodeIndex: 2,
     },
   ]);
   assert.doesNotMatch(JSON.stringify(result), /backend-message-must-not-cross/);
@@ -640,6 +697,8 @@ test("untrusted validation details fail closed without leaking runner values", a
             code: "RUN_VALIDATION_PROVIDER_UNSUPPORTED",
             message: "Bearer nested-secret",
             nextAction: "send_token_elsewhere",
+            nodeIndex: 2,
+            nodeId: "11111111-1111-4111-8111-111111111111",
             nodeName: "Token secret-node-name",
           },
         ],

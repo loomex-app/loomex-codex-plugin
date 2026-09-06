@@ -26,16 +26,7 @@ export const RpcErrorCodeSchema = z.string().min(1).max(120);
 
 export type RpcErrorCode = z.infer<typeof RpcErrorCodeSchema>;
 export const VALIDATION_ISSUE_VERSION = "v1" as const;
-
-const SafeNodeNameSchema = z
-  .string()
-  .min(1)
-  .max(80)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9 _.-]*$/)
-  .refine(
-    (name) =>
-      !/(bearer|token|secret|password|api[ _]key|credential|private[ _]key)/i.test(name),
-  );
+export const VALIDATION_ERRORS_CAPABILITY = "error.validation-issues/v1" as const;
 
 function validationIssueSchema(
   code: string,
@@ -47,8 +38,7 @@ function validationIssueSchema(
       code: z.literal(code),
       message: z.literal(message),
       nextAction: z.literal(nextAction),
-      nodeId: z.uuid().optional(),
-      nodeName: SafeNodeNameSchema.optional(),
+      nodeIndex: z.number().int().min(1).max(1_000_000).optional(),
     })
     .strict();
 }

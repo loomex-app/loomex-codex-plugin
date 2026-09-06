@@ -46,7 +46,7 @@
     .ui-hero h2, .request-copy h2 { margin: 0; font-size: var(--font-title); line-height: 1.2; font-weight: 700; letter-spacing: -.035em; overflow-wrap: anywhere; }
     .request-copy p { margin: 0; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
     .ui-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--font-small); }
-    .ui-badge { border: 1px solid var(--line); border-radius: var(--radius-small); padding: 2px 7px; font-size: 11px; font-weight: 650; }
+    .ui-badge { max-width: 100%; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: var(--radius-small); padding: 2px 7px; font-size: 11px; font-weight: 650; }
     .ui-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
     .ui-card, fieldset { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: var(--radius-card); padding: var(--card-padding); background: var(--card-background); }
     .ui-card { display: grid; align-content: start; gap: var(--space-2); }
@@ -154,7 +154,7 @@
   let latestMethod = "";
   let latestToolName = "";
   let renderCount = 0;
-  let lastRenderFailed = false;
+  let authoritativeStateStale = false;
   let preparationPresentation = null;
 
   const labels = {
@@ -255,7 +255,7 @@
     if (!current) return;
     const stages = ["Idea", "Clarify", "Build", "Review"];
     const normalized = current.toLowerCase();
-    const matched = stages.find((stage) => normalized.includes(stage.toLowerCase()));
+    const matched = stages.find((stage) => normalized === stage.toLowerCase());
     if (!matched) {
       const meta = element("div", { className: "ui-meta" });
       meta.append(element("span", { className: "ui-badge" }, current));
@@ -561,10 +561,11 @@
     if (!issues.length) return;
     const heading = element("h2", { className: "ui-label" }, "What needs attention");
     const list = element("div", { className: "ui-stack" });
-    const references = [];
     for (const issue of issues) {
       const card = element("section", { className: "ui-card" });
-      const label = safeText(issue.nodeName) || "Workflow configuration";
+      const label = Number.isSafeInteger(issue.nodeIndex) && issue.nodeIndex >= 1 && issue.nodeIndex <= 1_000_000
+        ? `Step ${issue.nodeIndex}`
+        : "Workflow configuration";
       card.append(element("h3", { className: "ui-value" }, label));
       card.append(element("p", { className: "ui-caption" }, safeText(issue.message)));
       const nextActions = {
@@ -580,17 +581,8 @@
       const action = nextActions[issue.nextAction];
       if (action) card.append(element("p", {}, action));
       list.append(card);
-      if (safeText(issue.nodeId)) references.push([label, safeText(issue.nodeId)]);
     }
     errorDetails.append(heading, list);
-    if (references.length) {
-      const details = element("details", { className: "ui-disclosure" });
-      details.append(element("summary", {}, "Validation references"));
-      const refs = element("dl", { className: "review-list" });
-      for (const [label, id] of references) refs.append(element("dt", {}, label), element("dd", {}, id));
-      details.append(refs);
-      errorDetails.append(details);
-    }
     errorDetails.hidden = false;
   }
 
@@ -665,10 +657,16 @@
     const questionCopies = new Set(questionCopyValues(spec).map(normalizedCopy));
     const candidateHeading = typeof request.title === "string" ? request.title.trim() : "";
     const heading = questionCopies.has(normalizedCopy(candidateHeading)) ? "" : candidateHeading;
-    const descriptions = [...new Set([request.description, request.prompt]
-      .filter((value) => typeof value === "string" && value.trim())
-      .map((value) => value.trim()))]
-      .filter((value) => !questionCopies.has(normalizedCopy(value)));
+    const descriptions = [];
+    const seen = new Set([normalizedCopy(heading), ...questionCopies]);
+    for (const value of [request.description, request.prompt]) {
+      if (typeof value !== "string" || !value.trim()) continue;
+      const copy = value.trim();
+      const normalized = normalizedCopy(copy);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      descriptions.push(copy);
+    }
     if (!heading && !descriptions.length) return;
     const copy = element("div", { className: "request-copy" });
     if (heading) copy.append(element("h2", {}, heading));
@@ -880,7 +878,9 @@
       const label = document.createElement("label");
       label.className = "field-label";
       label.htmlFor = `schema-${name}`;
-      label.textContent = name.replaceAll("_", " ");
+      label.textContent = mode === "monitor" && name === "reason"
+        ? "Cancellation reason"
+        : name.replaceAll("_", " ");
       let control;
       if (Array.isArray(field.enum)) {
         control = document.createElement("select");
@@ -1036,9 +1036,9 @@
     renderCount += 1;
     latestMethod = methodOf(result) || latestMethod;
     const failed = Boolean(result && result.isError);
-    lastRenderFailed = failed;
     const incoming = dataOf(result);
     if (!failed) {
+      authoritativeStateStale = false;
       latest = incoming;
       const supplied = result && result._meta && result._meta["loomex/preparationReview"];
       if (supplied !== undefined) preparationPresentation = presentationMatches(supplied, incoming || {}) ? supplied : null;
@@ -1062,7 +1062,12 @@
     supportReference.textContent = supportReference.hidden ? "" : `Support reference: ${reference}`;
     if (failed) renderFailure(result);
     refresh.disabled = !connected;
-    if (failed && latest) return;
+    if (failed && latest) {
+      authoritativeStateStale = true;
+      primary.disabled = true;
+      secondary.disabled = true;
+      return;
+    }
     primary.hidden = true;
     primary.disabled = true;
     primary.className = "";
@@ -1229,7 +1234,16 @@
   }
 
   async function callTool(name, args, renderResult = true) {
-    const result = await send("tools/call", { name, arguments: args });
+    let result;
+    try {
+      result = await send("tools/call", { name, arguments: args });
+    } catch (error) {
+      authoritativeStateStale = true;
+      primary.disabled = true;
+      secondary.disabled = true;
+      refresh.disabled = !connected;
+      throw error;
+    }
     if (renderResult) render(result);
     return result;
   }
@@ -1273,7 +1287,7 @@
     } finally {
       delete button.dataset.pending;
       button.removeAttribute("aria-busy");
-      if (renderCount === previousRenderCount || lastRenderFailed) {
+      if (renderCount === previousRenderCount && !authoritativeStateStale) {
         actionButtons.forEach((candidate, index) => { candidate.disabled = previousDisabled[index]; });
       }
       const retainedOperation = currentMutationOperation();
@@ -1359,13 +1373,16 @@
         });
       } else if (mode === "monitor" && pagedResponse(data)) {
         const response = pagedResponse(data);
-        await send("ui/message", {
+        const messageResult = await send("ui/message", {
           role: "user",
-          content: {
+          content: [{
             type: "text",
             text: `Read and present the complete Loomex result using loomex_response_read with responseRef ${response.responseRef}. Begin at offset 0, continue through every nextOffset, and verify checksumSha256 before presenting it.`,
-          },
+          }],
         });
+        if (messageResult && messageResult.isError === true) {
+          throw new Error("The host could not send this result request. Continue in the conversation to retrieve it.");
+        }
         summary.textContent = "The conversation has been asked to retrieve and present the complete result.";
       } else if (mode === "monitor") {
         if (terminalRun(data.execution || {})) throw new Error("This run is already complete.");
