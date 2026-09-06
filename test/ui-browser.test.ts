@@ -64,11 +64,13 @@ async function mountApp(
   await page.evaluate(({ source, initialData, shouldFailFirst, shouldResolveOnRead, presentation }: any) => {
     const frame = document.getElementById("app");
     window.__loomexCalls = [];
+    window.__loomexSizes = [];
     window.addEventListener("message", (event: any) => {
       if (event.source !== frame.contentWindow) return;
       const message = event.data;
       if (message && message.method === "ui/notifications/size-changed") {
         frame.style.height = `${message.params.height}px`;
+        window.__loomexSizes.push(message.params);
         return;
       }
       if (!message || message.jsonrpc !== "2.0" || message.id === undefined) return;
@@ -149,6 +151,24 @@ async function waitForCallCount(page: any, count: number): Promise<void> {
     }));
     throw new Error(`Expected ${count} tool calls: ${JSON.stringify(diagnostics)}`, { cause: error });
   }
+}
+
+async function waitForSettledAppSize(page: any, afterNotificationCount?: number): Promise<void> {
+  await page.waitForFunction((after: number | undefined) => {
+    const frame = document.getElementById("app");
+    const main = frame?.contentDocument?.querySelector("main");
+    const sizes = window.__loomexSizes;
+    if (!main || !sizes?.length || (after !== undefined && sizes.length <= after)) return false;
+    const expected = Math.ceil(main.getBoundingClientRect().height);
+    return sizes[sizes.length - 1].height === expected && Number.parseFloat(frame.style.height) === expected;
+  }, afterNotificationCount);
+  const sizes = await page.evaluate(async () => {
+    const before = window.__loomexSizes.length;
+    for (let frame = 0; frame < 3; frame += 1) await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    return { before, after: window.__loomexSizes.length };
+  });
+  assert.equal(sizes.after, sizes.before, "Content-size notifications must settle rather than loop");
+  assert.ok(sizes.after <= 12, "A static view must not repeatedly report the same size");
 }
 
 async function captureRequestedScreenshots(page: any): Promise<void> {
@@ -543,4 +563,78 @@ test("prepared run uses bound names, hides UUIDs by default, and preserves exact
     await app.locator('#summary[role="alert"]').waitFor();
     assert.equal(await page.evaluate(() => window.__loomexCalls.length), 0);
   }
+});
+
+test("all four views share design tokens, responsive components, focus states and host sizing", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium required for the shared design system gate");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const humanRequest = {
+    id: "request-shared", type: "input", title: "Tell us about your idea",
+    prompt: "A little context will help us ask the right questions.",
+    inputSpec: { inputType: "long_text", question: "What would you like to build?", collectionMode: "single" },
+    responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+  };
+  const prepared = {
+    preparationId: "prepare-shared", bindingDigest: "shared-digest", confirmationKey: "private-confirmation",
+    binding: { workflowId: "workflow-shared", versionId: "version-shared", organizationId: "org-shared", installationId: "installation-shared",
+      workspacePath: "/Users/alireza/Projects/new-idea", executionPolicy: "host_user/v1", inputs: {}, providerConfiguration: {} },
+  };
+  const presentation = {
+    schemaVersion: "loomex/preparation-review/v1", preparationId: prepared.preparationId, bindingDigest: prepared.bindingDigest,
+    workflowId: prepared.binding.workflowId, versionId: prepared.binding.versionId, organizationId: prepared.binding.organizationId,
+    workflowName: "Idea to Implementation", workflowVersion: 1, organizationName: "Loomex Studio", providers: [{ name: "codex", model: "gpt-5.6-sol" }],
+  };
+  const modes = ["prepare", "authoring", "interaction", "monitor"] as const;
+  const directory = process.env.LOOMEX_DESIGN_SCREENSHOT_DIR;
+  if (directory) await mkdir(directory, { recursive: true });
+  for (const [theme, width] of [["light", 760], ["dark", 760], ["light", 390]] as const) {
+    await page.setViewportSize({ width, height: 1100 });
+    await page.emulateMedia({ colorScheme: theme });
+    let baseline: unknown;
+    for (const mode of modes) {
+      const data = mode === "prepare" ? prepared : mode === "monitor"
+        ? { execution: { id: "run-shared", name: "Idea to Implementation", status: "waiting for your response" } }
+        : { humanRequest, ...(mode === "authoring" ? { builderSession: { id: "builder-shared" } } : {}) };
+      const app = await mountApp(page, mode, data, false, false, mode === "prepare" ? presentation : null);
+      const expectedHeading = mode === "prepare" ? "Idea to Implementation" : mode === "monitor" ? "Run status" : "Tell us about your idea";
+      await app.getByRole("heading", { name: expectedHeading, exact: true }).waitFor();
+      if (mode === "authoring" || mode === "interaction") await app.locator("fieldset textarea").waitFor();
+      await waitForSettledAppSize(page);
+      const styles = await app.locator("main").evaluate((main: any) => {
+        const win = main.ownerDocument.defaultView;
+        const css = win.getComputedStyle(main);
+        const title = win.getComputedStyle(main.querySelector("h1"));
+        const refresh = win.getComputedStyle(main.querySelector("#refresh"));
+        return { accent: css.getPropertyValue("--accent"), padding: css.padding, gap: css.gap, width: css.maxWidth,
+          font: css.fontFamily, titleSize: title.fontSize, titleColor: title.color,
+          buttonHeight: refresh.minHeight, buttonRadius: refresh.borderRadius, buttonColor: refresh.color };
+      });
+      if (baseline === undefined) baseline = styles;
+      else assert.deepEqual(styles, baseline, `${mode} must use the same shared shell and controls`);
+      assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
+      assert.equal(await app.locator("#primary").evaluate((button: any) => button.getBoundingClientRect().height >= 42), true);
+      assert.equal(await app.locator("#diagnostics, #state, #json-answer").count(), 0);
+      if (directory) await app.locator("main").screenshot({ path: resolve(directory, `${mode}-${width < 520 ? "mobile" : theme}.png`) });
+      const focusTarget = (await app.locator("textarea").count()) ? app.locator("textarea").first() : app.locator("#primary");
+      await focusTarget.focus();
+      const focus = await focusTarget.evaluate((target: any) => target.ownerDocument.defaultView.getComputedStyle(target).outlineStyle);
+      assert.equal(focus, "solid");
+      const previousSizeCount = await page.evaluate(() => window.__loomexSizes.length);
+      await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({
+        jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { isError: true, structuredContent: { ok: false, error: { code: "TEST_ERROR" } } },
+      }, "*"));
+      await app.locator('#summary.error[role="alert"]').waitFor();
+      await app.getByRole("heading", { name: expectedHeading, exact: true }).waitFor();
+      await waitForSettledAppSize(page, previousSizeCount);
+      if (directory && width === 760 && theme === "light") await app.locator("main").screenshot({ path: resolve(directory, `${mode}-error.png`) });
+    }
+  }
+  const template = await readFile("assets/loomex-app.html", "utf8");
+  const css = template.split("<style>")[1]?.split("</style>")[0] || "";
+  assert.doesNotMatch(css, /data-mode|prepare-/);
+  assert.match(css, /--card-background/);
+  assert.match(css, /--control-height/);
 });

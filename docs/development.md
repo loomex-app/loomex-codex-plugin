@@ -75,7 +75,7 @@ npm test
 The test suite currently checks:
 
 - exact contract hashes and catalog/schema coverage;
-- unique focused 0.2.2 tool discovery and strict schemas;
+- unique focused 0.2.3 tool discovery and strict schemas;
 - same-connection capability negotiation before each owner-checked local action;
 - rejection of unknown inputs and secret-source definitions before RPC;
 - exactly one classified read transport retry and no automatic replay after an ambiguous mutation;
@@ -108,3 +108,7 @@ The prepare view leads with verified workflow/organization names and the exact v
 Successful preparation tools may attach `loomex/preparationReview` in MCP result `_meta`. Workflow and organization names use bounded read-only lookups; provider/model labels come only from the prepared root and referenced-workflow model-resolution snapshots. This display-only projection is resolved and is matched by schema version, preparation ID, binding digest, workflow/version IDs and organization ID before use. A failed or mismatched name lookup must never invent a label, modify the binding, or turn a successful preparation into a failed mutation. The UI disables Start until a complete, valid, matching name projection is available, and directs unresolved reviews to the conversation. Commit arguments remain the original preparation ID, digest, confirmation key and idempotency UUID.
 
 The prepare view's runner check is a read-only status check that retains preparation state. Content resize notifications use the standard [MCP Apps size-changed notification](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx) so hosts can fit the view as cards wrap or references expand. Browser tests cover mobile/light/dark layouts, hidden references, name binding, and unchanged commit arguments after a status check.
+
+### Shared design system
+
+Every custom view uses the tokens and components documented in [design-system.md](design-system.md). Styling must not branch on `data-mode`; differences come from semantic components and action variants. Content-size reporting applies to all four resources. Run the shared browser visual matrix when changing tokens, shell layout, forms, status messages or actions.

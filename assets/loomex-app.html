@@ -6,111 +6,108 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Loomex</title>
   <style>
+    /* Primitive tokens: one palette and scale for every Loomex view. */
     :root {
       color-scheme: light dark;
-      font: 14px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --accent: #6857f5;
-      --accent-soft: color-mix(in srgb, var(--accent) 11%, Canvas);
-      --danger: #b3263a;
-      --line: color-mix(in srgb, CanvasText 17%, transparent);
-      --muted: color-mix(in srgb, CanvasText 66%, Canvas);
-      --surface: color-mix(in srgb, CanvasText 3%, Canvas);
-      --surface-raised: color-mix(in srgb, CanvasText 6%, Canvas);
+      --green-700: #18765e; --green-600: #237e66;
+      --red-700: #b3263a; --red-300: #ff8c9b; --white: #fff;
+      --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px; --space-6: 24px;
+      --radius-small: 6px; --radius-control: 9px; --radius-card: 12px;
+      --font-small: 12px; --font-body: 14px; --font-title: 27px;
+      --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+      /* Semantic tokens: themes change these, never individual views. */
+      --background: Canvas; --foreground: CanvasText;
+      --accent: var(--green-700); --on-accent: var(--white);
+      --accent-soft: color-mix(in srgb, var(--accent) 8%, var(--background));
+      --danger: var(--red-700); --danger-button: var(--red-700);
+      --danger-soft: color-mix(in srgb, var(--danger) 8%, var(--background));
+      --line: color-mix(in srgb, var(--foreground) 17%, transparent);
+      --muted: color-mix(in srgb, var(--foreground) 66%, var(--background));
+      --surface: color-mix(in srgb, var(--foreground) 3%, var(--background));
+      --focus: color-mix(in srgb, var(--accent) 60%, var(--foreground));
+      /* Component tokens: shared shell, cards and controls. */
+      --shell-width: 720px; --shell-padding: var(--space-6); --section-gap: var(--space-5);
+      --card-padding: var(--space-4); --card-background: var(--background);
+      --control-height: 42px; --control-border: color-mix(in srgb, var(--foreground) 44%, transparent);
+      font: var(--font-body)/1.5 var(--font-sans);
     }
+    @media (prefers-color-scheme: dark) { :root { --accent: var(--green-600); --danger: var(--red-300); } }
     * { box-sizing: border-box; }
-    body { margin: 0; color: CanvasText; background: Canvas; }
-    main { display: grid; gap: 14px; width: 100%; max-width: 760px; margin: 0 auto; padding: 16px; }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    h1 { margin: 0; font-size: 18px; line-height: 1.25; letter-spacing: -.015em; }
-    #connection { flex: none; font-size: 12px; color: var(--muted); }
-    #summary { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .review-list { margin: 0; display: grid; gap: 8px; }
-    .review-list dt { font-weight: 650; }
-    .review-list dd { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .review-list .review-list { margin-left: 12px; border-left: 2px solid var(--line); padding-left: 10px; }
-    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .field { display: grid; gap: 13px; }
-    button, input, select, textarea { font: inherit; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); padding: 8px 10px; color: inherit; background: Canvas; }
-    button { min-height: 36px; cursor: pointer; background: var(--accent); color: white; border-color: var(--accent); font-weight: 650; }
-    button.secondary { background: transparent; color: inherit; }
-    button.danger { background: var(--danger); border-color: var(--danger); }
+    body { margin: 0; color: var(--foreground); background: var(--background); }
+    main { display: grid; gap: var(--section-gap); width: 100%; max-width: var(--shell-width); margin: 0 auto; padding: var(--shell-padding); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+    h1 { margin: 0; font-size: 13px; font-weight: 650; line-height: 1.4; color: var(--muted); }
+    #connection { flex: none; font-size: 11px; color: var(--muted); }
+    #summary { margin: 0; padding: 0; border: 0; background: transparent; font-size: 13px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+    #summary.error { color: var(--danger); background: var(--danger-soft); border-radius: var(--radius-control); padding: var(--space-3) var(--space-4); }
+    .ui-stack, .field { display: grid; gap: var(--section-gap); }
+    .ui-hero, .request-copy { display: grid; gap: var(--space-2); }
+    .ui-hero h2, .request-copy h2 { margin: 0; font-size: var(--font-title); line-height: 1.2; font-weight: 700; letter-spacing: -.035em; overflow-wrap: anywhere; }
+    .request-copy p { margin: 0; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .ui-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--font-small); }
+    .ui-badge { border: 1px solid var(--line); border-radius: var(--radius-small); padding: 2px 7px; font-size: 11px; font-weight: 650; }
+    .ui-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
+    .ui-card, fieldset { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: var(--radius-card); padding: var(--card-padding); background: var(--card-background); }
+    .ui-card { display: grid; align-content: start; gap: var(--space-2); }
+    .ui-label { margin: 0; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .045em; text-transform: uppercase; }
+    .ui-value { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+    .workspace-path { margin: 0; font: 11px/1.6 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+    .provider-row { display: grid; gap: 2px; }
+    .ui-caption, .hint, .form-guide { margin: 0; font-size: var(--font-small); line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+    .ui-section { border-top: 1px solid var(--line); padding-top: var(--space-4); display: grid; gap: var(--space-3); }
+    .review-list { margin: 0; display: grid; gap: var(--space-1); font-size: 13px; }
+    .review-list dt { font-weight: 550; }
+    .review-list dd { margin: 0 0 var(--space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .review-list .review-list { margin-left: var(--space-3); border-left: 2px solid var(--line); padding-left: var(--space-3); }
+    .ui-callout, .notice { margin: 0; display: grid; gap: var(--space-1); padding: var(--space-3) var(--space-4); background: var(--surface); border-radius: var(--radius-control); }
+    .ui-callout h3 { margin: 0; font-size: var(--font-small); font-weight: 650; }
+    .ui-callout p { margin: 0; font-size: var(--font-small); color: var(--muted); }
+    .notice.error { color: var(--danger); background: var(--danger-soft); }
+    .ui-disclosure { color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); padding-top: var(--space-3); }
+    .ui-disclosure summary { cursor: pointer; width: fit-content; padding: var(--space-1) 0; }
+    .ui-disclosure dl { padding-top: var(--space-3); font-size: 11px; }
+    .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-3); align-items: center; border-top: 1px solid var(--line); padding-top: var(--space-4); }
+    button, input, select, textarea { font: inherit; color: inherit; background: var(--background); border-radius: var(--radius-control); border: 1px solid var(--control-border); padding: var(--space-2) var(--space-3); }
+    button { min-height: var(--control-height); padding: var(--space-2) var(--space-4); cursor: pointer; background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 650; }
+    button.secondary { background: transparent; color: var(--foreground); border-color: var(--line); font-weight: 550; }
+    #refresh { border-color: transparent; color: var(--muted); }
+    button.danger { background: var(--danger-button); border-color: var(--danger-button); color: var(--white); }
+    button:not(:disabled):hover { filter: brightness(.92); }
+    button.secondary:not(:disabled):hover { background: var(--surface); filter: none; }
+    button:not(:disabled):active { filter: brightness(.85); }
     button:disabled { cursor: not-allowed; opacity: .48; }
-    input[type="checkbox"], input[type="radio"] { width: 17px; height: 17px; margin: 0; padding: 0; accent-color: var(--accent); }
-    input[type="text"], input[type="number"], select, textarea { width: 100%; }
-    textarea { min-height: 108px; resize: vertical; }
-    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent); outline-offset: 2px; }
-    .notice { border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 9px 11px; background: var(--accent-soft); }
-    .error { border-left-color: var(--danger); }
-    .request-copy { display: grid; gap: 4px; }
-    .request-copy h2 { margin: 0; font-size: 16px; }
-    .request-copy p { margin: 0; color: var(--muted); white-space: pre-wrap; }
-    .form-guide { margin: -2px 0 0; color: var(--muted); font-size: 12px; }
-    fieldset { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: 12px; padding: 13px; background: var(--surface); }
-    legend { max-width: 100%; padding: 0 5px; font-weight: 700; overflow-wrap: anywhere; }
+    input[type="checkbox"], input[type="radio"] { width: 17px; height: 17px; margin: 0; padding: 0; accent-color: var(--accent); flex: none; }
+    input:not([type="checkbox"]):not([type="radio"]), select, textarea { width: 100%; min-width: 0; min-height: var(--control-height); }
+    textarea { min-height: 112px; resize: vertical; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    input:disabled, select:disabled, textarea:disabled { color: var(--muted); background: var(--surface); cursor: not-allowed; }
+    legend { max-width: 100%; padding: 0 var(--space-1); font-weight: 650; overflow-wrap: anywhere; }
     .required-mark { color: var(--danger); }
-    .control-stack { display: grid; gap: 9px; }
-    .choice { display: flex; align-items: flex-start; gap: 9px; border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: Canvas; cursor: pointer; font-weight: 550; }
+    .control-stack { display: grid; gap: var(--space-3); }
+    .choice { display: flex; align-items: flex-start; gap: var(--space-2); min-height: var(--control-height); border: 1px solid var(--line); border-radius: var(--radius-control); padding: var(--space-3); background: var(--background); cursor: pointer; font-weight: 550; }
     .choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
-    .other-entry { display: grid; gap: 7px; margin-left: 26px; }
-    .field-label { display: grid; gap: 7px; font-weight: 650; }
-    .hint { margin: 0; color: var(--muted); font-size: 12px; }
-    .field-error { margin: 2px 0 0; color: var(--danger); font-size: 12px; font-weight: 650; }
-    .rating-options { display: flex; flex-wrap: wrap; gap: 8px; }
+    .choice:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .choice:has(input:disabled), .rating-choice:has(input:disabled) { cursor: not-allowed; opacity: .65; }
+    .choice input:focus-visible { outline: none; }
+    .other-entry { display: grid; gap: var(--space-2); margin-left: 26px; }
+    .field-label { display: grid; gap: var(--space-2); font-weight: 550; }
+    .field-error { margin: 2px 0 0; color: var(--danger); font-size: var(--font-small); font-weight: 650; }
+    .rating-options { display: flex; flex-wrap: wrap; gap: var(--space-2); }
     .rating-choice { position: relative; }
     .rating-choice input { position: absolute; opacity: 0; pointer-events: none; }
-    .rating-choice span { display: grid; place-items: center; min-width: 40px; min-height: 40px; border: 1px solid var(--line); border-radius: 9px; background: Canvas; cursor: pointer; font-weight: 700; }
-    .rating-choice input:checked + span { color: white; border-color: var(--accent); background: var(--accent); }
-    .rating-choice input:focus-visible + span { outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent); outline-offset: 2px; }
-    body[data-mode="prepare"] { --accent: #18765e; --accent-soft: color-mix(in srgb, var(--accent) 8%, Canvas); }
-    body[data-mode="prepare"] main { padding: 24px; gap: 18px; max-width: 720px; }
-    body[data-mode="prepare"] h1 { font-size: 13px; font-weight: 650; color: var(--muted); }
-    body[data-mode="prepare"] #connection { font-size: 11px; }
-    body[data-mode="prepare"] #summary { padding: 0; border: 0; background: transparent; font-size: 13px; color: var(--muted); }
-    body[data-mode="prepare"] #summary.error { color: var(--danger); }
-    .prepare-review { display: grid; gap: 18px; }
-    .prepare-hero { display: grid; gap: 10px; padding-bottom: 2px; }
-    .prepare-hero h2 { margin: 0; font-size: 27px; line-height: 1.2; font-weight: 700; letter-spacing: -.035em; overflow-wrap: anywhere; }
-    .prepare-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
-    .version-badge { border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; font-size: 11px; font-weight: 650; }
-    .prepare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .prepare-card { min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; align-content: start; gap: 8px; }
-    .prepare-label { margin: 0; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .045em; text-transform: uppercase; }
-    .prepare-value { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
-    .workspace-path { margin: 0; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow-wrap: anywhere; }
-    .provider-row { display: grid; gap: 2px; }
-    .prepare-caption { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
-    .prepare-inputs { border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 10px; }
-    .prepare-inputs .review-list { gap: 4px; font-size: 13px; }
-    .prepare-inputs .review-list dt { font-weight: 550; }
-    .execution-access { display: grid; gap: 5px; padding: 14px 16px; background: var(--surface); border-radius: 10px; }
-    .execution-access h3 { margin: 0; font-size: 12px; font-weight: 650; }
-    .execution-access p { margin: 0; font-size: 12px; color: var(--muted); }
-    .execution-references { color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); padding-top: 12px; }
-    .execution-references summary { cursor: pointer; width: fit-content; padding: 4px 0; }
-    .execution-references summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
-    .execution-references dl { padding-top: 10px; font-size: 11px; }
-    .execution-references dd { overflow-wrap: anywhere; }
-    body[data-mode="prepare"] .actions { justify-content: flex-end; border-top: 1px solid var(--line); padding-top: 16px; gap: 10px; }
-    body[data-mode="prepare"] .actions button { min-height: 42px; padding: 9px 18px; border-radius: 9px; }
-    body[data-mode="prepare"] #refresh { border-color: transparent; font-weight: 550; color: var(--muted); }
-    @media (prefers-color-scheme: dark) { body[data-mode="prepare"] { --accent: #237e66; } }
-    @media (max-width: 520px) {
-      body[data-mode="prepare"] main { padding: 16px; }
-      .prepare-hero h2 { font-size: 24px; }
-      .prepare-grid { grid-template-columns: 1fr; }
-      body[data-mode="prepare"] #primary { grid-row: 1; }
-    }
+    .rating-choice span { display: grid; place-items: center; min-width: var(--control-height); min-height: var(--control-height); border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--background); cursor: pointer; font-weight: 650; }
+    .rating-choice input:checked + span { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
+    .rating-choice input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 3px; }
     [aria-invalid="true"] { border-color: var(--danger) !important; }
     [hidden] { display: none !important; }
     @media (max-width: 520px) {
-      main { padding: 12px; }
+      :root { --shell-padding: var(--space-4); --font-title: 24px; }
+      .ui-grid { grid-template-columns: 1fr; }
       .actions { display: grid; grid-template-columns: 1fr; }
       .actions button { width: 100%; }
-      fieldset { padding: 11px; }
     }
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
-    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
   </style>
 </head>
 <body data-mode="__LOOMEX_MODE__">
@@ -196,16 +193,20 @@
   }
 
   function reviewFields(fields) {
-    context.replaceChildren();
-    const list = element("dl", { className: "review-list" });
+    const heading = element("div", { className: "ui-hero" });
+    heading.append(element("h2", {}, "Run status"));
+    const list = element("dl", { className: "ui-grid" });
     for (const [label, value] of fields) {
       if (value === undefined) continue;
-      list.append(element("dt", {}, label));
-      const detail = element("dd");
+      const card = element("div", { className: "ui-card" });
+      card.append(element("dt", { className: "ui-label" }, label));
+      const detail = element("dd", { className: "ui-value" });
       detail.append(reviewValue(value));
-      list.append(detail);
+      card.append(detail);
+      list.append(card);
     }
-    context.append(list);
+    context.className = "ui-stack";
+    context.replaceChildren(heading, list);
     context.hidden = !list.childElementCount;
   }
 
@@ -227,64 +228,64 @@
   function preparationView(output) {
     const binding = output.binding || {};
     const info = presentationMatches(preparationPresentation, output) ? preparationPresentation : {};
-    const review = element("div", { className: "prepare-review" });
-    const hero = element("div", { className: "prepare-hero" });
+    const review = element("div", { className: "ui-stack" });
+    const hero = element("div", { className: "ui-hero" });
     hero.append(element("h2", {}, info.workflowName || "Prepared workflow"));
-    const meta = element("div", { className: "prepare-meta" });
-    meta.append(element("span", { className: "version-badge" }, Number.isSafeInteger(info.workflowVersion) ? `Version ${info.workflowVersion}` : "Pinned version"));
+    const meta = element("div", { className: "ui-meta" });
+    meta.append(element("span", { className: "ui-badge" }, Number.isSafeInteger(info.workflowVersion) ? `Version ${info.workflowVersion}` : "Pinned version"));
     meta.append(element("span", {}, info.organizationName || "Organization name unavailable"));
     hero.append(meta);
     review.append(hero);
-    const grid = element("div", { className: "prepare-grid" });
-    const workspace = element("section", { className: "prepare-card", "aria-label": "Workspace" });
-    workspace.append(element("h3", { className: "prepare-label" }, "Workspace"));
+    const grid = element("div", { className: "ui-grid" });
+    const workspace = element("section", { className: "ui-card", "aria-label": "Workspace" });
+    workspace.append(element("h3", { className: "ui-label" }, "Workspace"));
     const path = typeof binding.workspacePath === "string" ? binding.workspacePath : "";
-    workspace.append(element("p", { className: "prepare-value" }, path.split("/").filter(Boolean).at(-1) || "Workspace unavailable"));
+    workspace.append(element("p", { className: "ui-value" }, path.split("/").filter(Boolean).at(-1) || "Workspace unavailable"));
     workspace.append(element("p", { className: "workspace-path" }, path));
-    workspace.append(element("p", { className: "prepare-caption" }, "Local Loomex runner · This machine"));
+    workspace.append(element("p", { className: "ui-caption" }, "Local Loomex runner · This machine"));
     grid.append(workspace);
-    const providers = element("section", { className: "prepare-card", "aria-label": "AI providers" });
-    providers.append(element("h3", { className: "prepare-label" }, "AI providers"));
+    const providers = element("section", { className: "ui-card", "aria-label": "AI providers" });
+    providers.append(element("h3", { className: "ui-label" }, "AI providers"));
     const configured = Array.isArray(info.providers) ? info.providers : [];
     const providerNames = { codex: "Codex", claude: "Claude", gemini: "Gemini" };
     if (configured.length) {
       for (const provider of configured) {
         const row = element("div", { className: "provider-row" });
-        row.append(element("p", { className: "prepare-value" }, providerNames[provider.name] || provider.name));
-        row.append(element("p", { className: "prepare-caption" }, provider.model || "Model selected by workflow"));
+        row.append(element("p", { className: "ui-value" }, providerNames[provider.name] || provider.name));
+        row.append(element("p", { className: "ui-caption" }, provider.model || "Model selected by workflow"));
         providers.append(row);
       }
     } else if (Array.isArray(info.providers)) {
-      providers.append(element("p", { className: "prepare-value" }, "No AI steps"));
-      providers.append(element("p", { className: "prepare-caption" }, "This workflow does not select an AI provider."));
+      providers.append(element("p", { className: "ui-value" }, "No AI steps"));
+      providers.append(element("p", { className: "ui-caption" }, "This workflow does not select an AI provider."));
     } else {
-      providers.append(element("p", { className: "prepare-value" }, "Workflow configuration"));
-      providers.append(element("p", { className: "prepare-caption" }, "Provider details for this workflow or its referenced workflows are unavailable. Review the workflow configuration in the conversation."));
+      providers.append(element("p", { className: "ui-value" }, "Workflow configuration"));
+      providers.append(element("p", { className: "ui-caption" }, "Provider details for this workflow or its referenced workflows are unavailable. Review the workflow configuration in the conversation."));
     }
     const overrides = binding.providerConfiguration && binding.providerConfiguration.requested;
     if (overrides && Object.keys(overrides).length) {
-      const overrideSection = element("div", { className: "prepare-inputs" });
-      overrideSection.append(element("h4", { className: "prepare-label" }, "Run overrides"), reviewValue(overrides));
+      const overrideSection = element("div", { className: "ui-section" });
+      overrideSection.append(element("h4", { className: "ui-label" }, "Run overrides"), reviewValue(overrides));
       providers.append(overrideSection);
     }
     grid.append(providers);
     review.append(grid);
-    const inputs = element("section", { className: "prepare-inputs", "aria-label": "Run inputs" });
-    inputs.append(element("h3", { className: "prepare-label" }, "Run inputs"));
+    const inputs = element("section", { className: "ui-section", "aria-label": "Run inputs" });
+    inputs.append(element("h3", { className: "ui-label" }, "Run inputs"));
     if (binding.inputs && Object.keys(binding.inputs).length) inputs.append(reviewValue(binding.inputs));
-    else inputs.append(element("p", { className: "prepare-caption" }, "No startup inputs required."));
+    else inputs.append(element("p", { className: "ui-caption" }, "No startup inputs required."));
     review.append(inputs);
     if (binding.authoring && Object.keys(binding.authoring).length) {
-      const authoring = element("section", { className: "prepare-inputs", "aria-label": "Authoring request" });
-      authoring.append(element("h3", { className: "prepare-label" }, "Authoring request"), reviewValue(binding.authoring));
+      const authoring = element("section", { className: "ui-section", "aria-label": "Authoring request" });
+      authoring.append(element("h3", { className: "ui-label" }, "Authoring request"), reviewValue(binding.authoring));
       review.append(authoring);
     }
-    const access = element("section", { className: "execution-access" });
+    const access = element("section", { className: "ui-callout" });
     access.append(element("h3", {}, "Runs with your Mac’s permissions"));
     access.append(element("p", {}, "Can read and change files and run commands as your macOS user. The workspace is the starting location, with no sandbox guarantee."));
     access.append(element("p", {}, "No product time, output, or concurrency limits. You can request cancellation while it runs."));
     review.append(access);
-    const references = element("details", { className: "execution-references" });
+    const references = element("details", { className: "ui-disclosure" });
     references.append(element("summary", {}, "Execution references and configuration"));
     // Keep exact references available for disambiguation without dominating the review.
     references.append(reviewValue({ Workflow: binding.workflowId, Version: binding.versionId, Organization: binding.organizationId,
@@ -1139,7 +1140,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.2" },
+    appInfo: { name: "loomex", version: "0.2.3" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));
@@ -1149,7 +1150,7 @@
     refresh.disabled = false;
     send("ui/notifications/initialized", {}, false);
     if (latest) render(latest);
-    if (mode === "prepare" && typeof ResizeObserver === "function") {
+    if (typeof ResizeObserver === "function") {
       let lastSize = "";
       const reportSize = () => {
         const box = document.querySelector("main").getBoundingClientRect();
