@@ -237,7 +237,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.2.3 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.2.4 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -575,6 +575,85 @@ test("runner error messages are replaced with safe credential-free text", async 
   assert.equal(result.isError, true);
   assert.doesNotMatch(serialized, /never-print-this-token/);
   assert.match(serialized, /temporarily unavailable/);
+});
+
+test("safe run validation issues remain actionable across local control", async () => {
+  const nodeId = "11111111-1111-4111-8111-111111111111";
+  const runner = new FakeRunner((request, socket) => {
+    runner.error(
+      socket,
+      request,
+      "RUN_VALIDATION_FAILED",
+      "Bearer backend-message-must-not-cross",
+      false,
+      {
+        validationIssueVersion: "v1",
+        validationIssues: [
+          {
+            code: "RUN_VALIDATION_PROVIDER_UNSUPPORTED",
+            message:
+              "The selected provider does not support a required workflow capability.",
+            nextAction: "choose_supported_provider",
+            nodeId,
+            nodeName: "Draft response",
+          },
+        ],
+      },
+    );
+  });
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_readiness", arguments: {} });
+  const structured = result.structuredContent as Record<string, unknown>;
+  const error = structured.error as Record<string, unknown>;
+
+  assert.equal(result.isError, true);
+  assert.equal(error.code, "RUN_VALIDATION_FAILED");
+  assert.equal(
+    error.message,
+    "The workflow cannot start until its validation issues are fixed.",
+  );
+  assert.equal(error.validationIssueVersion, "v1");
+  assert.deepEqual(error.validationIssues, [
+    {
+      code: "RUN_VALIDATION_PROVIDER_UNSUPPORTED",
+      message: "The selected provider does not support a required workflow capability.",
+      nextAction: "choose_supported_provider",
+      nodeId,
+      nodeName: "Draft response",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /backend-message-must-not-cross/);
+});
+
+test("untrusted validation details fail closed without leaking runner values", async () => {
+  const runner = new FakeRunner((request, socket) => {
+    runner.error(
+      socket,
+      request,
+      "RUN_VALIDATION_FAILED",
+      "Bearer outer-secret",
+      false,
+      {
+        validationIssueVersion: "v1",
+        validationIssues: [
+          {
+            code: "RUN_VALIDATION_PROVIDER_UNSUPPORTED",
+            message: "Bearer nested-secret",
+            nextAction: "send_token_elsewhere",
+            nodeName: "Token secret-node-name",
+          },
+        ],
+      },
+    );
+  });
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_readiness", arguments: {} });
+  const serialized = JSON.stringify(result);
+  const structured = result.structuredContent as Record<string, unknown>;
+
+  assert.equal(result.isError, true);
+  assert.equal((structured.error as Record<string, unknown>).code, "INVALID_RESPONSE");
+  assert.doesNotMatch(serialized, /outer-secret|nested-secret|secret-node-name|send_token/);
 });
 
 test("stable runner error codes outside the plugin message map remain typed and safely redacted", async () => {

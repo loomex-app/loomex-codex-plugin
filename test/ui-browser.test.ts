@@ -64,6 +64,7 @@ async function mountApp(
   await page.evaluate(({ source, initialData, shouldFailFirst, shouldResolveOnRead, presentation }: any) => {
     const frame = document.getElementById("app");
     window.__loomexCalls = [];
+    window.__loomexMessages = [];
     window.__loomexSizes = [];
     window.addEventListener("message", (event: any) => {
       if (event.source !== frame.contentWindow) return;
@@ -75,6 +76,11 @@ async function mountApp(
       }
       if (!message || message.jsonrpc !== "2.0" || message.id === undefined) return;
       if (message.method === "ui/initialize") {
+        event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {} }, "*");
+        return;
+      }
+      if (message.method === "ui/message") {
+        window.__loomexMessages.push(message.params);
         event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: {} }, "*");
         return;
       }
@@ -266,7 +272,7 @@ test("question UI collects seven mixed answer types, validates, preserves drafts
   await app.locator("#question-6-other-choice").check();
   await app.locator("#question-6-other-text").fill("Custom feature");
 
-  await app.getByRole("button", { name: "Submit response" }).click();
+  await app.getByRole("button", { name: "Continue" }).click();
   await app.locator("#question-2-error").getByText("Enter a real date in YYYY-MM-DD format.").waitFor();
   assert.equal((await page.evaluate(() => window.__loomexCalls.length)), 0);
   assert.equal(await app.locator("#question-1-value").inputValue(), "Keep this detailed draft after errors.");
@@ -275,7 +281,7 @@ test("question UI collects seven mixed answer types, validates, preserves drafts
     control.type = "date";
     control.value = "2024-02-29";
   });
-  await app.getByRole("button", { name: "Submit response" }).evaluate((button: any) => {
+  await app.getByRole("button", { name: "Continue" }).evaluate((button: any) => {
     button.click();
     button.click();
   });
@@ -286,7 +292,7 @@ test("question UI collects seven mixed answer types, validates, preserves drafts
   assert.equal(await app.locator("#question-0-value").isDisabled(), true);
   await app.locator("#question-0-value").evaluate((control: any) => { control.value = "Edited after ambiguity"; });
 
-  await app.getByRole("button", { name: "Refresh server state" }).click();
+  await app.getByRole("button", { name: "Refresh" }).click();
   await waitForCallCount(page, 2);
   await app.getByText("server still reports this request as pending", { exact: false }).waitFor();
   assert.equal(await app.locator("#question-0-value").isDisabled(), true);
@@ -334,15 +340,15 @@ test("refresh reconciles an ambiguous response that the server reports as resolv
   }, true, true);
 
   await app.getByRole("textbox", { name: "What should happen? Your answer" }).fill("Submitted once");
-  await app.getByRole("button", { name: "Submit response" }).click();
+  await app.getByRole("button", { name: "Continue" }).click();
   await waitForCallCount(page, 1);
   await app.getByText("submission outcome is uncertain", { exact: false }).waitFor();
-  await app.getByRole("button", { name: "Refresh server state" }).click();
+  await app.getByRole("button", { name: "Refresh" }).click();
   await waitForCallCount(page, 2);
   await app.getByText("uncertain submission was reconciled", { exact: false }).waitFor();
   assert.equal(await app.locator("#form").isHidden(), true);
   assert.equal(await app.getByRole("button", { name: "Retry exact response" }).count(), 0);
-  assert.equal(await app.getByRole("button", { name: "Submit response" }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Continue" }).count(), 0);
   const calls = await page.evaluate(() => window.__loomexCalls);
   assert.deepEqual(calls.map((call: any) => call.name), ["loomex_interaction_respond", "loomex_interaction_get"]);
   assert.deepEqual(calls[1].arguments, { requestId });
@@ -413,7 +419,7 @@ test("authoring supports aliases and simple schemas while rejecting invalid ques
   });
   const textarea = app.getByRole("textbox", { name: "Your answer" });
   await textarea.fill("Preserve the inputSpec prompt.");
-  await app.getByRole("button", { name: "Respond to authoring session" }).click();
+  await app.getByRole("button", { name: "Continue" }).click();
   await waitForCallCount(page, 1);
   const [call] = await page.evaluate(() => window.__loomexCalls);
   assert.equal(call.name, "loomex_builder_respond");
@@ -429,7 +435,7 @@ test("authoring supports aliases and simple schemas while rejecting invalid ques
   });
   assert.equal(await fallback.locator("fieldset").count(), 0);
   await fallback.getByRole("textbox", { name: "comment" }).fill("Schema fallback remains available");
-  await fallback.getByRole("button", { name: "Submit response" }).click();
+  await fallback.getByRole("button", { name: "Continue" }).click();
   await waitForCallCount(fallbackPage, 1);
   const [fallbackCall] = await fallbackPage.evaluate(() => window.__loomexCalls);
   assert.deepEqual(fallbackCall.arguments.answer, { comment: "Schema fallback remains available" });
@@ -444,7 +450,212 @@ test("authoring supports aliases and simple schemas while rejecting invalid ques
     },
   });
   await invalid.getByRole("alert").getByText("This question cannot be displayed here", { exact: false }).first().waitFor();
-  assert.equal(await invalid.getByRole("button", { name: "Submit response" }).isDisabled(), true);
+  assert.equal(await invalid.getByRole("button", { name: "Continue" }).isDisabled(), true);
+});
+
+test("single questions remove repeated copy and safe presentations add progress and acceptance context", async (t) => {
+  const available = await browserTools();
+  if (!available) { assert.fail("Chromium is required for the presentation gate"); }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+
+  const page = await browser.newPage();
+  const question = "What would you like to build?";
+  let app = await mountApp(page, "interaction", {
+    humanRequest: {
+      id: "27acbb74-e5ee-4896-b4b1-86ed6b048fe0",
+      type: "manual_input",
+      title: "Tell us about your idea",
+      description: question,
+      prompt: "A sentence or two is enough to begin.",
+      context: { previousOutputs: { privateTransportData: "must-not-render" } },
+      presentation: {
+        version: 1,
+        kind: "progress",
+        question,
+        stageLabel: "Clarify",
+        summary: "We have the goal and are narrowing the workflow behavior.",
+        decisions: ["Use the existing Loomex workspace."],
+        openQuestions: [question, "Which output should be easiest to review?"],
+        previousOutputs: ["must-not-render-either"],
+      },
+      inputSpec: { inputType: "long_text", question, collectionMode: "single" },
+      responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+    },
+  });
+  assert.equal(await app.locator("legend").filter({ hasText: question }).count(), 1);
+  assert.equal(await app.locator(".request-copy").getByText(question, { exact: true }).count(), 0);
+  assert.equal(await app.getByText(/1 question/).count(), 0);
+  await app.getByText("A sentence or two is enough to begin.", { exact: true }).waitFor();
+  await app.getByRole("heading", { name: "Requirements progress", exact: true }).waitFor();
+  await app.locator('[aria-current="step"]').getByText("Clarify", { exact: true }).waitFor();
+  await app.getByText("Use the existing Loomex workspace.", { exact: true }).waitFor();
+  await app.getByText("Which output should be easiest to review?", { exact: true }).waitFor();
+  assert.doesNotMatch(await app.locator("body").innerText(), /must-not-render/);
+  await app.getByRole("button", { name: "Continue", exact: true }).waitFor();
+  await app.getByRole("button", { name: "Refresh", exact: true }).waitFor();
+
+  const reviewPage = await browser.newPage();
+  app = await mountApp(reviewPage, "interaction", {
+    humanRequest: {
+      id: "39f69fd1-e9ca-4700-8c31-0fa7fc009517",
+      type: "manual_input",
+      context: { previousOutputs: { implementation: "raw-output-must-not-render" } },
+      presentation: {
+        version: 1,
+        kind: "review",
+        question: "Does this meet your requirements?",
+        stageLabel: "Review",
+        summary: "The requested dashboard is ready for review.",
+        changedFiles: ["src/dashboard.ts"],
+        verification: ["Chrome interaction check passed."],
+        limitations: ["No hosted preview is available."],
+        artifacts: ["Local dashboard source"],
+      },
+      inputSpec: { inputType: "boolean", question: "Does this meet your requirements?" },
+      responseSchema: { type: "object", properties: { value: { type: "boolean" } }, required: ["value"] },
+    },
+  });
+  await app.getByRole("heading", { name: "Implementation review", exact: true }).waitFor();
+  for (const copy of ["src/dashboard.ts", "Chrome interaction check passed.", "No hosted preview is available.", "Local dashboard source"]) {
+    await app.getByText(copy, { exact: true }).waitFor();
+  }
+  assert.doesNotMatch(await app.locator("body").innerText(), /raw-output-must-not-render/);
+  await app.getByRole("radio", { name: "Request changes", exact: true }).check();
+  await app.getByRole("button", { name: "Continue", exact: true }).click();
+  await waitForCallCount(reviewPage, 1);
+  const [call] = await reviewPage.evaluate(() => window.__loomexCalls);
+  assert.equal(call.name, "loomex_interaction_respond");
+  assert.deepEqual(call.arguments.answer, { value: false });
+});
+
+test("run monitoring projects safe state and removes terminal actions", async (t) => {
+  const available = await browserTools();
+  if (!available) { assert.fail("Chromium is required for the monitoring gate"); }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runId = "b53cf793-7173-4131-81c6-90797569dfa7";
+  const app = await mountApp(page, "monitor", {
+    execution: {
+      id: runId,
+      status: "completed",
+      workflowName: "Idea to Implementation",
+      currentNodeName: "Final result",
+      currentNodeId: "internal-node-id",
+      stageLabel: "Review",
+      startedAt: "2026-09-06T08:00:00.000Z",
+      completedAt: "2026-09-06T08:02:05.000Z",
+      result: {
+        version: 1,
+        summary: "The app is ready.",
+        changedFiles: ["src/app.ts"],
+        verification: ["Chrome smoke check passed."],
+        limitations: ["Deployment was not requested."],
+        artifacts: ["Generated app source"],
+        previousOutputs: ["ignored-internal-output"],
+      },
+    },
+  });
+  await app.getByRole("heading", { name: "Idea to Implementation", exact: true }).waitFor();
+  await app.getByText("2m 5s", { exact: true }).waitFor();
+  for (const copy of ["The app is ready.", "src/app.ts", "Chrome smoke check passed.", "Deployment was not requested.", "Generated app source"]) {
+    await app.getByText(copy, { exact: true }).waitFor();
+  }
+  const visible = await app.locator("body").innerText();
+  assert.doesNotMatch(visible, /2026-09-06T08:00:00|ignored-internal-output|b53cf793|internal-node-id/);
+  assert.equal(await app.getByRole("button", { name: "Wait for update" }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Cancel run" }).count(), 0);
+  assert.equal(await app.locator('#form input[data-field="reason"]').count(), 0);
+  assert.equal(await app.locator("#primary").isHidden(), true);
+  assert.equal(await app.locator("#primary").isDisabled(), true);
+  assert.equal(await app.locator("#secondary").isHidden(), true);
+  assert.equal(await app.locator("#secondary").isDisabled(), true);
+  await app.locator("#primary").evaluate((button: any) => button.dispatchEvent(new Event("click")));
+  await app.locator("#secondary").evaluate((button: any) => button.dispatchEvent(new Event("click")));
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => window.__loomexCalls.length), 0);
+  assert.match(await app.locator("details").last().textContent(), new RegExp(runId));
+
+  const activePage = await browser.newPage();
+  const active = await mountApp(activePage, "monitor", {
+    execution: {
+      id: "547cf27e-ad0b-49ba-943c-b5b2dffec8f6",
+      status: "running",
+      workflowName: "Idea to Implementation",
+      currentNodeName: "Build application",
+      stageLabel: "Build",
+      startedAt: new Date().toISOString(),
+    },
+  });
+  await active.getByRole("button", { name: "Wait for update", exact: true }).click();
+  await waitForCallCount(activePage, 1);
+  assert.equal((await activePage.evaluate(() => window.__loomexCalls))[0].name, "loomex_run_wait");
+  await active.locator('#form input[data-field="reason"]').fill("The requirements changed.");
+  await active.getByRole("button", { name: "Cancel run", exact: true }).click();
+  await waitForCallCount(activePage, 2);
+  const activeCalls = await activePage.evaluate(() => window.__loomexCalls);
+  assert.equal(activeCalls[1].name, "loomex_run_cancel");
+  assert.equal(activeCalls[1].arguments.reason, "The requirements changed.");
+
+  const pagedPage = await browser.newPage();
+  const responseRef = "ac567746-f978-40bb-a3e1-b8bf077378a0";
+  const paged = await mountApp(pagedPage, "monitor", {
+    responseRef,
+    sizeBytes: 401_408,
+    encoding: "json",
+    nextOffset: 0,
+    checksumSha256: "trusted-checksum-reference",
+  });
+  await paged.getByRole("heading", { name: "Full results available", exact: true }).waitFor();
+  assert.doesNotMatch(await paged.locator("body").innerText(), new RegExp(responseRef));
+  await paged.getByRole("button", { name: "View results", exact: true }).click();
+  await pagedPage.waitForFunction(() => window.__loomexMessages.length === 1);
+  const [message] = await pagedPage.evaluate(() => window.__loomexMessages);
+  assert.equal(message.role, "user");
+  assert.match(message.content.text, new RegExp(responseRef));
+  assert.match(message.content.text, /every nextOffset/);
+});
+
+test("actionable validation errors render only safe issue fields", async (t) => {
+  const available = await browserTools();
+  if (!available) { assert.fail("Chromium is required for the error presentation gate"); }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const app = await mountApp(page, "monitor", { execution: { id: "run-safe", status: "running", workflowName: "Safe workflow" } });
+  await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({
+    jsonrpc: "2.0",
+    method: "ui/notifications/tool-result",
+    params: {
+      isError: true,
+      structuredContent: {
+        ok: false,
+        requestId: "7af3e8b5-683d-4ac9-a8bd-55c3da054b30",
+        error: {
+          code: "RUN_VALIDATION_FAILED",
+          message: "Two workflow steps need a supported execution provider.",
+          validationIssueVersion: "v1",
+          validationIssues: [{
+            code: "RUN_VALIDATION_PROVIDER_UNSUPPORTED",
+            nodeId: "private-node-id",
+            nodeName: "Implementer",
+            message: "The selected provider does not support a required workflow capability.",
+            nextAction: "choose_supported_provider",
+            debug: "must-not-render-debug",
+          }],
+          privateTrace: "must-not-render-trace",
+        },
+      },
+    },
+  }, "*"));
+  await app.getByText("Two workflow steps need a supported execution provider.", { exact: true }).waitFor();
+  await app.getByRole("heading", { name: "Implementer", exact: true }).waitFor();
+  await app.getByText("Choose a provider that supports this workflow, then prepare the run again.", { exact: true }).waitFor();
+  const visible = await app.locator("body").innerText();
+  assert.doesNotMatch(visible, /must-not-render|private-node-id|RUN_VALIDATION_FAILED|UNSUPPORTED_PROVIDER/);
+  await app.getByText("Support reference: 7af3e8b5-683d-4ac9-a8bd-55c3da054b30", { exact: true }).waitFor();
+  assert.match(await app.locator("#error-details details").textContent(), /private-node-id/);
 });
 
 test("no-JSON views retain readable reviews and reject unsupported forms", async (t) => {
@@ -495,7 +706,7 @@ test("no-JSON views retain readable reviews and reject unsupported forms", async
   await app.getByRole("heading", { name: "Publish report?" }).waitFor();
   await app.getByText("This report will be available to your team.", { exact: true }).waitFor();
   app = await mountApp(page, "monitor", { execution: { id: "run-1", status: "running" } });
-  await app.getByText("running", { exact: true }).waitFor();
+  await app.getByText("Running", { exact: true }).waitFor();
 });
 
 test("prepared run uses bound names, hides UUIDs by default, and preserves exact commit after status check", async (t) => {
@@ -599,7 +810,7 @@ test("all four views share design tokens, responsive components, focus states an
         ? { execution: { id: "run-shared", name: "Idea to Implementation", status: "waiting for your response" } }
         : { humanRequest, ...(mode === "authoring" ? { builderSession: { id: "builder-shared" } } : {}) };
       const app = await mountApp(page, mode, data, false, false, mode === "prepare" ? presentation : null);
-      const expectedHeading = mode === "prepare" ? "Idea to Implementation" : mode === "monitor" ? "Run status" : "Tell us about your idea";
+      const expectedHeading = mode === "prepare" ? "Idea to Implementation" : mode === "monitor" ? "Idea to Implementation" : "Tell us about your idea";
       await app.getByRole("heading", { name: expectedHeading, exact: true }).waitFor();
       if (mode === "authoring" || mode === "interaction") await app.locator("fieldset textarea").waitFor();
       await waitForSettledAppSize(page);

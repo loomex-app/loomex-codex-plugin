@@ -23,14 +23,27 @@ The shell is 720px wide with 24px padding; narrow screens use 16px padding and s
 | `ui-card`, `fieldset` | Review information and grouped questions using the same border, radius, surface and padding |
 | `ui-label`, `ui-value`, `ui-caption`, `ui-badge` | Consistent information hierarchy |
 | `ui-callout`, `notice`, `#summary` | Guidance, status, error and uncertain-result messages |
+| `progress-steps`, `ui-list` | Named workflow stages and bounded summary, decision, review and result lists without invented percentages |
 | `ui-disclosure` | Optional exact execution references |
 | `.actions` and button variants | Shared footer, primary, secondary, destructive, hover, active, focus and disabled states |
 | Form controls | Short/long answers, date, number, yes/no, choices, Other text and ratings |
 
 Keyboard focus has a shared visible ring. Selected choices and ratings use the primary palette. Invalid controls and inline errors use the danger token. Locked answers retain their content and show a disabled state. Mobile visual order follows DOM/keyboard order. Every view sends the standard MCP Apps content-size notification after initialization and whenever the content size changes.
 
+Single-question screens rely on the fieldset legend as the accessible question label. Exact copies of that question are removed from the title, description and prompt, and the question count appears only for batches. Normal question and authoring actions use `Continue`; the read-only action uses `Refresh`. Versioned implementation reviews keep their boolean response unchanged while labeling its choices `Accept` and `Request changes`.
+
+## Presentation contracts
+
+Human interaction and authoring views render optional `humanRequest.presentation` data only when it is the version 1 `progress`, `clarification` or `review` contract. Scalar fields are `question`, `stageLabel` and `summary`; bounded display lists are `changedFiles`, `artifacts`, `verification`, `limitations`, `priorRequirements`, `decisions` and `openQuestions`. Unknown fields such as raw `context.previousOutputs` are ignored. Current questions are removed from the open-question summary when they already appear as fieldset legends.
+
+Run monitoring treats `execution.status` as authoritative. Active runs can wait for an update or request cancellation. `completed`, `failed` and `canceled` runs, plus compatible terminal spellings, disable and hide wait, cancellation and reason controls. The monitor shows the safe workflow name, stage, current step, locale-formatted timestamps and elapsed time when present. A version 1 `execution.result` may add summary, changed files, verification, limitations and artifact labels. Exact execution IDs stay in a collapsed reference disclosure.
+
+Large immutable results represented by a response spool are never partially decoded or accumulated in the UI. The `View results` action sends a deliberate follow-up to the conversation to read every page through `nextOffset` and verify `checksumSha256`. Artifact labels remain plain text unless the authoritative result supplies a separately supported safe link contract; the UI does not turn workspace paths into links or commands.
+
+Safe validation errors may show version 1 issue entries with a node name, fixed message and an allowlisted next-action label. Correlation and node IDs stay in optional support disclosures. Error codes, unknown fields, transport details and raw result JSON are not rendered.
+
 ## Change rules and validation
 
 Do not add selectors based on `data-mode` to the stylesheet or fork tokens per view. Choose an existing component or add a reusable semantic variant. Keep state and tool behavior separate from presentation: exact preparation bindings, read-only refresh, typed answers, approval decisions and immutable retries remain in the existing handlers.
 
-The browser suite compares shared computed styles across all four modes in light, dark and mobile layouts, checks overflow, control targets, keyboard focus and resize notifications, and captures normal/error states. Existing interaction, cancellation, preparation and retry tests remain release gates. Set `LOOMEX_DESIGN_SCREENSHOT_DIR` to capture the visual matrix when running `npm run test:ui`.
+The browser suite compares shared computed styles across all four modes in light, dark and mobile layouts, checks overflow, control targets, keyboard focus and resize notifications, and captures normal/error states. It also covers prompt deduplication, structured progress and acceptance review, typed boolean responses, active and terminal monitoring, paged-result handoff, bounded actionable errors, cancellation, preparation and immutable retry. Set `LOOMEX_DESIGN_SCREENSHOT_DIR` to capture the visual matrix when running `npm run test:ui`.

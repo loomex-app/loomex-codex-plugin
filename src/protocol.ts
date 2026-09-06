@@ -25,6 +25,95 @@ export const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 export const RpcErrorCodeSchema = z.string().min(1).max(120);
 
 export type RpcErrorCode = z.infer<typeof RpcErrorCodeSchema>;
+export const VALIDATION_ISSUE_VERSION = "v1" as const;
+
+const SafeNodeNameSchema = z
+  .string()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9 _.-]*$/)
+  .refine(
+    (name) =>
+      !/(bearer|token|secret|password|api[ _]key|credential|private[ _]key)/i.test(name),
+  );
+
+function validationIssueSchema(
+  code: string,
+  message: string,
+  nextAction: string,
+) {
+  return z
+    .object({
+      code: z.literal(code),
+      message: z.literal(message),
+      nextAction: z.literal(nextAction),
+      nodeId: z.uuid().optional(),
+      nodeName: SafeNodeNameSchema.optional(),
+    })
+    .strict();
+}
+
+export const ValidationIssueSchema = z.union([
+  validationIssueSchema(
+    "RUN_INPUT_SCHEMA_INVALID",
+    "Workflow inputs do not match the required schema.",
+    "correct_workflow_inputs",
+  ),
+  validationIssueSchema(
+    "RUN_VALIDATION_EXECUTION_POLICY_INVALID",
+    "The workflow execution policy does not support a required capability.",
+    "update_workflow_definition",
+  ),
+  validationIssueSchema(
+    "UNSUPPORTED_CAPABILITY",
+    "The workflow execution policy does not support a required capability.",
+    "update_workflow_definition",
+  ),
+  validationIssueSchema(
+    "RUN_VALIDATION_EXECUTION_ROOT_REQUIRED",
+    "This workflow requires a prepared local runner execution root.",
+    "prepare_runner_execution",
+  ),
+  validationIssueSchema(
+    "RUN_VALIDATION_RUNNER_UNAVAILABLE",
+    "The required local runner is not connected.",
+    "connect_runner",
+  ),
+  validationIssueSchema(
+    "RUN_VALIDATION_PROVIDER_UNSUPPORTED",
+    "The selected provider does not support a required workflow capability.",
+    "choose_supported_provider",
+  ),
+  validationIssueSchema(
+    "RUN_VALIDATION_PROVIDER_INVALID",
+    "The workflow selects a provider that cannot run this work.",
+    "choose_supported_provider",
+  ),
+  validationIssueSchema(
+    "RUN_VALIDATION_POLICY_DENIED",
+    "The execution policy does not allow a required workflow capability.",
+    "allow_capability",
+  ),
+  validationIssueSchema(
+    "RUN_VALIDATION_POLICY_REQUIRED",
+    "A required workflow capability policy has not been configured.",
+    "configure_capability_policy",
+  ),
+  validationIssueSchema(
+    "RUN_VALIDATION_FAILED",
+    "The workflow has a validation issue that must be reviewed.",
+    "review_workflow_validation",
+  ),
+]);
+
+export type ValidationIssue = z.infer<typeof ValidationIssueSchema>;
+
+export const RpcErrorDataSchema = z
+  .object({
+    validationIssueVersion: z.literal(VALIDATION_ISSUE_VERSION),
+    validationIssues: z.array(ValidationIssueSchema).min(1).max(32),
+  })
+  .strict();
 
 export const RpcRequestSchema = z
   .object({
@@ -41,8 +130,10 @@ export const RpcErrorSchema = z
     message: z.string().min(1).max(1024),
     correlationId: z.string().min(1).max(128),
     retryable: z.boolean(),
+    data: RpcErrorDataSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((error) => error.data === undefined || error.code === "RUN_VALIDATION_FAILED");
 
 export const RpcResponseSchema = z.union([
   z
@@ -88,8 +179,15 @@ export const ToolErrorSchema = z
     message: z.string(),
     correlationId: z.string().optional(),
     retryable: z.boolean(),
+    validationIssueVersion: z.literal(VALIDATION_ISSUE_VERSION).optional(),
+    validationIssues: z.array(ValidationIssueSchema).min(1).max(32).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (error) =>
+      (error.validationIssueVersion === undefined) === (error.validationIssues === undefined) &&
+      (error.validationIssues === undefined || error.code === "RUN_VALIDATION_FAILED"),
+  );
 
 export const ToolOutputSchema = z
   .object({
@@ -124,6 +222,7 @@ const SAFE_MESSAGES: Readonly<Record<string, string>> = {
   IDEMPOTENCY_CONFLICT: "This idempotency key is already bound to different request data.",
   PRECONDITION_FAILED: "Loomex state changed and the operation must be prepared again.",
   VALIDATION_FAILED: "The Loomex request did not pass validation.",
+  RUN_VALIDATION_FAILED: "The workflow cannot start until its validation issues are fixed.",
   UNSUPPORTED_FEATURE: "The requested feature is not supported by this Loomex version.",
   PROVIDER_UNAVAILABLE: "A required local provider CLI is unavailable or incompatible.",
   BACKEND_UNAVAILABLE: "The Loomex service is temporarily unavailable.",

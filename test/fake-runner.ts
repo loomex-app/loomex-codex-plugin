@@ -96,6 +96,7 @@ export class FakeRunner {
     code: string,
     message: string,
     retryable = false,
+    data?: Record<string, JsonValue>,
   ): void {
     socket.end(
       `${JSON.stringify({
@@ -106,6 +107,7 @@ export class FakeRunner {
           message,
           correlationId: "9e7a8f29-86a6-4b7a-bc75-3a8eb8ca21d7",
           retryable,
+          ...(data === undefined ? {} : { data }),
         },
       })}\n`,
     );

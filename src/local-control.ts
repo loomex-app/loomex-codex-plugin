@@ -12,10 +12,12 @@ import {
   RpcErrorCodeSchema,
   RpcRequestSchema,
   RpcResponseSchema,
+  VALIDATION_ISSUE_VERSION,
   safeErrorMessage,
   type JsonValue,
   type RpcErrorCode,
   type ToolOutput,
+  type ValidationIssue,
 } from "./protocol.js";
 import { parseMethodResult } from "./result-schemas.js";
 import { REQUIRED_RUNNER_CAPABILITIES } from "./tool-catalog.js";
@@ -33,6 +35,7 @@ export class LocalControlError extends Error {
   readonly requestId: string | undefined;
   readonly idempotencyKey: string | undefined;
   readonly transportFailure: boolean;
+  readonly validationIssues: readonly ValidationIssue[] | undefined;
 
   constructor(options: {
     code: RpcErrorCode;
@@ -41,6 +44,7 @@ export class LocalControlError extends Error {
     requestId?: string;
     idempotencyKey?: string;
     transportFailure?: boolean;
+    validationIssues?: readonly ValidationIssue[];
   }) {
     super(safeErrorMessage(options.code));
     this.name = "LocalControlError";
@@ -50,6 +54,7 @@ export class LocalControlError extends Error {
     this.requestId = options.requestId;
     this.idempotencyKey = options.idempotencyKey;
     this.transportFailure = options.transportFailure ?? false;
+    this.validationIssues = options.validationIssues;
   }
 }
 
@@ -288,6 +293,9 @@ export class LocalControlClient {
                   retryable: rpcError.retryable,
                   requestId: expectedId,
                   ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+                  ...(code === "RUN_VALIDATION_FAILED" && rpcError.data !== undefined
+                    ? { validationIssues: rpcError.data.validationIssues }
+                    : {}),
                 }),
               ),
             );
@@ -370,6 +378,12 @@ export function toolErrorOutput(method: string, error: unknown): ToolOutput {
       message: safeErrorMessage(local.code),
       ...(local.correlationId === undefined ? {} : { correlationId: local.correlationId }),
       retryable: local.retryable,
+      ...(local.validationIssues === undefined
+        ? {}
+        : { validationIssueVersion: VALIDATION_ISSUE_VERSION }),
+      ...(local.validationIssues === undefined
+        ? {}
+        : { validationIssues: [...local.validationIssues] }),
     },
     ...(local.idempotencyKey === undefined ? {} : { idempotencyKey: local.idempotencyKey }),
   };

@@ -24,7 +24,7 @@ The backend remains authoritative for identities, organizations, workflow graphs
 
 ## Trust boundaries
 
-| Boundary | Enforcement in 0.2.3 |
+| Boundary | Enforcement in 0.2.4 |
 | --- | --- |
 | Codex host to plugin | MCP SDK validates the registered strict Zod input schema. Unknown fields fail before local RPC. Workflow definitions containing an object with `source: "secret"` are rejected. |
 | Plugin to runner | The plugin requires an absolute state directory, then checks that the socket parent is an owner-only directory and the socket is an owner-only Unix socket owned by the effective UID. The runner independently checks the peer UID. |
@@ -41,9 +41,9 @@ The wire protocol is `loomex.local-control/v2`. The runner project owns the cano
 - `local-control.schema.json` defines the newline-delimited request and response envelopes and the 1,048,576-byte frame limit.
 - `method-catalog.json` defines method inputs, result projections, mutation flags, destructive flags, and retry semantics.
 
-The plugin vendors exact copies in `contracts/` and records their SHA-256 digests in `contracts/contract-pin.json`. The catalog contains 48 runner methods. The plugin exposes 46 as focused `loomex_*` MCP tools. Internal `protocol.negotiate` verifies required capabilities on each action connection before sending the action; `daemon.drain` remains reserved for runner installation and operations. Neither internal method appears as an MCP tool. Tests compare the exposed methods and top-level input/output fields to the pinned catalog and reject a hash mismatch.
+The plugin vendors exact copies in `contracts/` and records their SHA-256 digests in `contracts/contract-pin.json`. Contract export `0.1.1` keeps `loomex.local-control/v2` and adds optional, fixed-text `validationIssueVersion: "v1"` issues to error envelopes. Updated runner and plugin releases ship together; an older strict plugin still accepts successful v2 responses and errors without that field, but reports an actionable validation error as `INVALID_RESPONSE`. The catalog contains 48 runner methods. The plugin exposes 46 as focused `loomex_*` MCP tools. Internal `protocol.negotiate` verifies required capabilities on each action connection before sending the action; `daemon.drain` remains reserved for runner installation and operations. Neither internal method appears as an MCP tool. Tests compare the exposed methods and top-level input/output fields to the pinned catalog and reject a hash mismatch.
 
-The checked-in build script packages the plugin's vendored copies. It does not fetch or regenerate contracts and does not currently copy them from `../runner` during packaging. A protocol change therefore requires an explicit synchronized update and pin before either product is released. Product version `0.2.3` and protocol version `v2` are separate version axes.
+The checked-in build script packages the plugin's vendored copies. It does not fetch or regenerate contracts and does not currently copy them from `../runner` during packaging. A protocol change therefore requires an explicit synchronized update and pin before either product is released. Product version `0.2.4` and protocol version `v2` are separate version axes.
 
 ## MCP tools and results
 
@@ -73,7 +73,7 @@ For interaction and authoring requests, `humanRequest.inputSpec` owns question c
 
 The plugin only describes and transports `host_user/v1` work. Under that policy, a runner child has the full permissions of the signed-in macOS user. A workspace grant binds an exact root for working-directory validation and artifact references; it is not a filesystem or network sandbox. Provider and command processes may affect other host paths, services, and external systems available to that user.
 
-The 0.2.3 policy has no product deadline, global or per-workspace concurrency cap, cumulative stdout/stderr/provider-output cap, artifact count cap, or artifact byte cap. Pagination and chunk sizes remain bounded so work can resume safely. The plugin adds no secret-input model, secret prompt, secret store, or provider-login flow. Provider authentication remains in each provider CLI's host-owned store.
+The 0.2.4 policy has no product deadline, global or per-workspace concurrency cap, cumulative stdout/stderr/provider-output cap, artifact count cap, or artifact byte cap. Pagination and chunk sizes remain bounded so work can resume safely. The plugin adds no secret-input model, secret prompt, secret store, or provider-login flow. Provider authentication remains in each provider CLI's host-owned store.
 
 ## Current decisions and release status
 

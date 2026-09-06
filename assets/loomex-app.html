@@ -56,6 +56,13 @@
     .provider-row { display: grid; gap: 2px; }
     .ui-caption, .hint, .form-guide { margin: 0; font-size: var(--font-small); line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
     .ui-section { border-top: 1px solid var(--line); padding-top: var(--space-4); display: grid; gap: var(--space-3); }
+    .ui-section h3 { margin: 0; }
+    .ui-list { margin: 0; padding-left: var(--space-5); display: grid; gap: var(--space-1); font-size: 13px; }
+    .ui-list li { overflow-wrap: anywhere; white-space: pre-wrap; }
+    .progress-steps { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; padding: 0; list-style: none; color: var(--muted); font-size: var(--font-small); }
+    .progress-steps li { display: flex; align-items: center; gap: var(--space-2); }
+    .progress-steps li:not(:last-child)::after { content: "→"; color: var(--muted); }
+    .progress-steps [aria-current="step"] { color: var(--foreground); font-weight: 700; }
     .review-list { margin: 0; display: grid; gap: var(--space-1); font-size: 13px; }
     .review-list dt { font-weight: 550; }
     .review-list dd { margin: 0 0 var(--space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -115,10 +122,11 @@
   <header><h1 id="title">Loomex</h1><span id="connection">Connecting…</span></header>
   <p id="summary" class="notice" role="status" aria-live="polite">Waiting for the authoritative tool result.</p>
   <p id="support-reference" class="hint" hidden></p>
+  <section id="error-details" class="ui-stack" aria-label="Action details" hidden></section>
   <section id="context" aria-label="Review details" hidden></section>
   <section id="form" class="field" hidden></section>
   <div class="actions">
-    <button id="refresh" class="secondary" type="button" disabled>Refresh server state</button>
+    <button id="refresh" class="secondary" type="button" disabled>Refresh</button>
     <button id="secondary" class="secondary" type="button" hidden disabled></button>
     <button id="primary" type="button" hidden disabled></button>
   </div>
@@ -130,6 +138,7 @@
   const connection = document.getElementById("connection");
   const summary = document.getElementById("summary");
   const context = document.getElementById("context");
+  const errorDetails = document.getElementById("error-details");
   const supportReference = document.getElementById("support-reference");
   const form = document.getElementById("form");
   const refresh = document.getElementById("refresh");
@@ -192,9 +201,9 @@
     return list;
   }
 
-  function reviewFields(fields) {
+  function reviewFields(fields, headingText = "Run status") {
     const heading = element("div", { className: "ui-hero" });
-    heading.append(element("h2", {}, "Run status"));
+    heading.append(element("h2", {}, headingText));
     const list = element("dl", { className: "ui-grid" });
     for (const [label, value] of fields) {
       if (value === undefined) continue;
@@ -208,6 +217,167 @@
     context.className = "ui-stack";
     context.replaceChildren(heading, list);
     context.hidden = !list.childElementCount;
+  }
+
+  function safeText(value, maximumLength = 4096) {
+    return typeof value === "string" && value.trim() && value.trim().length <= maximumLength ? value.trim() : undefined;
+  }
+
+  function safeTextList(value, maximumItems = 50, maximumItemLength = 2048) {
+    return Array.isArray(value) && value.length <= maximumItems && value.every((item) => safeText(item, maximumItemLength))
+      ? value.map((item) => item.trim()).filter(Boolean)
+      : undefined;
+  }
+
+  function humanPresentation(request) {
+    const presentation = request && request.presentation;
+    if (!presentation || presentation.version !== 1 || !["review", "clarification", "progress"].includes(presentation.kind)) return undefined;
+    const textFields = ["stageLabel", "summary", "question"];
+    const listFields = ["changedFiles", "verification", "limitations", "artifacts", "priorRequirements", "decisions", "openQuestions"];
+    if (textFields.some((key) => presentation[key] !== undefined && !safeText(presentation[key]))) return undefined;
+    if (listFields.some((key) => presentation[key] !== undefined && !safeTextList(presentation[key]))) return undefined;
+    return presentation;
+  }
+
+  function appendTextList(parent, label, values, excluded = new Set()) {
+    const items = (safeTextList(values) || []).filter((item) => !excluded.has(normalizedCopy(item)));
+    if (!items.length) return;
+    const section = element("section", { className: "ui-section" });
+    section.append(element("h3", { className: "ui-label" }, label));
+    const list = element("ul", { className: "ui-list" });
+    for (const item of items) list.append(element("li", {}, item));
+    section.append(list);
+    parent.append(section);
+  }
+
+  function appendProgress(parent, stageLabel) {
+    const current = safeText(stageLabel);
+    if (!current) return;
+    const stages = ["Idea", "Clarify", "Build", "Review"];
+    const normalized = current.toLowerCase();
+    const matched = stages.find((stage) => normalized.includes(stage.toLowerCase()));
+    if (!matched) {
+      const meta = element("div", { className: "ui-meta" });
+      meta.append(element("span", { className: "ui-badge" }, current));
+      parent.append(meta);
+      return;
+    }
+    const list = element("ol", { className: "progress-steps", "aria-label": "Workflow progress" });
+    for (const stage of stages) {
+      list.append(element("li", stage === matched ? { "aria-current": "step" } : {}, stage));
+    }
+    parent.append(list);
+  }
+
+  function renderHumanPresentation(request, spec) {
+    const presentation = humanPresentation(request);
+    if (!presentation) return false;
+    const wrapper = element("div", { className: "ui-stack" });
+    const hero = element("div", { className: "ui-hero" });
+    hero.append(element("h2", {}, presentation.kind === "review" ? "Implementation review" : "Requirements progress"));
+    appendProgress(hero, presentation.stageLabel);
+    if (safeText(presentation.summary)) hero.append(element("p", { className: "ui-caption" }, safeText(presentation.summary)));
+    wrapper.append(hero);
+    const questionTexts = new Set(questionCopyValues(spec).map(normalizedCopy));
+    appendTextList(wrapper, "Changed files", presentation.changedFiles, questionTexts);
+    appendTextList(wrapper, "Checks", presentation.verification, questionTexts);
+    appendTextList(wrapper, "Limitations", presentation.limitations, questionTexts);
+    appendTextList(wrapper, "Artifacts", presentation.artifacts, questionTexts);
+    appendTextList(wrapper, "Requirements gathered", presentation.priorRequirements, questionTexts);
+    appendTextList(wrapper, "Decisions", presentation.decisions, questionTexts);
+    appendTextList(wrapper, "Open questions", presentation.openQuestions, questionTexts);
+    context.className = "ui-stack";
+    context.replaceChildren(wrapper);
+    context.hidden = false;
+    return true;
+  }
+
+  function formatStatus(value) {
+    const status = safeText(value);
+    return status ? status.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : undefined;
+  }
+
+  function formatDateTime(value) {
+    const text = safeText(value);
+    if (!text) return undefined;
+    const date = new Date(text);
+    return Number.isNaN(date.getTime()) ? undefined : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  }
+
+  function formatDuration(startedAt, endedAt) {
+    const started = new Date(startedAt || "").getTime();
+    const ended = endedAt ? new Date(endedAt).getTime() : Date.now();
+    if (!Number.isFinite(started) || !Number.isFinite(ended) || ended < started) return undefined;
+    const seconds = Math.floor((ended - started) / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
+  }
+
+  function terminalRun(run) {
+    return ["completed", "failed", "canceled", "cancelled", "succeeded", "expired"].includes(String(run && run.status || "").toLowerCase());
+  }
+
+  function pagedResponse(output) {
+    return output && typeof output.responseRef === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(output.responseRef) &&
+      output.encoding === "json" && Number.isSafeInteger(output.sizeBytes) && output.sizeBytes >= 0
+      ? output
+      : undefined;
+  }
+
+  function formatBytes(value) {
+    if (!Number.isSafeInteger(value) || value < 0) return undefined;
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function runPresentation(run) {
+    const presentation = run && run.result;
+    if (!presentation || presentation.version !== 1) return undefined;
+    if (presentation.summary !== undefined && !safeText(presentation.summary)) return undefined;
+    const listFields = ["changedFiles", "artifacts", "verification", "limitations"];
+    if (listFields.some((key) => presentation[key] !== undefined && !safeTextList(presentation[key]))) return undefined;
+    return presentation;
+  }
+
+  function renderRun(run) {
+    const heading = safeText(run.workflowName) || safeText(run.name) || "Workflow run";
+    reviewFields([
+      ["Status", formatStatus(run.status)],
+      ["Stage", safeText(run.stageLabel)],
+      ["Current step", safeText(run.currentNodeName)],
+      ["Elapsed", formatDuration(run.startedAt, run.completedAt)],
+      ["Started", formatDateTime(run.startedAt)],
+      ["Completed", formatDateTime(run.completedAt)],
+      ["Latest update", safeText(run.lastEvent)],
+      ["Action needed", safeText(run.requiredAction)],
+    ], heading);
+    const wrapper = context.firstElementChild ? context : null;
+    const presentation = runPresentation(run);
+    if (wrapper && presentation) {
+      if (safeText(presentation.summary)) {
+        const section = element("section", { className: "ui-section" });
+        section.append(element("h3", { className: "ui-label" }, "Result"), element("p", { className: "ui-caption" }, safeText(presentation.summary)));
+        context.append(section);
+      }
+      appendTextList(context, "Changed files", presentation.changedFiles);
+      appendTextList(context, "Verification", presentation.verification);
+      appendTextList(context, "Limitations", presentation.limitations);
+      appendTextList(context, "Artifacts", presentation.artifacts);
+    }
+    const references = element("details", { className: "ui-disclosure" });
+    references.append(element("summary", {}, "Execution references"));
+    const ids = [["Run", run.id], ["Current step", run.currentNodeId]].filter(([, value]) => safeText(value));
+    if (ids.length) {
+      const list = element("dl", { className: "review-list" });
+      for (const [label, value] of ids) list.append(element("dt", {}, label), element("dd", {}, value));
+      references.append(list);
+      context.append(references);
+    }
   }
 
   function validPresentation(presentation) {
@@ -375,6 +545,55 @@
     summary.textContent = error && error.message ? String(error.message) : "The host could not complete this action.";
   }
 
+  function structuredError(result) {
+    const envelope = result && result.structuredContent ? result.structuredContent : result;
+    return envelope && envelope.error && typeof envelope.error === "object" ? envelope.error : undefined;
+  }
+
+  function renderFailure(result) {
+    errorDetails.replaceChildren();
+    errorDetails.hidden = true;
+    const error = structuredError(result);
+    if (!error) return;
+    summary.textContent = safeText(error.message) || "Loomex could not complete this action. Refresh to check its current status before trying again.";
+    if (error.validationIssueVersion !== "v1" || !Array.isArray(error.validationIssues)) return;
+    const issues = error.validationIssues.slice(0, 32).filter((issue) => issue && typeof issue === "object" && safeText(issue.message, 1024));
+    if (!issues.length) return;
+    const heading = element("h2", { className: "ui-label" }, "What needs attention");
+    const list = element("div", { className: "ui-stack" });
+    const references = [];
+    for (const issue of issues) {
+      const card = element("section", { className: "ui-card" });
+      const label = safeText(issue.nodeName) || "Workflow configuration";
+      card.append(element("h3", { className: "ui-value" }, label));
+      card.append(element("p", { className: "ui-caption" }, safeText(issue.message)));
+      const nextActions = {
+        correct_workflow_inputs: "Correct the workflow inputs, then prepare the run again.",
+        update_workflow_definition: "Update the workflow definition, then prepare the run again.",
+        prepare_runner_execution: "Prepare this run with a local runner execution root.",
+        connect_runner: "Connect the required local runner, then refresh its status.",
+        choose_supported_provider: "Choose a provider that supports this workflow, then prepare the run again.",
+        allow_capability: "Allow the required workflow capability, then prepare the run again.",
+        configure_capability_policy: "Configure the workflow capability policy, then prepare the run again.",
+        review_workflow_validation: "Review the workflow validation details, fix the listed steps, then prepare the run again.",
+      };
+      const action = nextActions[issue.nextAction];
+      if (action) card.append(element("p", {}, action));
+      list.append(card);
+      if (safeText(issue.nodeId)) references.push([label, safeText(issue.nodeId)]);
+    }
+    errorDetails.append(heading, list);
+    if (references.length) {
+      const details = element("details", { className: "ui-disclosure" });
+      details.append(element("summary", {}, "Validation references"));
+      const refs = element("dl", { className: "review-list" });
+      for (const [label, id] of references) refs.append(element("dt", {}, label), element("dd", {}, id));
+      details.append(refs);
+      errorDetails.append(details);
+    }
+    errorDetails.hidden = false;
+  }
+
   function element(tag, attributes = {}, text = "") {
     const node = document.createElement(tag);
     for (const [name, value] of Object.entries(attributes)) {
@@ -432,11 +651,24 @@
     });
   }
 
-  function appendRequestCopy(request) {
-    const heading = typeof request.title === "string" ? request.title.trim() : "";
+  function normalizedCopy(value) {
+    return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+  }
+
+  function questionCopyValues(spec) {
+    if (!spec || typeof spec !== "object") return [];
+    const questions = Array.isArray(spec.questions) ? spec.questions : [spec];
+    return questions.map((question) => safeText(question && question.question)).filter(Boolean);
+  }
+
+  function appendRequestCopy(request, spec) {
+    const questionCopies = new Set(questionCopyValues(spec).map(normalizedCopy));
+    const candidateHeading = typeof request.title === "string" ? request.title.trim() : "";
+    const heading = questionCopies.has(normalizedCopy(candidateHeading)) ? "" : candidateHeading;
     const descriptions = [...new Set([request.description, request.prompt]
       .filter((value) => typeof value === "string" && value.trim())
-      .map((value) => value.trim()))];
+      .map((value) => value.trim()))]
+      .filter((value) => !questionCopies.has(normalizedCopy(value)));
     if (!heading && !descriptions.length) return;
     const copy = element("div", { className: "request-copy" });
     if (heading) copy.append(element("h2", {}, heading));
@@ -539,7 +771,10 @@
       stack.append(label);
       if (inputType === "date") stack.append(element("p", { id: hintId, className: "hint" }, "Choose a calendar date."));
     } else if (inputType === "boolean") {
-      for (const option of [{ value: "true", label: "Yes" }, { value: "false", label: "No" }]) {
+      const booleanLabels = spec.acceptanceLabels === true
+        ? [{ value: "true", label: "Accept" }, { value: "false", label: "Request changes" }]
+        : [{ value: "true", label: "Yes" }, { value: "false", label: "No" }];
+      for (const option of booleanLabels) {
         const id = `question-${questionIndex}-${option.value}`;
         const label = element("label", { className: "choice", htmlFor: id });
         const selected = typeof answer.value === "boolean" && String(answer.value) === option.value;
@@ -596,11 +831,17 @@
 
   function questionForm(spec, schema, initial, request) {
     form.replaceChildren();
-    appendRequestCopy(request || {});
     const batch = spec.collectionMode === "batch" || Array.isArray(spec.questions);
     const questions = batch ? spec.questions : [spec];
-    form.append(element("p", { className: "form-guide" }, `${questions.length} ${questions.length === 1 ? "question" : "questions"} · * Required`));
-    questions.forEach((question, index) => renderQuestion({ ...question, inputType: question.inputType || spec.inputType }, schema, initial || {}, index, batch));
+    appendRequestCopy(request || {}, spec);
+    if (questions.length > 1) form.append(element("p", { className: "form-guide" }, `${questions.length} questions · * Required`));
+    const acceptance = humanPresentation(request || {})?.kind === "review" && questions.length === 1 &&
+      normalizeInputType(questions[0].inputType || spec.inputType) === "boolean";
+    questions.forEach((question, index) => renderQuestion({
+      ...question,
+      inputType: question.inputType || spec.inputType,
+      acceptanceLabels: acceptance,
+    }, schema, initial || {}, index, batch));
     form.dataset.formKind = "questions";
     form.dataset.collectionMode = batch ? "batch" : "single";
     form.hidden = false;
@@ -613,7 +854,7 @@
     }
     if (spec && typeof spec === "object" && Object.keys(spec).length) {
       form.replaceChildren();
-      appendRequestCopy(request);
+      appendRequestCopy(request, spec);
       form.append(element("p", { className: "notice error", role: "alert" }, "This question cannot be displayed here. Continue in the conversation for help with this request."));
       form.dataset.formKind = "invalid-questions";
       form.hidden = false;
@@ -621,7 +862,7 @@
       return false;
     }
     form.replaceChildren();
-    appendRequestCopy(request);
+    appendRequestCopy(request, spec);
     const properties = schema && schema.properties && typeof schema.properties === "object" ? schema.properties : null;
     const supported = properties && Object.values(properties).every((field) =>
       field && typeof field === "object" &&
@@ -806,6 +1047,8 @@
     const output = latest || {};
     summary.classList.toggle("error", failed);
     summary.setAttribute("role", failed ? "alert" : "status");
+    errorDetails.replaceChildren();
+    errorDetails.hidden = true;
     summary.textContent = failed
       ? "Loomex could not complete this action. Refresh to check its current status before trying again."
       : mode === "interaction"
@@ -817,10 +1060,14 @@
     const reference = envelope && envelope.requestId;
     supportReference.hidden = !(failed && typeof reference === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reference));
     supportReference.textContent = supportReference.hidden ? "" : `Support reference: ${reference}`;
+    if (failed) renderFailure(result);
     refresh.disabled = !connected;
     if (failed && latest) return;
     primary.hidden = true;
+    primary.disabled = true;
+    primary.className = "";
     secondary.hidden = true;
+    secondary.disabled = true;
     form.hidden = true;
     form.replaceChildren();
     context.replaceChildren();
@@ -835,26 +1082,44 @@
       primary.hidden = false;
       primary.disabled = !connected || !preparationReviewable(output) || !findId(output, "preparationId") || !findId(output, "bindingDigest") || !findId(output, "confirmationKey");
     } else if (mode === "monitor") {
+      const response = pagedResponse(output);
+      if (response) {
+        summary.textContent = "The complete result is available as an immutable paged response.";
+        reviewFields([
+          ["Result", "Ready to view in the conversation"],
+          ["Size", formatBytes(response.sizeBytes)],
+        ], "Full results available");
+        primary.textContent = "View results";
+        primary.hidden = false;
+        primary.disabled = !connected;
+        return;
+      }
       const runId = executionId(output);
       const run = output.execution || {};
-      reviewFields([["Run", run.name || run.id], ["Status", run.status], ["Started", run.startedAt], ["Completed", run.completedAt]]);
-      secondary.textContent = "Wait for change";
-      secondary.hidden = false;
-      secondary.disabled = !connected || !runId;
-      primary.textContent = "Request cancellation";
-      primary.className = "danger";
-      primary.hidden = false;
-      primary.disabled = !connected || !runId;
-      typedForm({ properties: { reason: { type: "string" } } }, { reason: "Cancelled by user" });
+      renderRun(run);
+      if (terminalRun(run)) {
+        summary.textContent = `${formatStatus(run.status) || "Run"}. Review the result details below.`;
+      } else {
+        summary.textContent = safeText(run.requiredAction) || "This run is in progress.";
+        secondary.textContent = "Wait for update";
+        secondary.hidden = false;
+        secondary.disabled = !connected || !runId;
+        primary.textContent = "Cancel run";
+        primary.className = "danger";
+        primary.hidden = false;
+        primary.disabled = !connected || !runId;
+        typedForm({ properties: { reason: { type: "string" } } }, { reason: "Cancelled by user" });
+      }
     } else if (mode === "interaction") {
       const request = humanRequest(output) || {};
       const requestId = interactionId(output);
       const requestType = request.type;
       const schema = request.responseSchema || request.outputSchema;
+      renderHumanPresentation(request, request.inputSpec);
       if (humanRequestResolved(request)) {
         summary.textContent = "Response received. This request is complete.";
       } else if (requestType === "approval" || output.decisionRequired === true) {
-        appendRequestCopy(request);
+        appendRequestCopy(request, request.inputSpec);
         form.hidden = false;
         secondary.textContent = "Reject";
         secondary.hidden = false;
@@ -864,7 +1129,7 @@
         primary.disabled = !connected || !requestId;
       } else {
         const formReady = typedForm(schema, request.answer, request.inputSpec, request);
-        primary.textContent = "Submit response";
+        primary.textContent = "Continue";
         primary.hidden = false;
         primary.disabled = !connected || !requestId || !formReady;
       }
@@ -873,8 +1138,9 @@
       const request = humanRequest(output) || {};
       const schema = request.responseSchema || request.outputSchema;
       if (sessionId && (schema || request.inputSpec)) {
+        renderHumanPresentation(request, request.inputSpec);
         const formReady = typedForm(schema, request.answer || {}, request.inputSpec, request);
-        primary.textContent = "Respond to authoring session";
+        primary.textContent = "Continue";
         primary.hidden = false;
         primary.disabled = !connected || !formReady;
       }
@@ -907,7 +1173,7 @@
     summary.setAttribute("role", "alert");
     summary.textContent = reconciled
       ? "The server still reports this request as pending. Your original response remains locked; retry sends those exact answers and the same operation ID."
-      : "The submission outcome is uncertain. Your original response is locked. Refresh server state to reconcile, or retry the exact same response and operation ID.";
+      : "The submission outcome is uncertain. Your original response is locked. Refresh to reconcile, or retry the exact same response and operation ID.";
     secondary.disabled = true;
     primary.textContent = "Retry exact response";
     primary.disabled = !connected;
@@ -920,9 +1186,8 @@
     if (!operation.uncertain) return;
     for (const control of form.querySelectorAll("input, select, textarea")) control.disabled = false;
     delete form.dataset.uncertain;
-    if (operation.name === "loomex_interaction_respond") primary.textContent = "Submit response";
-    else if (operation.name === "loomex_builder_respond") primary.textContent = "Respond to authoring session";
-    else if (operation.name === "loomex_run_cancel") primary.textContent = "Request cancellation";
+    if (operation.name === "loomex_interaction_respond" || operation.name === "loomex_builder_respond") primary.textContent = "Continue";
+    else if (operation.name === "loomex_run_cancel") primary.textContent = "Cancel run";
     else if (operation.name === "loomex_interaction_decide") {
       primary.textContent = "Approve";
       secondary.textContent = "Reject";
@@ -983,7 +1248,7 @@
       };
       mutationOperations.set(slot, operation);
     } else if (operation.name !== name) {
-      throw new Error("The retained operation does not match this action. Refresh server state before continuing.");
+      throw new Error("The retained operation does not match this action. Refresh before continuing.");
     }
     const result = await callTool(operation.name, immutableCopy(operation.arguments));
     const uncertain = ["NETWORK_AMBIGUOUS", "IDEMPOTENCY_REQUEST_IN_PROGRESS"].includes(errorCodeOf(result));
@@ -1064,6 +1329,7 @@
       }
       const data = latest || {};
       if (mode === "monitor") {
+        if (terminalRun(data.execution || {})) return;
         await callTool("loomex_run_wait", { runId: executionId(data), timeoutSeconds: 30 });
       } else if (mode === "interaction") {
         const requestId = interactionId(data);
@@ -1091,7 +1357,18 @@
           bindingDigest: findId(data, "bindingDigest"),
           confirmationKey: findId(data, "confirmationKey")
         });
+      } else if (mode === "monitor" && pagedResponse(data)) {
+        const response = pagedResponse(data);
+        await send("ui/message", {
+          role: "user",
+          content: {
+            type: "text",
+            text: `Read and present the complete Loomex result using loomex_response_read with responseRef ${response.responseRef}. Begin at offset 0, continue through every nextOffset, and verify checksumSha256 before presenting it.`,
+          },
+        });
+        summary.textContent = "The conversation has been asked to retrieve and present the complete result.";
       } else if (mode === "monitor") {
+        if (terminalRun(data.execution || {})) throw new Error("This run is already complete.");
         const answer = collectAnswer();
         if (!answer.reason) throw new Error("Enter a cancellation reason.");
         const runId = executionId(data);
@@ -1140,7 +1417,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.3" },
+    appInfo: { name: "loomex", version: "0.2.4" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));
