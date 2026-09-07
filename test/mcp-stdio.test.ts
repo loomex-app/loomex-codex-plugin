@@ -272,7 +272,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.2.7 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.2.8 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -1020,7 +1020,28 @@ test("workflow listing attaches browser metadata and preserves the initial searc
   const client = await connect(runner);
   const tools = await client.listTools();
   const listing = tools.tools.find((tool) => tool.name === "loomex_workflows_list");
-  assert.match(String((listing?._meta?.ui as { resourceUri: string }).resourceUri), /browser-/);
+  assert.match(String((listing?._meta?.ui as { resourceUri: string }).resourceUri), /browser\.html/);
   const result = await client.callTool({ name: "loomex_workflows_list", arguments: { query: "idea", limit: 20 } });
   assert.deepEqual(result._meta?.["loomex/workflowListQuery"], { query: "idea", limit: 20 });
+});
+
+
+test("stable UI resources resolve previously shipped cached references only", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {}));
+  const client = await connect(runner);
+  const resources = await client.listResources();
+  assert.equal(resources.resources.length, 5);
+  for (const resource of resources.resources) assert.match(resource.uri, /^ui:\/\/loomex\/[a-z]+\.html$/);
+  for (const mode of ["authoring", "prepare", "monitor", "interaction", "browser"]) {
+    const uri = `ui://loomex/${mode}-${mode === "browser" ? "0.2.7" : "0.2.3"}.html`;
+    const result = await client.readResource({ uri });
+    assert.equal(result.contents[0]?.uri, uri);
+    const content = result.contents[0];
+    assert.match(content && "text" in content ? content.text : "", new RegExp(`data-mode="${mode}"`));
+    assert.equal(runner.requests.length, 0);
+  }
+  await assert.rejects(client.readResource({ uri: "ui://loomex/authoring-99.0.0.html" }));
+  await assert.rejects(client.readResource({ uri: "ui://loomex/unknown-0.2.3.html" }));
+  await assert.rejects(client.readResource({ uri: "ui://loomex/browser-0.2.3.html" }));
 });

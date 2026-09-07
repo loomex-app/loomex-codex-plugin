@@ -6,11 +6,11 @@ import {
   type JsonValue,
 } from "./protocol.js";
 
-export const BROWSER_UI_URI = "ui://loomex/browser-0.2.7.html";
-export const AUTHORING_UI_URI = "ui://loomex/authoring-0.2.7.html";
-export const PREPARE_UI_URI = "ui://loomex/prepare-0.2.7.html";
-export const MONITOR_UI_URI = "ui://loomex/monitor-0.2.7.html";
-export const INTERACTION_UI_URI = "ui://loomex/interaction-0.2.7.html";
+export const BROWSER_UI_URI = "ui://loomex/browser.html";
+export const AUTHORING_UI_URI = "ui://loomex/authoring.html";
+export const PREPARE_UI_URI = "ui://loomex/prepare.html";
+export const MONITOR_UI_URI = "ui://loomex/monitor.html";
+export const INTERACTION_UI_URI = "ui://loomex/interaction.html";
 
 type InputSchema = z.ZodObject<z.ZodRawShape>;
 

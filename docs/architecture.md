@@ -61,7 +61,7 @@ Results too large for one local frame become immutable spool references. `respon
 
 ## Headless behavior and optional UI
 
-All lifecycle operations are registered MCP tools and remain usable when a host does not render resources. The plugin registers five versioned optional resources for workflow browsing, authoring, prepare review, monitoring, and interactions. They are five modes of one bundled HTML template and advertise only the inline display mode.
+All lifecycle operations are registered MCP tools and remain usable when a host does not render resources. The plugin registers five stable optional resources for workflow browsing, authoring, prepare review, monitoring, and interactions. They are five modes of one bundled HTML template and advertise only the inline display mode.
 
 The resources use `ui/initialize`, tool result notifications, and `tools/call` through `window.parent.postMessage`. They do not depend on `window.openai`. The embedded CSP denies all external connections, resources, frames, forms, and images; no HTTP URL is present in the resource. Sensitive-looking fields such as tokens, credentials, authorization material, and confirmation keys are masked in the display. If the portable bridge does not initialize within three seconds, the resource reports that headless tools remain available.
 
@@ -82,3 +82,5 @@ The current authority is the clean-slate plan, especially the [baseline](../../p
 This document describes current source behavior and intended trust boundaries. It does not establish production readiness. Apple signing and notarization, an actually signed installed LaunchAgent lifecycle, deployed backend migrations, real Desktop UI behavior, the three-provider matrix, and confirmation of historical remote credential revocation remain open in the [release gates](../../planning/plugin-runner-clean-slate/release-gates.md).
 
 Workflow listing attaches the browser resource to `loomex_workflows_list`. Search and cursor navigation use read-only list calls; workflow details use `loomex_workflow_get`. Original query parameters are carried in result metadata for remounts. Only workflow IDs enter preparation handoff messages; workflow names and descriptions are rendered as text. Prepare run sends an explicit conversation request to collect inputs/workspace and review a fresh binding; it never commits execution. Failed reads lock row actions until refresh succeeds.
+
+UI addresses are stable (`ui://loomex/authoring.html`, etc.) so a product update does not invalidate a task’s tool metadata. A resource template serves the current view for allowlisted cached 0.2.3–0.2.7 addresses, including `ui://loomex/authoring-0.2.3.html`. Unknown views/releases remain errors. Compatibility changes resource lookup only; it does not recover or authorize old preparation state.

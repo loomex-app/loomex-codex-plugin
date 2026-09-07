@@ -125,7 +125,7 @@ async function mountApp(
           : { structuredContent: { ok: true, data: resultData } };
         window.setTimeout(() => {
           event.source.postMessage({ jsonrpc: "2.0", id: message.id, result }, "*");
-        }, shouldFailFirst && callNumber === 1 ? 120 : 0);
+        }, shouldFailFirst && callNumber === 1 ? 120 : Number(window.__workflowDelayMs || 0));
       }
     });
     frame.addEventListener("load", () => {
@@ -975,9 +975,34 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { limit: 20, query: "missing" });
   await app.getByRole("button", { name: "Clear search", exact: true }).click();
   await app.getByRole("button", { name: /^View:/ }).waitFor();
-  await page.evaluate((id: string) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflow: { id, name: "Idea", status: "active" }, activeVersion: { versionNumber: 4, definition: { nodes: [{ name: "Describe idea" }] } } } } }]; }, id);
+  await page.evaluate((id: string) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    workflow: { id, name: "Idea", status: "active", metadata: { description: "Turn a short brief into an implementation." } },
+    activeVersion: { versionNumber: 4, definition: { executionPolicy: "obsolete-policy", settings: { inputSchema: { properties: { obsolete: { type: "number" } } } }, nodes: [{ name: "Obsolete active step", type: "tool" }] } },
+    selectedVersion: { versionNumber: 5, definition: {
+      executionPolicy: "host_user/v1",
+      settings: { inputSchema: { type: "object", properties: { directoryPath: { type: "string", title: "Project directory" } }, required: ["directoryPath"] } },
+      nodes: [
+        { key: "start", name: "Collect brief", type: "start", inputSchema: { properties: { ignoredFallback: { type: "boolean" } } } },
+        { key: "implement", name: "Implement", type: "ai_agent", config: { provider: "codex", model: "gpt-5.6-luna", reasoningEffort: "medium" } },
+        { key: "review", name: "Review", type: "ai_agent", config: { provider: "codex", model: "gpt-5.6-luna", reasoningEffort: "medium" } },
+      ],
+    } },
+    inputSchema: { properties: { staleProjection: { type: "integer" } } },
+    nodes: [{ key: "7f57e77b-a37e-4eef-9788-e6bc37447bb2", name: "Stale descriptor", type: "tool" }],
+  } } }]; }, id);
   await app.getByRole("button", { name: /^View:/ }).click();
   await app.getByRole("heading", { name: "Idea", exact: true }).waitFor();
+  await app.getByText("Version 5", { exact: false }).waitFor();
+  await app.getByText("Project directory", { exact: true }).waitFor();
+  await app.getByText("Required", { exact: true }).waitFor();
+  await app.getByText("gpt-5.6-luna · medium effort", { exact: true }).waitFor();
+  await app.getByText("Runs with the signed-in macOS user's permissions.", { exact: true }).waitFor();
+  const detailText = await app.locator("body").innerText();
+  assert.doesNotMatch(detailText, /obsolete|staleProjection|ignoredFallback|7f57e77b|Obsolete active step|Stale descriptor/);
+  const steps = app.locator("details").filter({ hasText: "Workflow steps (3)" });
+  assert.equal(await steps.getAttribute("open"), null);
+  await steps.locator("summary").click();
+  await app.getByText("Implement · Ai Agent", { exact: true }).waitFor();
   await app.getByRole("button", { name: /^Prepare run/ }).click();
   await app.getByText("Continue in the conversation to choose inputs and a workspace, then review the preparation.").waitFor();
   const messages = await page.evaluate(() => window.__loomexMessages);
@@ -997,6 +1022,129 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   if (directory) { await mkdir(directory, { recursive: true }); await app.locator("main").screenshot({ path: resolve(directory, "browser-mobile.png") }); }
 });
 
+test("authoring workflow detail matches the browser read view and only hands preparation to the conversation", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for workflow authoring detail");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
+  const id = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const versionId = "8b29c880-1c68-4d47-a1ff-477ab28d3c49";
+  const detail = {
+    workflow: { id, name: "Future v5", status: "active", metadata: { description: "Build and review a project." } },
+    activeVersion: { id: versionId, workflowId: id, versionNumber: 5, definition: { nodes: [] } },
+    selectedVersion: { id: versionId, workflowId: id, versionNumber: 5, definition: {
+      executionPolicy: "host_user/v1",
+      settings: { inputSchema: { type: "object", properties: { directoryPath: { title: "Project directory", type: "string" } }, required: ["directoryPath"] } },
+      nodes: [
+        { key: "implement", name: "Implement", type: "ai_agent", config: { provider: "codex", model: "gpt-5.6-luna", reasoningEffort: "medium" } },
+        { key: "review", name: "Review", type: "ai_agent", config: { provider: "codex", model: "gpt-5.6-luna", reasoningEffort: "medium" } },
+      ],
+    } },
+    inputSchema: { type: "object", properties: { directoryPath: { title: "Project directory", type: "string" } }, required: ["directoryPath"] },
+  };
+  const app = await mountApp(page, "authoring", detail);
+  await app.getByRole("heading", { name: "Future v5", exact: true }).waitFor();
+  await app.getByText("Project directory", { exact: true }).waitFor();
+  await app.getByText("gpt-5.6-luna · medium effort", { exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).evaluate((button: any) => button.getBoundingClientRect().height >= 42), true);
+  assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
+  const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
+  if (directory) {
+    await mkdir(directory, { recursive: true });
+    await app.locator("main").screenshot({ path: resolve(directory, "workflow-detail-mobile.png") });
+  }
+
+  await app.getByRole("button", { name: "Refresh", exact: true }).click();
+  await waitForCallCount(page, 1);
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls))[0], { name: "loomex_workflow_get", arguments: { workflowId: id, version: "5" } });
+  await app.getByRole("heading", { name: "Future v5", exact: true }).waitFor();
+
+  await page.evaluate(() => {
+    window.__workflowDelayMs = 120;
+    window.__workflowResponses = [{ isError: true, structuredContent: { ok: false } }];
+  });
+  await app.getByRole("button", { name: "Refresh", exact: true }).click();
+  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).isDisabled(), true);
+  assert.equal(await app.locator("#context").getAttribute("aria-busy"), "true");
+  await waitForCallCount(page, 2);
+  await app.locator("#summary.error").waitFor();
+  assert.equal(await app.locator("#context").getAttribute("aria-busy"), "false");
+  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).isDisabled(), true);
+
+  await page.evaluate((data: any) => {
+    window.__workflowDelayMs = 0;
+    window.__workflowResponses = [{ structuredContent: { ok: true, data } }];
+  }, detail);
+  await app.getByRole("button", { name: "Refresh", exact: true }).click();
+  await waitForCallCount(page, 3);
+  await app.getByText("Review this workflow before preparing a run.", { exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).isEnabled(), true);
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls))[2], { name: "loomex_workflow_get", arguments: { workflowId: id, version: "5" } });
+
+  await app.getByRole("button", { name: "Prepare run", exact: true }).click();
+  await app.getByText("Continue in the conversation to choose inputs and a workspace, then review the preparation.").waitFor();
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.deepEqual(calls.map((call: any) => call.name), ["loomex_workflow_get", "loomex_workflow_get", "loomex_workflow_get"]);
+  const messages = await page.evaluate(() => window.__loomexMessages);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].content[0].text, /does not authorize committing or executing/);
+  assert.equal(await app.getByRole("heading", { name: "Future v5", exact: true }).isVisible(), true);
+});
+
+test("authoring workflow detail hands paged responses to the conversation without a tool call", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for paged authoring detail");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 900 } });
+  const responseRef = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const app = await mountApp(page, "authoring", { responseRef, encoding: "json", sizeBytes: 90_000, nextOffset: 0 });
+  await app.getByRole("button", { name: "View complete response", exact: true }).click();
+  await app.getByText("The conversation has been asked to retrieve the complete workflow response.", { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls), []);
+  const messages = await page.evaluate(() => window.__loomexMessages);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].content[0].text, new RegExp(responseRef));
+  assert.match(messages[0].content[0].text, /read-only request/);
+  assert.doesNotMatch(messages[0].content[0].text, /commit|execute/);
+});
+
+test("workflow detail bounds inputs, AI configurations and steps with transparent omission counts", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for bounded workflow detail");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 1200 } });
+  const id = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const aiNodes = Array.from({ length: 21 }, (_, index) => ({
+    key: `agent-${index}`, name: `Agent ${index}`, type: "ai_agent",
+    config: { provider: "codex", model: `model-${index}`, effort: "medium" },
+  }));
+  const toolNodes = Array.from({ length: 80 }, (_, index) => ({ key: `tool-${index}`, name: `Tool ${index}`, type: "tool" }));
+  const inputProperties = Object.fromEntries(Array.from({ length: 51 }, (_, index) => [`input${index}`, { title: `Input ${index}`, type: "string" }]));
+  const data = {
+    workflow: { id, name: "Bounded workflow", status: "active" },
+    selectedVersion: { workflowId: id, versionNumber: 7, definition: {
+      executionPolicy: "host_user/v1",
+      settings: { inputSchema: { type: "object", properties: inputProperties, required: ["input50"] } },
+      nodes: [...aiNodes, ...toolNodes],
+    } },
+  };
+  const app = await mountApp(page, "authoring", data);
+  const inputs = app.locator('section[aria-label="Input requirements"]');
+  await inputs.getByText("Showing the first 50 of 51 input requirements.", { exact: true }).waitFor();
+  assert.equal(await inputs.locator(".workflow-detail-item").count(), 50);
+  assert.equal(await inputs.getByText("Input 50", { exact: true }).count(), 0);
+  const providers = app.locator('section[aria-label="AI configuration"]');
+  await providers.getByText("Showing 20 of 21 AI configurations.", { exact: true }).waitFor();
+  assert.equal(await providers.locator(".workflow-detail-item").count(), 20);
+  assert.equal(await providers.getByText("model-20", { exact: true }).count(), 0);
+  const steps = app.locator("details").filter({ hasText: "Workflow steps (101)" });
+  await steps.getByText("Showing the first 100 of 101 steps.", { exact: true }).waitFor({ state: "attached" });
+  assert.equal(await steps.locator("li").count(), 100);
+});
+
 test("workflow browser restores scope, handles large responses and shares responsive themes", async (t) => {
   const available = await browserTools(); if (!available) assert.fail("Chromium required");
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
@@ -1014,6 +1162,10 @@ test("workflow browser restores scope, handles large responses and shares respon
     assert.equal(await app.getByLabel("Search workflows", { exact: true }).inputValue(), "idea");
     assert.match(await app.locator("body").innerText(), /0 steps/); assert.match(await app.locator("body").innerText(), /1 step\b/);
     assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
+    const rowHeights = await app.locator(".workflow-row").evaluateAll((items: any[]) => items.map((item) => item.getBoundingClientRect().height));
+    if (width === 760) assert.ok(rowHeights.every((height: number) => height <= 90), `Desktop workflow rows should remain compact: ${rowHeights.join(", ")}`);
+    assert.equal(await app.locator(".workflow-row.ui-card").count(), 0);
+    assert.equal(await app.locator(".workflow-row-actions button").evaluateAll((buttons: any[]) => buttons.every((button) => button.getBoundingClientRect().height >= 42)), true);
     await app.getByLabel("Search workflows", { exact: true }).focus();
     assert.equal(await app.getByLabel("Search workflows", { exact: true }).evaluate((el: any) => el.ownerDocument.defaultView.getComputedStyle(el).outlineStyle), "solid");
     await waitForSettledAppSize(page);

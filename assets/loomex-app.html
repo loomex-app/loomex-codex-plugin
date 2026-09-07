@@ -57,7 +57,19 @@
     .ui-caption, .hint, .form-guide { margin: 0; font-size: var(--font-small); line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
     .ui-section { border-top: 1px solid var(--line); padding-top: var(--space-4); display: grid; gap: var(--space-3); }
     .ui-section h3 { margin: 0; }
-    .workflow-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+    .workflow-rows { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+    .workflow-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-2) 0; border-bottom: 1px solid var(--line); }
+    .workflow-row-copy { min-width: 0; display: grid; gap: 2px; }
+    .workflow-row-actions, .workflow-search-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+    .workflow-row-actions button, .workflow-search-actions button { min-height: var(--control-height); padding: var(--space-2) var(--space-3); }
+    .workflow-detail { display: grid; gap: var(--space-4); }
+    .workflow-detail-heading { display: flex; align-items: start; justify-content: space-between; gap: var(--space-3); }
+    .workflow-detail-heading .ui-hero { min-width: 0; }
+    .workflow-detail-section { display: grid; gap: var(--space-2); border-top: 1px solid var(--line); padding-top: var(--space-3); }
+    .workflow-detail-list { margin: 0; display: grid; gap: 0; }
+    .workflow-detail-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: baseline; padding: var(--space-2) 0; border-bottom: 1px solid var(--line); }
+    .workflow-detail-item:last-child { border-bottom: 0; }
+    .workflow-detail-item dd { margin: 0; text-align: right; }
     .ui-list { margin: 0; padding-left: var(--space-5); display: grid; gap: var(--space-1); font-size: 13px; }
     .ui-list li { overflow-wrap: anywhere; white-space: pre-wrap; }
     .progress-steps { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; padding: 0; list-style: none; color: var(--muted); font-size: var(--font-small); }
@@ -114,6 +126,11 @@
       .ui-grid { grid-template-columns: 1fr; }
       .actions { display: grid; grid-template-columns: 1fr; }
       .actions button { width: 100%; }
+      .workflow-row { grid-template-columns: 1fr; }
+      .workflow-row-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .workflow-row-actions button { width: 100%; }
+      .workflow-detail-heading { display: grid; }
+      .workflow-detail-heading > button { width: 100%; }
     }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
   </style>
@@ -1106,16 +1123,204 @@
     });
   }
 
-  async function requestWorkflowPreparation(id) {
+  async function requestWorkflowPreparation(id, detailData = browserSelected) {
     if (!workflowIdValid(id) || browserBusy || authoritativeStateStale) return;
-    browserBusy = true; renderBrowser();
+    const renderPending = () => mode === "browser"
+      ? renderBrowser()
+      : renderWorkflowDetail(detailData, { onPrepare: () => requestWorkflowPreparation(id, detailData) });
+    browserBusy = true; renderPending();
     try {
       const result = await send("ui/message", { role: "user", content: [{ type: "text", text:
         `Help me prepare Loomex workflow ${id}. Read its current definition, collect required inputs and my workspace selection, then show the exact preparation for confirmation before starting. This request does not authorize committing or executing the run.` }] });
       if (result?.isError) throw new Error("This host could not open the preparation request. Ask to prepare this workflow in the conversation.");
       summary.textContent = "Continue in the conversation to choose inputs and a workspace, then review the preparation.";
     } catch (error) { setError(error); }
-    finally { browserBusy = false; renderBrowser(); }
+    finally { browserBusy = false; renderPending(); }
+  }
+
+  async function requestCompleteWorkflowResponse(paged, rerender) {
+    if (browserBusy || !connected) return;
+    browserBusy = true; rerender();
+    try {
+      const result = await send("ui/message", { role: "user", content: [{ type: "text", text: `Read and present the complete Loomex workflow response using loomex_response_read with responseRef ${paged.responseRef}. Start at offset 0 and follow all nextOffset pages. This is a read-only request.` }] });
+      if (result?.isError) throw new Error("The host could not send this request. Continue in the conversation to retrieve the workflow response.");
+      summary.textContent = "The conversation has been asked to retrieve the complete workflow response.";
+    } catch (error) { setError(error); }
+    finally { browserBusy = false; rerender(); }
+  }
+
+  function renderWorkflowPagedResponse(paged, options = {}) {
+    context.hidden = false; context.className = "ui-stack";
+    context.setAttribute("aria-label", "Workflow response");
+    context.setAttribute("aria-busy", String(browserBusy));
+    context.replaceChildren();
+    form.hidden = true; primary.hidden = true; secondary.hidden = true;
+    refresh.disabled = !connected || browserBusy;
+    if (options.onBack) context.append(browserButton("Back to workflows", options.onBack));
+    context.append(element("p", { className: "ui-caption" }, "This workflow response is too large for the inline view. Read the complete response in the conversation."));
+    context.append(browserButton("View complete response", () => requestCompleteWorkflowResponse(paged, () => renderWorkflowPagedResponse(paged, options)), authoritativeStateStale));
+  }
+
+  function workflowVersionNumber(version) {
+    return Number.isInteger(version?.versionNumber) ? version.versionNumber : Number.isInteger(version?.version) ? version.version : undefined;
+  }
+
+  function workflowRefreshArgs(data) {
+    const workflowId = safeText(data?.workflow?.id, 64) || findId(data, "workflowId");
+    const selectedVersion = workflowVersionNumber(data?.selectedVersion);
+    return {
+      workflowId,
+      ...(Number.isInteger(selectedVersion) && selectedVersion > 0 ? { version: String(selectedVersion) } : {}),
+    };
+  }
+
+  function workflowDefinition(data) {
+    const version = data?.selectedVersion || data?.activeVersion || data?.version || {};
+    return { version, definition: version && typeof version.definition === "object" && version.definition ? version.definition : {} };
+  }
+
+  function workflowInputSchema(data, definition) {
+    const settings = definition.settings && typeof definition.settings === "object" ? definition.settings : {};
+    if (settings.inputSchema && typeof settings.inputSchema === "object") return settings.inputSchema;
+    const start = Array.isArray(definition.nodes) && definition.nodes.find((node) => node && node.type === "start" && node.inputSchema && typeof node.inputSchema === "object");
+    if (start) return start.inputSchema;
+    return data?.inputSchema && typeof data.inputSchema === "object" ? data.inputSchema : {};
+  }
+
+  function workflowNodes(data, definition) {
+    return Array.isArray(definition.nodes) ? definition.nodes : Array.isArray(data?.nodes) ? data.nodes : [];
+  }
+
+  function schemaType(schema) {
+    if (!schema || typeof schema !== "object") return undefined;
+    if (Array.isArray(schema.type)) return schema.type.map((item) => safeText(item, 40)).filter(Boolean).join(" or ") || undefined;
+    return safeText(schema.type, 40) || (Array.isArray(schema.enum) ? "choice" : undefined);
+  }
+
+  function authoredLabel(key, schema) {
+    const title = safeText(schema?.title, 120);
+    if (title) return title;
+    const text = safeText(key, 120);
+    return text ? text.replaceAll("_", " ").replace(/([a-z0-9])([A-Z])/g, "$1 $2") : undefined;
+  }
+
+  function workflowProviders(nodes) {
+    const providers = [];
+    const seen = new Set();
+    for (const node of nodes) {
+      if (!node || !["ai_agent", "ai_prompt", "person"].includes(node.type)) continue;
+      const config = node.config && typeof node.config === "object" ? node.config : {};
+      const resolution = config.modelResolution && typeof config.modelResolution === "object" ? config.modelResolution : {};
+      const provider = safeText(resolution.provider || config.provider || config.providerFamily, 120);
+      const model = safeText(resolution.runtimeModel || resolution.model || config.model || config.modelKey, 160);
+      const effort = safeText(config.reasoningEffort || config.reasoning_effort || config.effort, 80);
+      if (!provider && !model && !effort) continue;
+      const key = [provider, model, effort].join("\u0000");
+      if (seen.has(key)) continue;
+      seen.add(key); providers.push({ provider, model, effort });
+    }
+    return { items: providers.slice(0, 20), total: providers.length };
+  }
+
+  function renderWorkflowDetail(data, options = {}) {
+    const workflow = data?.workflow || {};
+    const { version, definition } = workflowDefinition(data);
+    const nodes = workflowNodes(data, definition);
+    const root = element("div", { className: "workflow-detail" });
+    const heading = element("div", { className: "workflow-detail-heading" });
+    const hero = element("div", { className: "ui-hero" });
+    hero.append(element("h2", {}, safeText(workflow.name) || "Workflow"));
+    const description = safeText(workflow.description || workflow.metadata?.description);
+    if (description) hero.append(element("p", { className: "ui-caption" }, description));
+    const meta = [formatStatus(workflow.status), workflowVersionNumber(version) !== undefined ? `Version ${workflowVersionNumber(version)}` : undefined];
+    if (nodes.length) meta.push(`${nodes.length} step${nodes.length === 1 ? "" : "s"}`);
+    hero.append(element("p", { className: "ui-meta" }, meta.filter(Boolean).join(" · ")));
+    heading.append(hero);
+    if (options.onBack) heading.append(browserButton("Back to workflows", options.onBack));
+    root.append(heading);
+
+    const inputSchema = workflowInputSchema(data, definition);
+    const properties = inputSchema.properties && typeof inputSchema.properties === "object" ? inputSchema.properties : {};
+    const inputEntries = Object.entries(properties);
+    const required = new Set(Array.isArray(inputSchema.required) ? inputSchema.required.filter((item) => typeof item === "string") : []);
+    const inputs = element("section", { className: "workflow-detail-section", "aria-label": "Input requirements" });
+    inputs.append(element("h3", { className: "ui-label" }, "Input requirements"));
+    const inputList = element("dl", { className: "workflow-detail-list" });
+    for (const [key, schema] of inputEntries.slice(0, 50)) {
+      const label = authoredLabel(key, schema);
+      if (!label) continue;
+      const row = element("div", { className: "workflow-detail-item" });
+      row.append(element("dt", { className: "ui-value" }, label));
+      const value = element("dd", { className: "ui-meta" });
+      const type = schemaType(schema);
+      if (type) value.append(element("span", {}, type));
+      if (required.has(key)) value.append(element("span", { className: "ui-badge" }, "Required"));
+      row.append(value); inputList.append(row);
+    }
+    if (inputList.childElementCount) inputs.append(inputList);
+    else inputs.append(element("p", { className: "ui-caption" }, "No startup inputs are declared."));
+    if (inputEntries.length > 50) inputs.append(element("p", { className: "ui-caption" }, `Showing the first 50 of ${inputEntries.length} input requirements.`));
+    root.append(inputs);
+
+    const providers = workflowProviders(nodes);
+    if (providers.total) {
+      const providerSection = element("section", { className: "workflow-detail-section", "aria-label": "AI configuration" });
+      providerSection.append(element("h3", { className: "ui-label" }, "AI configuration"));
+      const providerList = element("dl", { className: "workflow-detail-list" });
+      for (const provider of providers.items) {
+        const row = element("div", { className: "workflow-detail-item" });
+        row.append(element("dt", { className: "ui-value" }, provider.provider || provider.model || "AI step"));
+        const labels = [provider.provider && provider.model ? provider.model : undefined, provider.effort ? `${provider.effort} effort` : undefined].filter(Boolean);
+        row.append(element("dd", { className: "ui-meta" }, labels.join(" · ")));
+        providerList.append(row);
+      }
+      providerSection.append(providerList);
+      if (providers.total > providers.items.length) providerSection.append(element("p", { className: "ui-caption" }, `Showing ${providers.items.length} of ${providers.total} AI configurations.`));
+      root.append(providerSection);
+    }
+
+    const policy = safeText(definition.executionPolicy, 120);
+    const semantics = element("section", { className: "workflow-detail-section", "aria-label": "Execution and workspace" });
+    semantics.append(element("h3", { className: "ui-label" }, "Execution and workspace"));
+    if (policy) {
+      const policyCopy = policy === "host_user/v1" ? "Runs with the signed-in macOS user's permissions." : undefined;
+      semantics.append(element("p", { className: "ui-value" }, policy), ...(policyCopy ? [element("p", { className: "ui-caption" }, policyCopy)] : []));
+    }
+    semantics.append(element("p", { className: "ui-caption" }, "The workspace is selected and reviewed when preparing a run."));
+    root.append(semantics);
+
+    if (nodes.length) {
+      const details = element("details", { className: "ui-disclosure" });
+      details.append(element("summary", {}, `Workflow steps (${nodes.length})`));
+      const list = element("ol", { className: "ui-list" });
+      for (const node of nodes.slice(0, 100)) {
+        const name = safeText(node?.name, 240);
+        const type = safeText(node?.type, 120);
+        list.append(element("li", {}, [name, type && type !== name ? formatStatus(type) : undefined].filter(Boolean).join(" · ") || "Unnamed step"));
+      }
+      details.append(list);
+      if (nodes.length > 100) details.append(element("p", { className: "ui-caption" }, `Showing the first 100 of ${nodes.length} steps.`));
+      root.append(details);
+    }
+    if (options.onPrepare) {
+      const actions = element("div", { className: "actions" });
+      actions.append(browserButton("Prepare run", options.onPrepare, authoritativeStateStale));
+      root.append(actions);
+    }
+    context.className = "ui-stack"; context.hidden = false;
+    context.setAttribute("aria-label", "Workflow detail");
+    context.setAttribute("aria-busy", String(browserBusy));
+    context.replaceChildren(root);
+  }
+
+  function renderAuthoringWorkflow(data) {
+    const paged = pagedResponse(data);
+    if (paged) {
+      renderWorkflowPagedResponse(paged);
+      return;
+    }
+    const workflow = data?.workflow || {};
+    renderWorkflowDetail(data, { onPrepare: () => requestWorkflowPreparation(workflow.id, data) });
   }
 
   function renderBrowser() {
@@ -1128,43 +1333,22 @@
     context.append(hero);
     const paged = pagedResponse(browserDetailResponse?.data || browserPage);
     if (paged && (!browserSelected || browserDetailResponse)) {
-      if (browserDetailResponse) context.append(browserButton("Back to workflows", () => { browserDetailResponse = null; browserSelected = null; renderBrowser(); summary.textContent = "Choose a workflow to review or prepare."; }));
-      context.append(element("p", { className: "ui-caption" }, "This workflow response is too large for the inline view. Read the complete response in the conversation."));
-      context.append(browserButton("View complete response", async () => {
-        browserBusy = true; renderBrowser();
-        try {
-          const result = await send("ui/message", { role: "user", content: [{ type: "text", text: `Read and present the complete Loomex workflow response using loomex_response_read with responseRef ${paged.responseRef}. Start at offset 0 and follow all nextOffset pages. This is a read-only request.` }] });
-          if (result?.isError) throw new Error("The host could not send this request. Continue in the conversation to retrieve the workflow response.");
-          summary.textContent = "The conversation has been asked to retrieve the complete workflow response.";
-        } catch (error) { setError(error); }
-        finally { browserBusy = false; renderBrowser(); }
-      }, authoritativeStateStale));
+      renderWorkflowPagedResponse(paged, browserDetailResponse ? { onBack: () => { browserDetailResponse = null; browserSelected = null; renderBrowser(); summary.textContent = "Choose a workflow to review or prepare."; } } : {});
       return;
     }
     if (browserSelected) {
-      context.append(browserButton("Back to workflows", () => { browserSelected = null; renderBrowser(); summary.textContent = "Choose a workflow to review or prepare."; }));
       const workflow = browserSelected.workflow;
-      const version = browserSelected.version || browserSelected.activeVersion || {};
-      const definition = version.definition || browserSelected.definition || {};
-      const copy = safeText(workflow.description || workflow.metadata?.description);
-      if (copy) context.append(element("p", { className: "ui-caption" }, copy));
-      context.append(element("p", { className: "ui-meta" }, [safeText(workflow.status), Number.isInteger(version.versionNumber || version.version) ? `Version ${version.versionNumber || version.version}` : "Version unavailable"].filter(Boolean).join(" · ")));
-      if (Array.isArray(definition.nodes)) {
-        const details = element("details", { className: "ui-disclosure" });
-        details.append(element("summary", {}, `Workflow steps (${definition.nodes.length})`));
-        const list = element("ul", { className: "ui-list" });
-        for (const node of definition.nodes) list.append(element("li", {}, safeText(node.name) || safeText(node.type) || "Step"));
-        details.append(list); context.append(details);
-      }
-      const actions = element("div", { className: "actions" });
-      actions.append(browserButton("Prepare run", () => requestWorkflowPreparation(workflow.id), authoritativeStateStale));
-      context.append(actions); return;
+      renderWorkflowDetail(browserSelected, {
+        onBack: () => { browserSelected = null; renderBrowser(); summary.textContent = "Choose a workflow to review or prepare."; },
+        onPrepare: () => requestWorkflowPreparation(workflow.id),
+      });
+      return;
     }
     const search = element("form", { className: "ui-stack", role: "search" });
     const label = element("label", { htmlFor: "workflow-search" }, "Search workflows");
     const input = element("input", { id: "workflow-search", type: "search", value: browserArgs.query || "", placeholder: "Search by name", disabled: browserBusy });
     const submit = element("button", { type: "submit", disabled: !connected || browserBusy }, "Search");
-    const controls = element("div", { className: "ui-meta" });
+    const controls = element("div", { className: "workflow-search-actions" });
     controls.append(submit, browserButton("Clear search", () => { const args = { ...browserArgs }; delete args.query; delete args.cursor; loadBrowserPage(args, []); }, !browserArgs.query));
     search.append(label, input, controls);
     search.addEventListener("submit", (event) => {
@@ -1176,20 +1360,21 @@
     if (!workflows.length) context.append(element("p", { className: "ui-callout" }, browserArgs.query ? "No workflows match your search. Try a different name or clear the search." : "No workflows are available in the selected organization."));
     const rows = element("ul", { className: "workflow-rows", "aria-label": "Workflows" });
     for (const workflow of workflows) {
-      const row = element("li", { className: "ui-card" });
-      row.append(element("h3", { className: "ui-value" }, safeText(workflow.name) || "Untitled workflow"));
+      const row = element("li", { className: "workflow-row" });
+      const copy = element("div", { className: "workflow-row-copy" });
+      copy.append(element("h3", { className: "ui-value" }, safeText(workflow.name) || "Untitled workflow"));
       const description = safeText(workflow.description);
-      if (description) row.append(element("p", { className: "ui-caption" }, description));
+      if (description) copy.append(element("p", { className: "ui-caption" }, description));
       const version = workflow.activeVersion || workflow.latestVersion;
       const meta = [formatStatus(workflow.definitionStatus), Number.isInteger(version) ? `Version ${version}` : "Version unavailable"];
       if (Number.isInteger(workflow.nodeCount) && workflow.nodeCount >= 0) meta.push(`${workflow.nodeCount} step${workflow.nodeCount === 1 ? "" : "s"}`);
-      row.append(element("p", { className: "ui-meta" }, meta.filter(Boolean).join(" · ")));
-      const actions = element("div", { className: "ui-meta" });
+      copy.append(element("p", { className: "ui-meta" }, meta.filter(Boolean).join(" · ")));
+      const actions = element("div", { className: "workflow-row-actions" });
       const invalid = !workflowIdValid(workflow.id) || authoritativeStateStale;
       actions.append(browserButton("View", () => browserRead("loomex_workflow_get", { workflowId: workflow.id }, (data) => { browserSelected = data; }), invalid));
       actions.append(browserButton("Prepare run", () => requestWorkflowPreparation(workflow.id), invalid));
       Array.from(actions.children).forEach((button) => button.setAttribute("aria-label", `${button.textContent}: ${safeText(workflow.name) || "Untitled workflow"}`));
-      row.append(actions); rows.append(row);
+      row.append(copy, actions); rows.append(row);
     }
     context.append(rows);
     const nav = element("nav", { className: "actions", "aria-label": "Workflow pages" });
@@ -1324,6 +1509,11 @@
         primary.textContent = "Continue";
         primary.hidden = false;
         primary.disabled = !connected || !formReady;
+      } else if (!sessionId && (pagedResponse(output) || (output.workflow && typeof output.workflow === "object"))) {
+        summary.textContent = pagedResponse(output)
+          ? "The complete workflow response is available in the conversation."
+          : "Review this workflow before preparing a run.";
+        renderAuthoringWorkflow(output);
       }
     }
   }
@@ -1474,6 +1664,7 @@
   }
 
   refresh.addEventListener("click", () => withPending(refresh, async () => {
+    let authoringWorkflowRead = false;
     try {
       const data = latest || {};
       if (mode === "browser") {
@@ -1492,6 +1683,11 @@
         }
         return;
       }
+      authoringWorkflowRead = mode === "authoring" && !builderSessionId(data) && Boolean(data.workflow);
+      if (authoringWorkflowRead) {
+        browserBusy = true;
+        renderAuthoringWorkflow(data);
+      }
       let toolName;
       let args;
       if (mode === "monitor" && executionId(data)) {
@@ -1503,9 +1699,9 @@
       } else if (mode === "authoring" && builderSessionId(data)) {
         toolName = "loomex_builder_get";
         args = { sessionId: builderSessionId(data) };
-      } else if (mode === "authoring" && findId(data, "workflowId")) {
+      } else if (authoringWorkflowRead) {
         toolName = "loomex_workflow_get";
-        args = { workflowId: findId(data, "workflowId") };
+        args = workflowRefreshArgs(data);
       } else {
         toolName = "loomex_readiness";
         args = {};
@@ -1514,6 +1710,12 @@
       const result = await callTool(toolName, args, !operation);
       if (operation) reconcilePendingOperation(result, operation);
     } catch (error) { setError(error); }
+    finally {
+      if (authoringWorkflowRead) {
+        browserBusy = false;
+        renderAuthoringWorkflow(latest || {});
+      }
+    }
   }));
 
   secondary.addEventListener("click", () => withPending(secondary, async () => {
@@ -1621,7 +1823,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.7" },
+    appInfo: { name: "loomex", version: "0.2.8" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));
