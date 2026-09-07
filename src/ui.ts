@@ -4,6 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import {
   AUTHORING_UI_URI,
+  BROWSER_UI_URI,
   INTERACTION_UI_URI,
   MONITOR_UI_URI,
   PREPARE_UI_URI,
@@ -15,6 +16,7 @@ const UI_TEMPLATE = readFileSync(
 );
 
 const RESOURCES = [
+  { name: "loomex-browser", uri: BROWSER_UI_URI, mode: "browser" },
   { name: "loomex-authoring", uri: AUTHORING_UI_URI, mode: "authoring" },
   { name: "loomex-prepare", uri: PREPARE_UI_URI, mode: "prepare" },
   { name: "loomex-monitor", uri: MONITOR_UI_URI, mode: "monitor" },

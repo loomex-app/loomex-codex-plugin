@@ -1,6 +1,6 @@
 # Loomex custom UI design system
 
-All four MCP Apps views—run preparation, workflow authoring, run monitoring and human interaction—use the same design system. The source is the single inline stylesheet and reusable presentation classes in `assets/loomex-app.html`. `src/ui.ts` uses this same template for every resource; no network stylesheet, runtime UI framework or separate per-view theme is needed.
+All five MCP Apps views—workflow browsing, run preparation, workflow authoring, run monitoring and human interaction—use the same design system. The source is the single inline stylesheet and reusable presentation classes in `assets/loomex-app.html`. `src/ui.ts` uses this same template for every resource; no network stylesheet, runtime UI framework or separate per-view theme is needed.
 
 ## Tokens
 
@@ -47,3 +47,5 @@ Safe validation errors may show version 1 issue entries with a one-based step or
 Do not add selectors based on `data-mode` to the stylesheet or fork tokens per view. Choose an existing component or add a reusable semantic variant. Keep state and tool behavior separate from presentation: exact preparation bindings, read-only refresh, typed answers, approval decisions and immutable retries remain in the existing handlers. A failed authoritative result locks ordinary mutations until a successful refresh loads current state. Refresh stays available during that lock, while an uncertain mutation retains its separate exact-response retry.
 
 The browser suite compares shared computed styles across all four modes in light, dark and mobile layouts, checks overflow, control targets, keyboard focus and resize notifications, and captures normal/error states. It also covers prompt deduplication, structured progress and acceptance review, typed boolean responses, active and terminal monitoring, paged-result handoff, bounded actionable errors, cancellation, preparation and immutable retry. Set `LOOMEX_DESIGN_SCREENSHOT_DIR` to capture the visual matrix when running `npm run test:ui`.
+
+The workflow browser uses the same cards, typography, controls and responsive shell. Rows show names, optional descriptions, published version and step count. UUIDs are action identifiers rather than primary display text. Search uses an explicit labelled form; pagination uses labelled navigation. Read-only details return to the retained list page. The preparation action continues in the conversation for required context and exact-binding authorization.

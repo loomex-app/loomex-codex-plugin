@@ -272,7 +272,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.2.6 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.2.7 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -947,7 +947,7 @@ test("MCP Apps resources use the portable bridge and no external network", async
   runner = new FakeRunner((request, socket) => runner.respond(socket, request, {}));
   const client = await connect(runner);
   const resources = await client.listResources();
-  assert.equal(resources.resources.length, 4);
+  assert.equal(resources.resources.length, 5);
   for (const resource of resources.resources) {
     const result = await client.readResource({ uri: resource.uri });
     const content = result.contents[0];
@@ -1012,4 +1012,15 @@ test("state replacement and execution-resuming tools advertise destructive effec
   ]) {
     assert.equal(destructive.has(name), true, `${name} must advertise destructive effects`);
   }
+});
+
+test("workflow listing attaches browser metadata and preserves the initial search on remount", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, { workflows: [], nextCursor: null }));
+  const client = await connect(runner);
+  const tools = await client.listTools();
+  const listing = tools.tools.find((tool) => tool.name === "loomex_workflows_list");
+  assert.match(String((listing?._meta?.ui as { resourceUri: string }).resourceUri), /browser-/);
+  const result = await client.callTool({ name: "loomex_workflows_list", arguments: { query: "idea", limit: 20 } });
+  assert.deepEqual(result._meta?.["loomex/workflowListQuery"], { query: "idea", limit: 20 });
 });

@@ -82,7 +82,7 @@ The test suite currently checks:
 - safe error redaction and malformed-result rejection;
 - large-response spool projections;
 - refusal of a group/world-accessible socket;
-- four portable UI resources with CSP and no external URL or legacy host bridge; and
+- five portable UI resources with CSP and no external URL or legacy host bridge; and
 - authoritative seven-type question rendering and answer-only submissions in a real browser, including mixed batches, Other fields, accessible control names, validation, draft preservation, duplicate-click suppression, immutable ambiguous retry, and read reconciliation.
 
 Packaging tests build deterministic fixture manifests, reject forbidden development or credential-like paths, detect tampering, verify explicit unsafe-development installation, and uninstall only the versioned fixture. The Node runtime test downloads the exact `darwin-arm64` archive pinned in `scripts/node-runtime.lock.json`, verifies its SHA-256, and starts the compiled server with that runtime. It requires network access to the pinned Node distribution URL.
@@ -111,4 +111,6 @@ The prepare view's runner check is a read-only status check that retains prepara
 
 ### Shared design system
 
-Every custom view uses the tokens and components documented in [design-system.md](design-system.md). Styling must not branch on `data-mode`; differences come from semantic components and action variants. Content-size reporting applies to all four resources. Run the shared browser visual matrix when changing tokens, shell layout, forms, status messages or actions.
+Every custom view uses the tokens and components documented in [design-system.md](design-system.md). Styling must not branch on `data-mode`; differences come from semantic components and action variants. Content-size reporting applies to all five resources. Run the shared browser visual matrix when changing tokens, shell layout, forms, status messages or actions.
+
+Workflow browser coverage exercises search, empty results, forward/back cursor pages, details/back, read failure and recovery, text-safe labels and preparation handoff without execution. Verify an installed cached package discovers five resources and the list tool advertises the browser resource.

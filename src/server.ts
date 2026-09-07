@@ -61,7 +61,7 @@ function timeoutFor(definition: ToolDefinition, params: Record<string, JsonValue
 
 export function createServer(client: PreparationReviewClient = new LocalControlClient()): McpServer {
   const server = new McpServer(
-    { name: "loomex", version: "0.2.6" },
+    { name: "loomex", version: "0.2.7" },
     {
       capabilities: { tools: {}, resources: {} },
       instructions:
@@ -123,6 +123,7 @@ export function createServer(client: PreparationReviewClient = new LocalControlC
           return {
             structuredContent: output,
             content: [{ type: "text", text: contentFor(output) }],
+            ...(definition.rpcMethod === "workflows.list" ? { _meta: { "loomex/workflowListQuery": params } } : {}),
             ...(preparationReview === undefined
               ? {}
               : { _meta: { "loomex/preparationReview": preparationReview } }),

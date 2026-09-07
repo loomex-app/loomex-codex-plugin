@@ -47,12 +47,13 @@ async function browserTools(): Promise<{ tools: BrowserTools; executablePath: st
 
 async function mountApp(
   page: any,
-  mode: "interaction" | "authoring" | "prepare" | "monitor",
+  mode: "interaction" | "authoring" | "prepare" | "monitor" | "browser",
   data: Record<string, unknown>,
   failFirstMutation = false,
   resolveOnRead = false,
   presentation: Record<string, unknown> | null = null,
   failUiMessage = false,
+  resultMeta: Record<string, unknown> = {},
 ) {
   const template = await readFile("assets/loomex-app.html", "utf8");
   const html = template.replace("__LOOMEX_MODE__", mode);
@@ -62,7 +63,7 @@ async function mountApp(
     body: '<iframe id="app" title="Loomex test app" style="display:block;width:100%;height:1200px;border:0"></iframe>',
   }));
   await page.goto(harnessUrl);
-  await page.evaluate(({ source, initialData, shouldFailFirst, shouldResolveOnRead, presentation, shouldFailUiMessage }: any) => {
+  await page.evaluate(({ source, initialData, shouldFailFirst, shouldResolveOnRead, presentation, shouldFailUiMessage, resultMeta }: any) => {
     const frame = document.getElementById("app");
     window.__loomexCalls = [];
     window.__loomexMessages = [];
@@ -113,7 +114,7 @@ async function mountApp(
               },
             }
           : initialData;
-        const result = shouldFailFirst && callNumber === 1
+        const result = window.__workflowResponses?.length ? window.__workflowResponses.shift() : shouldFailFirst && callNumber === 1
           ? {
               isError: true,
               structuredContent: {
@@ -131,7 +132,7 @@ async function mountApp(
       frame.contentWindow.postMessage({
         jsonrpc: "2.0",
         method: "ui/notifications/tool-result",
-        params: { structuredContent: { ok: true, data: initialData }, _meta: { "loomex/preparationReview": presentation } },
+        params: { structuredContent: { ok: true, data: initialData }, _meta: { "loomex/preparationReview": presentation, ...resultMeta } },
       }, "*");
     }, { once: true });
     frame.srcdoc = source;
@@ -142,6 +143,7 @@ async function mountApp(
     shouldResolveOnRead: resolveOnRead,
     presentation,
     shouldFailUiMessage: failUiMessage,
+    resultMeta,
   });
   try {
     await page.waitForFunction(() =>
@@ -946,4 +948,88 @@ test("all four views share design tokens, responsive components, focus states an
   assert.doesNotMatch(css, /data-mode|prepare-/);
   assert.match(css, /--card-background/);
   assert.match(css, /--control-height/);
+});
+
+test("workflow browser searches, pages, reviews and hands off preparation without execution", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for workflow browsing");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
+  const id = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const first = { workflows: [{ id, name: "Idea <script>bad()</script>", description: "Develop an idea", definitionStatus: "published", latestVersion: 4, nodeCount: 11 }], nextCursor: "cursor-2" };
+  const app = await mountApp(page, "browser", first);
+  await app.getByRole("heading", { name: "Workflows", exact: true }).waitFor();
+  assert.match(await app.locator("body").innerText(), /Version 4 · 11 steps/);
+  assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
+  assert.equal(await app.locator("script").count(), 1);
+  await app.getByRole("button", { name: "Next", exact: true }).click();
+  await app.getByText("Page 2 · 1 workflow", { exact: true }).waitFor();
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls))[0], { name: "loomex_workflows_list", arguments: { limit: 20, cursor: "cursor-2" } });
+  await app.getByRole("button", { name: "Previous", exact: true }).click();
+  await app.getByText("Page 1 · 1 workflow", { exact: true }).waitFor();
+  await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflows: [], nextCursor: null } } }]; });
+  await app.getByLabel("Search workflows", { exact: true }).fill("missing");
+  await app.getByRole("button", { name: "Search", exact: true }).click();
+  await app.getByText("No workflows match your search. Try a different name or clear the search.").waitFor();
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { limit: 20, query: "missing" });
+  await app.getByRole("button", { name: "Clear search", exact: true }).click();
+  await app.getByRole("button", { name: /^View:/ }).waitFor();
+  await page.evaluate((id: string) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflow: { id, name: "Idea", status: "active" }, activeVersion: { versionNumber: 4, definition: { nodes: [{ name: "Describe idea" }] } } } } }]; }, id);
+  await app.getByRole("button", { name: /^View:/ }).click();
+  await app.getByRole("heading", { name: "Idea", exact: true }).waitFor();
+  await app.getByRole("button", { name: /^Prepare run/ }).click();
+  await app.getByText("Continue in the conversation to choose inputs and a workspace, then review the preparation.").waitFor();
+  const messages = await page.evaluate(() => window.__loomexMessages);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].content[0].text, new RegExp(id));
+  assert.match(messages[0].content[0].text, /does not authorize committing/);
+  assert.ok((await page.evaluate(() => window.__loomexCalls)).every((call: any) => ["loomex_workflows_list", "loomex_workflow_get"].includes(call.name)));
+  await app.getByRole("button", { name: "Back to workflows", exact: true }).click();
+  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false } }]; });
+  await app.getByRole("button", { name: "Refresh", exact: true }).click();
+  await app.locator("#summary.error").waitFor();
+  assert.equal(await app.getByRole("button", { name: /^Prepare run/ }).isDisabled(), true);
+  await app.getByRole("button", { name: "Refresh", exact: true }).click();
+  await app.getByText("Choose a workflow to review or prepare.").waitFor();
+  assert.equal(await app.getByRole("button", { name: /^Prepare run/ }).isEnabled(), true);
+  const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
+  if (directory) { await mkdir(directory, { recursive: true }); await app.locator("main").screenshot({ path: resolve(directory, "browser-mobile.png") }); }
+});
+
+test("workflow browser restores scope, handles large responses and shares responsive themes", async (t) => {
+  const available = await browserTools(); if (!available) assert.fail("Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const rows = { workflows: [
+    { id: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e", name: "Empty", nodeCount: 0, activeVersion: 1 },
+    { id: "ef5a183a-128e-419f-a5fc-3d1f29de007c", name: "One", nodeCount: 1, activeVersion: 1 },
+  ], nextCursor: "next" };
+  const paged = { responseRef: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e", encoding: "json", sizeBytes: 90000, nextOffset: 0 };
+  for (const [width, colorScheme] of [[760, "light"], [760, "dark"], [390, "light"]] as const) {
+    await page.setViewportSize({ width, height: 900 }); await page.emulateMedia({ colorScheme });
+    const app = await mountApp(page, "browser", rows, false, false, null, false, { "loomex/workflowListQuery": { query: "idea", systemKey: "scope", limit: 2 } });
+    await app.getByRole("button", { name: "View: One", exact: true }).waitFor();
+    assert.equal(await app.getByLabel("Search workflows", { exact: true }).inputValue(), "idea");
+    assert.match(await app.locator("body").innerText(), /0 steps/); assert.match(await app.locator("body").innerText(), /1 step\b/);
+    assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
+    await app.getByLabel("Search workflows", { exact: true }).focus();
+    assert.equal(await app.getByLabel("Search workflows", { exact: true }).evaluate((el: any) => el.ownerDocument.defaultView.getComputedStyle(el).outlineStyle), "solid");
+    await waitForSettledAppSize(page);
+    const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
+    if (directory) { await mkdir(directory, { recursive: true }); await app.locator("main").screenshot({ path: resolve(directory, `browser-${width}-${colorScheme}.png`) }); }
+    await app.getByRole("button", { name: "Next", exact: true }).click();
+    await app.getByText("Page 2 · 2 workflows").waitFor();
+    assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { query: "idea", systemKey: "scope", limit: 2, cursor: "next" });
+    await page.evaluate((data: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data } }]; }, paged);
+    await app.getByRole("button", { name: "Refresh", exact: true }).click();
+    await app.getByRole("button", { name: "View complete response", exact: true }).waitFor();
+    assert.doesNotMatch(await app.locator("body").innerText(), /No workflows/);
+  }
+  const app = await mountApp(page, "browser", paged, false, false, null, true);
+  await app.getByRole("button", { name: "View complete response", exact: true }).click();
+  await app.locator("#summary.error").waitFor();
+  assert.equal(await page.evaluate(() => window.__loomexCalls.length), 0);
+  assert.match((await page.evaluate(() => window.__loomexMessages))[0].content[0].text, /loomex_response_read/);
 });

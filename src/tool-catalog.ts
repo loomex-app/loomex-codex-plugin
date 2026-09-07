@@ -6,10 +6,11 @@ import {
   type JsonValue,
 } from "./protocol.js";
 
-export const AUTHORING_UI_URI = "ui://loomex/authoring-0.2.6.html";
-export const PREPARE_UI_URI = "ui://loomex/prepare-0.2.6.html";
-export const MONITOR_UI_URI = "ui://loomex/monitor-0.2.6.html";
-export const INTERACTION_UI_URI = "ui://loomex/interaction-0.2.6.html";
+export const BROWSER_UI_URI = "ui://loomex/browser-0.2.7.html";
+export const AUTHORING_UI_URI = "ui://loomex/authoring-0.2.7.html";
+export const PREPARE_UI_URI = "ui://loomex/prepare-0.2.7.html";
+export const MONITOR_UI_URI = "ui://loomex/monitor-0.2.7.html";
+export const INTERACTION_UI_URI = "ui://loomex/interaction-0.2.7.html";
 
 type InputSchema = z.ZodObject<z.ZodRawShape>;
 
@@ -185,6 +186,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   },
   {
     name: "loomex_workflows_list",
+    uiUri: BROWSER_UI_URI,
     rpcMethod: "workflows.list",
     title: "List Loomex workflows",
     description: "Discover workflows in the selected organization with cursor pagination.",
