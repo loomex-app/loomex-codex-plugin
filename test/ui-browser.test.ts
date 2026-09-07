@@ -67,6 +67,7 @@ async function mountApp(
     const frame = document.getElementById("app");
     window.__loomexCalls = [];
     window.__loomexMessages = [];
+    window.__loomexModelContexts = [];
     window.__loomexSizes = [];
     window.addEventListener("message", (event: any) => {
       if (event.source !== frame.contentWindow) return;
@@ -74,6 +75,10 @@ async function mountApp(
       if (message && message.method === "ui/notifications/size-changed") {
         frame.style.height = `${message.params.height}px`;
         window.__loomexSizes.push(message.params);
+        return;
+      }
+      if (message && message.method === "ui/update-model-context") {
+        window.__loomexModelContexts.push(message.params);
         return;
       }
       if (!message || message.jsonrpc !== "2.0" || message.id === undefined) return;
@@ -103,6 +108,15 @@ async function mountApp(
       }
       if (message.method === "tools/call") {
         window.__loomexCalls.push(message.params);
+        if (window.__rejectNextToolCall) {
+          window.__rejectNextToolCall = false;
+          event.source.postMessage({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "Runner bridge rejected the call" } }, "*");
+          return;
+        }
+        if (window.__dropNextToolResponse) {
+          window.__dropNextToolResponse = false;
+          return;
+        }
         const callNumber = window.__loomexCalls.length;
         const resultData = shouldResolveOnRead && message.params.name === "loomex_interaction_get"
           ? {
@@ -125,6 +139,17 @@ async function mountApp(
           : { structuredContent: { ok: true, data: resultData } };
         window.setTimeout(() => {
           event.source.postMessage({ jsonrpc: "2.0", id: message.id, result }, "*");
+          if (window.__failModelContextAfterNextToolResponse) {
+            window.__failModelContextAfterNextToolResponse = false;
+            const original = window.postMessage;
+            window.postMessage = function(nextMessage: any, ...rest: any[]) {
+              if (nextMessage?.method === "ui/update-model-context") {
+                window.postMessage = original;
+                throw new Error("Forced model-context post failure");
+              }
+              return original.call(this, nextMessage, ...rest);
+            };
+          }
         }, shouldFailFirst && callNumber === 1 ? 120 : Number(window.__workflowDelayMs || 0));
       }
     });
@@ -853,14 +878,28 @@ test("prepared run uses bound names, hides UUIDs by default, and preserves exact
   await waitForCallCount(page, 1);
   await app.getByText("Runner status checked. Your prepared operation is unchanged.", { exact: true }).waitFor();
   await app.getByRole("heading", { name: "Idea to Implementation" }).waitFor();
-  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await page.evaluate(() => { window.__rejectNextToolCall = true; });
+  await app.getByRole("button", { name: "Check runner", exact: true }).click();
   await waitForCallCount(page, 2);
+  await app.locator('#summary.error[role="alert"]').waitFor();
+  assert.equal(await app.getByRole("button", { name: "Start run", exact: true }).isEnabled(), true, "a runner check rejection must not discard the sealed preparation");
+  await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: "1c5f36e6-ac6f-41a3-b593-edf31e691e37", name: "Idea to Implementation", status: "running" },
+    executionPolicy: "host_user/v1", preparationId: "5aae202b-f5d0-44fc-9dc2-3f50457932eb",
+  } } }]; });
+  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await waitForCallCount(page, 3);
+  await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
   const calls = await page.evaluate(() => window.__loomexCalls);
-  assert.equal(calls[1].name, "loomex_run_commit");
-  assert.deepEqual(Object.keys(calls[1].arguments).sort(), ["preparationId", "bindingDigest", "confirmationKey", "idempotencyKey"].sort());
-  assert.equal(calls[1].arguments.preparationId, prepared.preparationId);
-  assert.equal(calls[1].arguments.bindingDigest, prepared.bindingDigest);
-  assert.equal(calls[1].arguments.confirmationKey, prepared.confirmationKey);
+  assert.equal(calls[2].name, "loomex_run_commit");
+  assert.deepEqual(Object.keys(calls[2].arguments).sort(), ["preparationId", "bindingDigest", "confirmationKey", "idempotencyKey"].sort());
+  assert.equal(calls[2].arguments.preparationId, prepared.preparationId);
+  assert.equal(calls[2].arguments.bindingDigest, prepared.bindingDigest);
+  assert.equal(calls[2].arguments.confirmationKey, prepared.confirmationKey);
+  const contexts = await page.evaluate(() => window.__loomexModelContexts);
+  assert.equal(contexts.length, 1);
+  assert.match(contexts[0].content[0].text, /1c5f36e6-ac6f-41a3-b593-edf31e691e37/);
+  assert.doesNotMatch(contexts[0].content[0].text, /private-confirmation|confirmation/i);
   for (const invalid of [null,
     { ...presentation, organizationId: "other-org", workflowName: "Wrong workflow" },
     { ...presentation, workflowName: "" }, { ...presentation, workflowVersion: 0 },
@@ -876,7 +915,265 @@ test("prepared run uses bound names, hides UUIDs by default, and preserves exact
   }
 });
 
-test("all four views share design tokens, responsive components, focus states and host sizing", async (t) => {
+test("integrated run setup validates inputs, grants one canonical workspace, prepares the selected version, and starts once", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium required for integrated run setup");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 1200 } });
+  const workflowId = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const organizationId = "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2";
+  const versionId = "8b29c880-1c68-4d47-a1ff-477ab28d3c49";
+  const setup = {
+    workflow: { id: workflowId, organizationId, name: "Integrated report" },
+    activeVersion: { id: "3fb4a20e-ad41-4275-8296-58a07bbebf3e", versionNumber: 9, definition: { settings: { inputSchema: { type: "object", properties: {} } } } },
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        title: { type: "string", title: "Report title", minLength: 2 },
+        retries: { type: "integer", title: "Retry count", minimum: 0 },
+        publish: { type: "boolean", title: "Publish result" },
+        directoryPath: { type: "string", title: "Project directory", minLength: 1, pattern: "^/",
+          description: "Absolute canonical directory path. It must match the workspace selected and confirmed when preparing this run." },
+      },
+      required: ["title", "retries", "directoryPath"],
+    },
+    selectedVersion: { id: versionId, workflowId, versionNumber: 4, definition: { settings: {
+      workspaceInputField: "directoryPath",
+      inputSchema: { type: "object", properties: { staleProjection: { type: "string" } }, required: ["staleProjection"] },
+    }, nodes: [] } },
+  };
+  const app = await mountApp(page, "prepare", setup);
+  await app.getByRole("heading", { name: "Integrated report", exact: true }).waitFor();
+  await app.getByText("Setup", { exact: true }).waitFor();
+  assert.equal(await app.getByLabel("Project directory", { exact: true }).count(), 0, "workspaceInputField must use the single workspace control");
+
+  await app.getByRole("button", { name: "Grant workspace access", exact: true }).click();
+  await app.getByText("Complete the required inputs before continuing.", { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls), []);
+  await app.getByLabel("Report title *", { exact: true }).fill("Q4 report");
+  await app.getByLabel("Retry count *", { exact: true }).fill("1.5");
+  await app.getByLabel("Project directory *", { exact: true }).fill("relative/project");
+  await app.getByRole("button", { name: "Grant workspace access", exact: true }).click();
+  await app.getByText("Enter a whole number.", { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls), []);
+
+  await app.getByLabel("Retry count *", { exact: true }).fill("2");
+  await app.getByLabel("Project directory *", { exact: true }).fill("/Users/example/../example/project");
+  await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    workspace: { path: "/Users/example/project", organizationId: "5c20340c-1123-41c7-ac58-37f5877dc9e6", installationId: "62e9d3fa-097b-46fb-9f87-34b4d8c1b40b" },
+    executionPolicy: "host_user/v1",
+  } } }]; });
+  await app.getByRole("button", { name: "Grant workspace access", exact: true }).click();
+  await waitForCallCount(page, 1);
+  await app.getByText("The runner did not return a verified canonical workspace grant", { exact: false }).waitFor();
+  await app.locator("#primary:not(:disabled)").waitFor();
+  assert.equal(await app.getByLabel("Project directory *", { exact: true }).isDisabled(), true);
+  const rejectedGrant = (await page.evaluate(() => window.__loomexCalls))[0];
+  await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    workspace: { path: "/Users/example/project", organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", installationId: "62e9d3fa-097b-46fb-9f87-34b4d8c1b40b" },
+    executionPolicy: "host_user/v1",
+  } } }]; });
+  await app.getByRole("button", { name: "Retry exact workspace grant", exact: true }).click();
+  await app.getByRole("button", { name: "Review run", exact: true }).waitFor();
+  assert.equal(await app.getByLabel("Project directory *", { exact: true }).inputValue(), "/Users/example/project");
+  const grant = (await page.evaluate(() => window.__loomexCalls))[1];
+  assert.equal(grant.name, "loomex_workspace_grant");
+  assert.equal(grant.arguments.workspacePath, "/Users/example/../example/project");
+  assert.equal(grant.arguments.organizationId, organizationId);
+  assert.match(grant.arguments.idempotencyKey, /^[0-9a-f-]{36}$/i);
+  assert.deepEqual(grant.arguments, rejectedGrant.arguments, "an unverifiable grant retry must remain exact");
+
+  const prepared = {
+    preparationId: "5aae202b-f5d0-44fc-9dc2-3f50457932eb",
+    bindingDigest: "a".repeat(64),
+    confirmationKey: "d09cb0b2-91fd-4289-ae8c-380c2fcb5541",
+    binding: { workflowId, versionId, organizationId, installationId: "62e9d3fa-097b-46fb-9f87-34b4d8c1b40b",
+      workspacePath: "/Users/example/project", executionPolicy: "host_user/v1",
+      inputs: { directoryPath: "/Users/example/project", retries: 2, title: "Q4 report" }, providerConfiguration: {} },
+  };
+  const presentation = {
+    schemaVersion: "loomex/preparation-review/v1", preparationId: prepared.preparationId,
+    bindingDigest: prepared.bindingDigest, workflowId, versionId, organizationId,
+    workflowName: "Integrated report", workflowVersion: 4, organizationName: "Loomex Studio", providers: [],
+  };
+  const substitutedPreparation = { ...prepared, binding: { ...prepared.binding, workspacePath: "/Users/example/other-project" } };
+  await page.evaluate(({ prepared, presentation }: any) => { window.__workflowResponses = [{
+    structuredContent: { ok: true, data: prepared }, _meta: { "loomex/preparationReview": presentation },
+  }]; }, { prepared: substitutedPreparation, presentation });
+  await app.getByRole("button", { name: "Review run", exact: true }).click();
+  await waitForCallCount(page, 3);
+  await app.getByText("The exact preparation review did not match the sealed setup.", { exact: false }).waitFor();
+  await app.locator("#primary:not(:disabled)").waitFor();
+  const rejectedPrepare = (await page.evaluate(() => window.__loomexCalls)).at(-1);
+  await page.evaluate(({ prepared, presentation }: any) => { window.__workflowResponses = [{
+    structuredContent: { ok: true, data: prepared }, _meta: { "loomex/preparationReview": presentation },
+  }]; }, { prepared, presentation });
+  await app.locator("#primary:not(:disabled)").waitFor();
+  await app.getByRole("button", { name: "Retry exact preparation", exact: true }).click();
+  await app.getByRole("button", { name: "Start run", exact: true }).waitFor();
+  const prepare = (await page.evaluate(() => window.__loomexCalls))[3];
+  assert.equal(prepare.name, "loomex_run_prepare");
+  assert.equal(prepare.arguments.workflowId, workflowId);
+  assert.equal(prepare.arguments.versionId, versionId, "selected immutable version must win over the active version");
+  assert.equal(prepare.arguments.workspacePath, "/Users/example/project");
+  assert.deepEqual(prepare.arguments.inputs, { title: "Q4 report", retries: 2, directoryPath: "/Users/example/project" });
+  assert.deepEqual(prepare.arguments, rejectedPrepare.arguments, "a substituted preparation must fail closed and retry the sealed setup exactly");
+  assert.equal("providerConfiguration" in prepare.arguments, false, "the UI must not invent provider choices");
+
+  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: { code: "VALIDATION_ERROR", message: "Preparation expired" } } }]; });
+  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await app.getByText("Preparation expired", { exact: false }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Start run", exact: true }).isEnabled(), true);
+
+  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: { code: "NETWORK_AMBIGUOUS", message: "Start outcome is uncertain" } } }]; });
+  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await waitForCallCount(page, 6);
+  assert.equal(await app.locator("#primary").textContent(), "Retry exact start");
+  await app.getByRole("button", { name: "Retry exact start", exact: true }).waitFor();
+  const ambiguous = (await page.evaluate(() => window.__loomexCalls)).at(-1);
+  await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: "1c5f36e6-ac6f-41a3-b593-edf31e691e37", name: "Integrated report", status: "running", currentNodeName: "Draft report" },
+    executionPolicy: "host_user/v1", preparationId: "5aae202b-f5d0-44fc-9dc2-3f50457932eb",
+  } } }]; });
+  await page.evaluate(() => { window.__failModelContextAfterNextToolResponse = true; });
+  await app.getByRole("button", { name: "Retry exact start", exact: true }).evaluate((button: any) => { button.click(); button.click(); });
+  await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
+  await app.getByText("Draft report", { exact: true }).waitFor();
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  const retried = calls.at(-1);
+  assert.equal(calls.filter((call: any) => call.name === "loomex_run_commit").length, 3, "double click must add one commit call");
+  assert.deepEqual(retried.arguments, ambiguous.arguments, "ambiguous retry must preserve every sealed field and the same idempotency key");
+  const contexts = await page.evaluate(() => window.__loomexModelContexts);
+  assert.equal(contexts.length, 0, "a best-effort model-context failure must not turn a successful commit into a retry");
+  await app.getByRole("button", { name: "Continue in conversation", exact: true }).evaluate((button: any) => { button.click(); button.click(); });
+  await page.waitForFunction(() => window.__loomexMessages.length >= 1, undefined, { timeout: 5000 }).catch(async () => { throw new Error(JSON.stringify({ messages: await page.evaluate(() => window.__loomexMessages), body: await app.locator("body").innerText() })); });
+  assert.equal((await page.evaluate(() => window.__loomexMessages)).length, 1, "conversation continuation must be single-flight");
+});
+
+test("substituted commit and cancellation results stay on the sealed run and retry exact requests", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium required for exact run-result verification");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 1000 } });
+  const workflowId = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const versionId = "8b29c880-1c68-4d47-a1ff-477ab28d3c49";
+  const organizationId = "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2";
+  const preparationId = "5aae202b-f5d0-44fc-9dc2-3f50457932eb";
+  const runId = "1c5f36e6-ac6f-41a3-b593-edf31e691e37";
+  const prepared = {
+    preparationId, bindingDigest: "c".repeat(64), confirmationKey: "d09cb0b2-91fd-4289-ae8c-380c2fcb5541",
+    binding: { workflowId, versionId, organizationId, installationId: "62e9d3fa-097b-46fb-9f87-34b4d8c1b40b",
+      workspacePath: "/Users/example/project", inputs: {}, executionPolicy: "host_user/v1", providerConfiguration: {} },
+  };
+  const presentation = { schemaVersion: "loomex/preparation-review/v1", preparationId, bindingDigest: prepared.bindingDigest,
+    workflowId, versionId, organizationId, workflowName: "Exact result run", workflowVersion: 3, organizationName: "Loomex Studio", providers: [] };
+  const app = await mountApp(page, "prepare", prepared, false, false, presentation);
+
+  await page.evaluate((runId: string) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: runId, name: "Substituted run", status: "running", currentNodeName: "Wrong run" },
+    executionPolicy: "host_user/v1", preparationId: "daeb60a7-b9a0-44a2-b778-a5949567c7d2",
+  } } }]; }, runId);
+  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await waitForCallCount(page, 1);
+  await app.getByText("The runner did not return a run bound to the exact preparation", { exact: false }).waitFor();
+  await app.locator("#primary:not(:disabled)").waitFor();
+  assert.equal(await app.getByText("Wrong run", { exact: true }).count(), 0);
+  assert.equal(await app.getByRole("heading", { name: "Exact result run", exact: true }).isVisible(), true);
+  const rejectedCommit = (await page.evaluate(() => window.__loomexCalls))[0];
+
+  await page.evaluate(({ runId, preparationId }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: runId, name: "Exact result run", status: "running", currentNodeName: "Original run" },
+    executionPolicy: "host_user/v1", preparationId,
+  } } }]; }, { runId, preparationId });
+  await app.getByRole("button", { name: "Retry exact start", exact: true }).click();
+  await waitForCallCount(page, 2);
+  await app.getByText("Original run", { exact: true }).waitFor();
+  const acceptedCommit = (await page.evaluate(() => window.__loomexCalls))[1];
+  assert.deepEqual(acceptedCommit.arguments, rejectedCommit.arguments);
+
+  await app.getByLabel("reason", { exact: true }).fill("Stop this exact run");
+  await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: "24cb0c0a-0fc8-4a18-a0d9-1105d64e1824", name: "Other run", status: "canceled", currentNodeName: "Substituted cancellation" },
+    executionPolicy: "host_user/v1",
+  } } }]; });
+  await app.getByRole("button", { name: "Cancel run", exact: true }).click();
+  await waitForCallCount(page, 3);
+  await app.getByText("The runner did not return status for the requested run.", { exact: false }).waitFor();
+  await app.locator("#primary:not(:disabled)").waitFor();
+  assert.equal(await app.getByText("Substituted cancellation", { exact: true }).count(), 0);
+  await app.getByText("Original run", { exact: true }).waitFor();
+  const rejectedCancel = (await page.evaluate(() => window.__loomexCalls))[2];
+  assert.equal(await app.getByLabel("reason", { exact: true }).inputValue(), "Stop this exact run");
+  assert.equal(await app.getByLabel("reason", { exact: true }).isDisabled(), true);
+
+  await page.evaluate((runId: string) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: runId, name: "Exact result run", status: "canceled", currentNodeName: "Original run" },
+    executionPolicy: "host_user/v1",
+  } } }]; }, runId);
+  await app.getByRole("button", { name: "Retry exact cancellation", exact: true }).click();
+  await waitForCallCount(page, 4);
+  await app.getByText("Canceled. Review the result below.", { exact: true }).waitFor();
+  const acceptedCancel = (await page.evaluate(() => window.__loomexCalls))[3];
+  assert.deepEqual(acceptedCancel.arguments, rejectedCancel.arguments);
+  assert.equal(await app.getByRole("button", { name: "Cancel run", exact: true }).count(), 0);
+});
+
+test("unsupported setup fails closed and a timed-out start retains the exact sealed commit", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium required for setup fallback and timeout retry");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 900 } });
+  const workflowId = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const versionId = "8b29c880-1c68-4d47-a1ff-477ab28d3c49";
+  let app = await mountApp(page, "prepare", {
+    workflow: { id: workflowId, organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", name: "Unsupported setup" },
+    selectedVersion: { id: versionId, versionNumber: 2, definition: { nodes: [{ type: "start", inputSchema: {
+      type: "object", properties: { nested: { type: "object", title: "Nested configuration" } }, required: ["nested"],
+    } }] } },
+  });
+  await app.getByText(/Nested configuration.*unsupported type/i).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Continue in conversation", exact: true }).isEnabled(), true);
+  await app.getByRole("button", { name: "Continue in conversation", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls), []);
+  await page.waitForFunction(() => window.__loomexMessages.length === 1);
+  const messages = await page.evaluate(() => window.__loomexMessages);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].content[0].text, new RegExp(workflowId));
+  assert.match(messages[0].content[0].text, /Do not commit or execute/);
+
+  const prepared = {
+    preparationId: "5aae202b-f5d0-44fc-9dc2-3f50457932eb", bindingDigest: "b".repeat(64), confirmationKey: "d09cb0b2-91fd-4289-ae8c-380c2fcb5541",
+    binding: { workflowId, versionId, organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", installationId: "62e9d3fa-097b-46fb-9f87-34b4d8c1b40b",
+      workspacePath: "/Users/example/project", inputs: {}, executionPolicy: "host_user/v1", providerConfiguration: {} },
+  };
+  const presentation = { schemaVersion: "loomex/preparation-review/v1", preparationId: prepared.preparationId, bindingDigest: prepared.bindingDigest,
+    workflowId, versionId, organizationId: prepared.binding.organizationId, workflowName: "Timeout run", workflowVersion: 2, organizationName: "Loomex Studio", providers: [] };
+  app = await mountApp(page, "prepare", prepared, false, false, presentation);
+  await page.clock.install();
+  await page.evaluate(() => { window.__dropNextToolResponse = true; });
+  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await page.waitForFunction(() => window.__loomexCalls.length === 1);
+  assert.equal(await page.evaluate(() => window.__loomexCalls.length), 1);
+  const first = (await page.evaluate(() => window.__loomexCalls))[0];
+  await page.clock.fastForward(60_001);
+  await app.getByRole("button", { name: "Retry exact start", exact: true }).waitFor();
+  await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: "1c5f36e6-ac6f-41a3-b593-edf31e691e37", name: "Timeout run", status: "running" },
+    executionPolicy: "host_user/v1", preparationId: "5aae202b-f5d0-44fc-9dc2-3f50457932eb",
+  } } }]; });
+  await app.getByRole("button", { name: "Retry exact start", exact: true }).click();
+  await page.waitForFunction(() => window.__loomexCalls.length === 2);
+  await page.clock.fastForward(1);
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].arguments, first.arguments);
+  await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
+});
+
+test("all five views share design tokens, responsive components, focus states and host sizing", async (t) => {
   const available = await browserTools();
   if (!available) assert.fail("Chromium required for the shared design system gate");
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
@@ -898,7 +1195,7 @@ test("all four views share design tokens, responsive components, focus states an
     workflowId: prepared.binding.workflowId, versionId: prepared.binding.versionId, organizationId: prepared.binding.organizationId,
     workflowName: "Idea to Implementation", workflowVersion: 1, organizationName: "Loomex Studio", providers: [{ name: "codex", model: "gpt-5.6-sol" }],
   };
-  const modes = ["prepare", "authoring", "interaction", "monitor"] as const;
+  const modes = ["browser", "prepare", "authoring", "interaction", "monitor"] as const;
   const directory = process.env.LOOMEX_DESIGN_SCREENSHOT_DIR;
   if (directory) await mkdir(directory, { recursive: true });
   for (const [theme, width] of [["light", 760], ["dark", 760], ["light", 390]] as const) {
@@ -906,12 +1203,17 @@ test("all four views share design tokens, responsive components, focus states an
     await page.emulateMedia({ colorScheme: theme });
     let baseline: unknown;
     for (const mode of modes) {
-      const data = mode === "prepare" ? prepared : mode === "monitor"
+      const data = mode === "browser" ? { workflows: [{ id: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e", name: "Idea to Implementation", latestVersion: 1, nodeCount: 2 }], nextCursor: null }
+        : mode === "prepare" ? prepared : mode === "monitor"
         ? { execution: { id: "run-shared", name: "Idea to Implementation", status: "waiting for your response" } }
         : { humanRequest, ...(mode === "authoring" ? { builderSession: { id: "builder-shared" } } : {}) };
       const app = await mountApp(page, mode, data, false, false, mode === "prepare" ? presentation : null);
-      const expectedHeading = mode === "prepare" ? "Idea to Implementation" : mode === "monitor" ? "Idea to Implementation" : "Tell us about your idea";
+      const expectedHeading = mode === "browser" ? "Workflows" : mode === "prepare" ? "Idea to Implementation" : mode === "monitor" ? "Idea to Implementation" : "Tell us about your idea";
       await app.getByRole("heading", { name: expectedHeading, exact: true }).waitFor();
+      assert.equal(await app.locator(".app-header, .app-body, .app-footer").count(), 3);
+      assert.equal(await app.locator(".app-header h1").textContent(), "Loomex");
+      assert.equal(await app.locator(".app-footer #connection").textContent(), "Connected");
+      assert.equal(await app.locator("#view-label").textContent(), mode === "browser" ? "Workflow browser" : mode === "prepare" ? "Run workflow" : mode === "monitor" ? "Run monitor" : mode === "authoring" ? "Workflow authoring review" : "Human interaction");
       if (mode === "authoring" || mode === "interaction") await app.locator("fieldset textarea").waitFor();
       await waitForSettledAppSize(page);
       const styles = await app.locator("main").evaluate((main: any) => {
@@ -926,10 +1228,11 @@ test("all four views share design tokens, responsive components, focus states an
       if (baseline === undefined) baseline = styles;
       else assert.deepEqual(styles, baseline, `${mode} must use the same shared shell and controls`);
       assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
-      assert.equal(await app.locator("#primary").evaluate((button: any) => button.getBoundingClientRect().height >= 42), true);
+      const visibleAction = (await app.locator("#primary").isVisible()) ? app.locator("#primary") : app.locator("#refresh");
+      assert.equal(await visibleAction.evaluate((button: any) => button.getBoundingClientRect().height >= 42), true);
       assert.equal(await app.locator("#diagnostics, #state, #json-answer").count(), 0);
       if (directory) await app.locator("main").screenshot({ path: resolve(directory, `${mode}-${width < 520 ? "mobile" : theme}.png`) });
-      const focusTarget = (await app.locator("textarea").count()) ? app.locator("textarea").first() : app.locator("#primary");
+      const focusTarget = (await app.locator("textarea").count()) ? app.locator("textarea").first() : visibleAction;
       await focusTarget.focus();
       const focus = await focusTarget.evaluate((target: any) => target.ownerDocument.defaultView.getComputedStyle(target).outlineStyle);
       assert.equal(focus, "solid");
@@ -1003,13 +1306,25 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   assert.equal(await steps.getAttribute("open"), null);
   await steps.locator("summary").click();
   await app.getByText("Implement · Ai Agent", { exact: true }).waitFor();
+  await page.evaluate((id: string) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    workflow: { id, organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", name: "Idea", status: "active" },
+    inputSchema: { type: "object", additionalProperties: false, properties: { directoryPath: {
+      description: "Absolute canonical directory path. It must match the workspace selected and confirmed when preparing this run.",
+      minLength: 1, pattern: "^/", title: "Project directory", type: "string",
+    } }, required: ["directoryPath"] },
+    selectedVersion: { id: "8b29c880-1c68-4d47-a1ff-477ab28d3c49", workflowId: id, versionNumber: 5, definition: {
+      executionPolicy: "host_user/v1",
+      settings: { inputSchema: { type: "object", properties: { directoryPath: { type: "string", title: "Project directory" } }, required: ["directoryPath"] }, workspaceInputField: "directoryPath" },
+      nodes: [],
+    } },
+  } } }]; }, id);
   await app.getByRole("button", { name: /^Prepare run/ }).click();
-  await app.getByText("Continue in the conversation to choose inputs and a workspace, then review the preparation.").waitFor();
+  await app.getByRole("heading", { name: "Idea", exact: true }).waitFor();
+  await app.getByLabel("Project directory *", { exact: true }).waitFor();
   const messages = await page.evaluate(() => window.__loomexMessages);
-  assert.equal(messages.length, 1);
-  assert.match(messages[0].content[0].text, new RegExp(id));
-  assert.match(messages[0].content[0].text, /does not authorize committing/);
-  assert.ok((await page.evaluate(() => window.__loomexCalls)).every((call: any) => ["loomex_workflows_list", "loomex_workflow_get"].includes(call.name)));
+  assert.equal(messages.length, 0);
+  assert.equal((await page.evaluate(() => window.__loomexCalls)).at(-1).name, "loomex_run_setup");
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { workflowId: id, version: "5" });
   await app.getByRole("button", { name: "Back to workflows", exact: true }).click();
   await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false } }]; });
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -1031,7 +1346,7 @@ test("authoring workflow detail matches the browser read view and only hands pre
   const id = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
   const versionId = "8b29c880-1c68-4d47-a1ff-477ab28d3c49";
   const detail = {
-    workflow: { id, name: "Future v5", status: "active", metadata: { description: "Build and review a project." } },
+    workflow: { id, organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", name: "Future v5", status: "active", metadata: { description: "Build and review a project." } },
     activeVersion: { id: versionId, workflowId: id, versionNumber: 5, definition: { nodes: [] } },
     selectedVersion: { id: versionId, workflowId: id, versionNumber: 5, definition: {
       executionPolicy: "host_user/v1",
@@ -1083,12 +1398,13 @@ test("authoring workflow detail matches the browser read view and only hands pre
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls))[2], { name: "loomex_workflow_get", arguments: { workflowId: id, version: "5" } });
 
   await app.getByRole("button", { name: "Prepare run", exact: true }).click();
-  await app.getByText("Continue in the conversation to choose inputs and a workspace, then review the preparation.").waitFor();
+  await app.getByRole("heading", { name: "Future v5", exact: true }).waitFor();
+  await app.getByLabel("Project directory *", { exact: true }).waitFor();
   const calls = await page.evaluate(() => window.__loomexCalls);
-  assert.deepEqual(calls.map((call: any) => call.name), ["loomex_workflow_get", "loomex_workflow_get", "loomex_workflow_get"]);
+  assert.deepEqual(calls.map((call: any) => call.name), ["loomex_workflow_get", "loomex_workflow_get", "loomex_workflow_get", "loomex_run_setup"]);
+  assert.deepEqual(calls.at(-1).arguments, { workflowId: id, version: "5" });
   const messages = await page.evaluate(() => window.__loomexMessages);
-  assert.equal(messages.length, 1);
-  assert.match(messages[0].content[0].text, /does not authorize committing or executing/);
+  assert.equal(messages.length, 0);
   assert.equal(await app.getByRole("heading", { name: "Future v5", exact: true }).isVisible(), true);
 });
 

@@ -8,7 +8,7 @@ import {
 } from "./preparation-review.js";
 import { ToolOutputSchema, type JsonValue, type ToolOutput } from "./protocol.js";
 import { resultSchemaFor } from "./result-schemas.js";
-import { TOOL_DEFINITIONS, type ToolDefinition } from "./tool-catalog.js";
+import { APP_CALLABLE_TOOLS, TOOL_DEFINITIONS, type ToolDefinition } from "./tool-catalog.js";
 import { registerUiResources } from "./ui.js";
 
 function toParams(input: unknown): Record<string, JsonValue> {
@@ -61,11 +61,11 @@ function timeoutFor(definition: ToolDefinition, params: Record<string, JsonValue
 
 export function createServer(client: PreparationReviewClient = new LocalControlClient()): McpServer {
   const server = new McpServer(
-    { name: "loomex", version: "0.2.8" },
+    { name: "loomex", version: "0.2.9" },
     {
       capabilities: { tools: {}, resources: {} },
       instructions:
-        "Use focused Loomex tools through the owner-checked local runner. Mutations require a retained UUID idempotency key. Prepare builder sessions, editor sessions, and runs; review each exact host_user/v1 binding with the user; then commit it unchanged. Never request credentials or secret inputs. Page events, results, responses, and artifacts until complete.",
+        "Use focused Loomex tools through the owner-checked local runner. For any request to run a workflow, start with loomex_run_setup to collect required inputs and the workspace; headlessly, ask for missing values before preparing. Do not open workflow_view merely to run it. Mutations require a retained UUID idempotency key. Prepare builder sessions, editor sessions, and runs; review each exact host_user/v1 binding with the user; then commit it unchanged. Never request credentials or secret inputs. Page events, results, responses, and artifacts until complete.",
     },
   );
 
@@ -77,13 +77,15 @@ export function createServer(client: PreparationReviewClient = new LocalControlC
       throw new Error(`Missing local-control result schema for ${definition.rpcMethod}`);
     }
     const outputSchema = ToolOutputSchema.extend({ data: resultSchema.optional() }).strict();
-    const uiMeta =
-      definition.uiUri === undefined
-        ? {}
-        : {
-            ui: { resourceUri: definition.uiUri },
-            "openai/outputTemplate": definition.uiUri,
-          };
+    const appCallable = APP_CALLABLE_TOOLS.has(definition.name);
+    const uiMeta = {
+      ui: {
+        visibility: appCallable ? ["model", "app"] : ["model"],
+        ...(definition.uiUri === undefined ? {} : { resourceUri: definition.uiUri }),
+      },
+      "openai/widgetAccessible": appCallable,
+      ...(definition.uiUri === undefined ? {} : { "openai/outputTemplate": definition.uiUri }),
+    };
     server.registerTool(
       definition.name,
       {

@@ -21,7 +21,21 @@ ordinary value.
 Finalize an editor with `confirm: false` to preview its exact proposed update.
 Use `confirm: true` only after the user approves applying that preview.
 
-Before running, ensure the canonical workspace is durably granted. Call
+When the user asks to run a workflow (including a typed command), start with
+`loomex_run_setup`. It opens one integrated flow for inputs, workspace, review
+and run status. Do not open `loomex_workflow_view` as a run prerequisite.
+`loomex_workflow_get` is a headless read; reserve `loomex_workflow_view` for an
+explicit request to inspect the workflow visually.
+
+Read the selected version's input schema before preparing. In a headless host,
+ask the user for all missing required inputs and their workspace; never call
+prepare with empty inputs when the schema requires values. Preserve supplied
+values and do not invent answers or treat defaults as user consent. If the
+schema declares `settings.workspaceInputField`, use the runner-confirmed
+canonical workspace for that input after the user selects the workspace.
+Unsupported custom forms must explain which inputs are needed in conversation.
+
+Before preparing, ensure the canonical workspace is durably granted. Call
 `loomex_run_prepare` and present its workflow/version, workspace, organization,
 provider configuration, `host_user/v1` execution policy, and unlimited product
 limits. `host_user/v1` lets provider processes act with the signed-in macOS

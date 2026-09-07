@@ -11,6 +11,7 @@ import { z } from "zod";
 import { resultSchemaFor } from "../src/result-schemas.js";
 import { LocalControlClient, LocalControlError } from "../src/local-control.js";
 import {
+  APP_CALLABLE_TOOLS,
   REQUIRED_RUNNER_CAPABILITIES,
   TOOL_DEFINITIONS,
   TOOL_NAMES,
@@ -235,13 +236,13 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
     true,
   );
   assert.deepEqual(
-    TOOL_DEFINITIONS.map((definition) => definition.rpcMethod).sort(),
+    [...new Set(TOOL_DEFINITIONS.map((definition) => definition.rpcMethod))].sort(),
     exposed.map((method) => method.name).sort(),
   );
 
-  for (const method of exposed) {
-    const definition = TOOL_DEFINITIONS.find((candidate) => candidate.rpcMethod === method.name);
-    assert.ok(definition);
+  for (const definition of TOOL_DEFINITIONS) {
+    const method = exposed.find((candidate) => candidate.name === definition.rpcMethod);
+    assert.ok(method);
     const input = z.toJSONSchema(definition.inputSchema) as {
       properties: Record<string, unknown>;
       required?: string[];
@@ -272,7 +273,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.2.8 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.2.9 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -286,7 +287,7 @@ test("SDK stdio discovery exposes only the focused 0.2.8 tool catalog", async ()
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [...TOOL_NAMES].sort());
-  assert.equal(names.length, 46);
+  assert.equal(names.length, 48);
   assert.equal(names.includes("protocol.negotiate"), false);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.some((name) => /legacy|alias|v1/i.test(name)), false);
@@ -305,6 +306,43 @@ test("SDK stdio discovery exposes only the focused 0.2.8 tool catalog", async ()
     assert.equal(resultAlternatives?.length, 2);
     assert.equal(resultAlternatives?.every((schema) => schema.additionalProperties === false), true);
   }
+});
+
+test("run setup collects schema through a read-only entry point without opening workflow details", async () => {
+  const workflowId = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const versionId = "4a1e93ec-0b64-4423-89a4-8dbb8bcb189f";
+  const inputSchema = { type: "object", properties: { directoryPath: { type: "string" } }, required: ["directoryPath"] };
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    workflow: { id: workflowId, name: "Idea to Implementation" },
+    selectedVersion: { id: versionId, versionNumber: 5, definition: { settings: { inputSchema, workspaceInputField: "directoryPath" } } },
+    inputSchema,
+  }));
+  const client = await connect(runner);
+  const { tools } = await client.listTools();
+  const read = tools.find((tool) => tool.name === "loomex_workflow_get");
+  const view = tools.find((tool) => tool.name === "loomex_workflow_view");
+  const setup = tools.find((tool) => tool.name === "loomex_run_setup");
+  assert.deepEqual(read?._meta?.ui, { visibility: ["model", "app"] });
+  assert.equal(read?._meta?.["openai/outputTemplate"], undefined);
+  assert.deepEqual(view?._meta?.ui, { visibility: ["model"], resourceUri: "ui://loomex/authoring.html" });
+  assert.deepEqual(setup?._meta?.ui, { visibility: ["model", "app"], resourceUri: "ui://loomex/prepare.html" });
+  assert.equal(setup?.annotations?.readOnlyHint, true);
+  for (const tool of tools) {
+    const allowed = APP_CALLABLE_TOOLS.has(tool.name);
+    assert.equal(tool._meta?.["openai/widgetAccessible"], allowed);
+    assert.deepEqual((tool._meta?.ui as { visibility: string[] }).visibility, allowed ? ["model", "app"] : ["model"]);
+  }
+  assert.equal(APP_CALLABLE_TOOLS.has("loomex_run_commit"), true);
+  assert.equal(APP_CALLABLE_TOOLS.has("loomex_workspace_grant"), true);
+  assert.equal(APP_CALLABLE_TOOLS.has("loomex_workflow_update"), false);
+  const result = await client.callTool({ name: "loomex_run_setup", arguments: { workflowId, version: "5" } });
+  const output = result.structuredContent as { ok: boolean; data: { inputSchema: unknown } };
+  assert.equal(output.ok, true, JSON.stringify(result));
+  assert.deepEqual(output.data.inputSchema, inputSchema);
+  assert.equal(runner.requests.length, 1);
+  assert.equal(runner.requests[0]?.method, "workflows.get");
+  assert.deepEqual(runner.requests[0]?.params, { workflowId, version: "5" });
 });
 
 test("readiness makes one owner-checked RPC call and returns structured IDs", async () => {

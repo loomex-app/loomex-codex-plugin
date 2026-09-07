@@ -205,11 +205,30 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_workflow_get",
     rpcMethod: "workflows.get",
     title: "Get Loomex workflow",
-    description: "Get a workflow and its requested immutable version or current draft metadata.",
+    description: "Read workflow metadata and its requested immutable version without opening a UI. For an explicit visual review use loomex_workflow_view. To run a workflow, begin with loomex_run_setup to collect required inputs before preparing.",
+    inputSchema: z.object({ workflowId: Uuid, version: z.string().optional() }).strict(),
+    mutating: false,
+    destructive: false,
+  },
+  {
+    name: "loomex_workflow_view",
+    rpcMethod: "workflows.get",
+    title: "View Loomex workflow",
+    description: "Open a visual workflow detail view only when the user asks to inspect a workflow. Do not call this as a prerequisite to running; use loomex_run_setup instead.",
     inputSchema: z.object({ workflowId: Uuid, version: z.string().optional() }).strict(),
     mutating: false,
     destructive: false,
     uiUri: AUTHORING_UI_URI,
+  },
+  {
+    name: "loomex_run_setup",
+    rpcMethod: "workflows.get",
+    title: "Set up Loomex run",
+    description: "Start here when the user asks to run a workflow, including typed commands. Read the exact workflow input schema and open the integrated input/workspace form. This read-only action grants no workspace and starts nothing. In a headless host, ask for every missing required input and workspace in conversation before calling loomex_run_prepare. Do not silently omit inputs or invent values.",
+    inputSchema: z.object({ workflowId: Uuid, version: z.string().optional() }).strict(),
+    mutating: false,
+    destructive: false,
+    uiUri: PREPARE_UI_URI,
   },
   {
     name: "loomex_workflow_create",
@@ -434,7 +453,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "runs.prepare",
     title: "Prepare Loomex run",
     description:
-      "Prepare, but do not start, a workflow run. Returns the exact immutable version, canonical workspace, organization, provider configuration, host_user/v1 policy, unlimited product limits, binding digest, and local confirmation key for review.",
+      "Prepare, but do not start, a workflow run after loomex_run_setup has collected all required inputs and the workspace. If inputs are missing, use setup and ask the user; never submit an empty object as a substitute. Returns the exact immutable version, canonical workspace, organization, provider configuration, host_user/v1 policy, unlimited product limits, binding digest, and local confirmation key for review.",
     inputSchema: z
       .object({
         workflowId: Uuid,
@@ -670,6 +689,15 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((definition) => definition.name);
 
+// UI access is explicit and independent of whether a tool opens a view.
+export const APP_CALLABLE_TOOLS = new Set([
+  "loomex_readiness", "loomex_workspaces_list", "loomex_workspace_grant",
+  "loomex_workflows_list", "loomex_workflow_get", "loomex_run_setup",
+  "loomex_run_prepare", "loomex_run_commit", "loomex_run_get", "loomex_run_wait", "loomex_run_cancel",
+  "loomex_builder_get", "loomex_builder_commit", "loomex_builder_respond", "loomex_editor_commit",
+  "loomex_interaction_get", "loomex_interaction_respond", "loomex_interaction_decide",
+]);
+
 const SEMANTIC_CAPABILITIES = [
   "execution.host_user/v1",
   "authorization.prepare-commit/v1",
@@ -679,6 +707,6 @@ const SEMANTIC_CAPABILITIES = [
 ] as const;
 
 export const REQUIRED_RUNNER_CAPABILITIES = Object.freeze([
-  ...TOOL_DEFINITIONS.map((definition) => `method:${definition.rpcMethod}`),
+  ...new Set(TOOL_DEFINITIONS.map((definition) => `method:${definition.rpcMethod}`)),
   ...SEMANTIC_CAPABILITIES,
 ]);
