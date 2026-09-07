@@ -631,8 +631,9 @@
     };
   }
 
-  function runFlowError(message) {
-    if (runFlow) runFlow.errorMessage = message;
+  function runFlowError(message, error = runFlow?.error) {
+    if (runFlow) { runFlow.errorMessage = message; runFlow.error = error; }
+    renderFailure({ error });
     summary.classList.add("error");
     summary.setAttribute("role", "alert");
     summary.textContent = message;
@@ -850,6 +851,9 @@
   function renderIntegratedRunFlow() {
     if (!runFlow) return;
     renderCount += 1;
+    errorDetails.replaceChildren();
+    errorDetails.hidden = true;
+    if (!runFlow.errorMessage) runFlow.error = undefined;
     if (runFlow.stage === "setup") renderRunSetup();
     else if (runFlow.stage === "review") renderRunReview();
     else renderRunStarted();
@@ -867,6 +871,8 @@
       operation = { name, slot, label, arguments: immutableCopy({ ...args, idempotencyKey: uuid() }) };
       runFlow.operations.set(slot, operation);
     }
+    runFlow.errorMessage = "";
+    runFlow.error = undefined;
     runFlow.busy = true; renderIntegratedRunFlow();
     try {
       const result = await callTool(operation.name, immutableCopy(operation.arguments), false);
@@ -874,7 +880,7 @@
         const ambiguous = ["NETWORK_AMBIGUOUS", "IDEMPOTENCY_REQUEST_IN_PROGRESS"].includes(errorCodeOf(result));
         if (!ambiguous) runFlow.operations.delete(slot);
         const retry = ambiguous ? " Retry sends the exact same request and operation ID." : " Correct the setup or try again.";
-        runFlowError(`${mutationFailureMessage(result, `The ${label} could not be completed.`)}${retry}`);
+        runFlowError(`${mutationFailureMessage(result, `The ${label} could not be completed.`)}${retry}`, structuredError(result));
         return;
       }
       const afterSuccess = await accept(result, operation.arguments);
@@ -886,7 +892,7 @@
       }
     } catch (error) {
       authoritativeStateStale = false;
-      runFlowError(`${error?.message || `The ${label} outcome is uncertain.`} Retry sends the exact same request and operation ID.`);
+      runFlowError(`${error?.message || `The ${label} outcome is uncertain.`} Retry sends the exact same request and operation ID.`, undefined);
     } finally {
       runFlow.busy = false; renderIntegratedRunFlow();
     }
@@ -2425,7 +2431,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.9" },
+    appInfo: { name: "loomex", version: "0.2.10" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

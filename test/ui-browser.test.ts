@@ -1021,14 +1021,25 @@ test("integrated run setup validates inputs, grants one canonical workspace, pre
   assert.deepEqual(prepare.arguments, rejectedPrepare.arguments, "a substituted preparation must fail closed and retry the sealed setup exactly");
   assert.equal("providerConfiguration" in prepare.arguments, false, "the UI must not invent provider choices");
 
-  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: { code: "VALIDATION_ERROR", message: "Preparation expired" } } }]; });
+  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: {
+    code: "RUN_VALIDATION_FAILED", message: "The workflow cannot start until its validation issues are fixed.",
+    validationIssueVersion: "v1", validationIssues: [{ code: "RUN_INPUT_SCHEMA_INVALID",
+      message: "Workflow inputs do not match the required schema.", nextAction: "correct_workflow_inputs",
+      nodeId: "private-node-id", debug: "must-not-render-debug" }], privateTrace: "must-not-render-trace",
+  } } }]; });
   await app.getByRole("button", { name: "Start run", exact: true }).click();
-  await app.getByText("Preparation expired", { exact: false }).waitFor();
+  await app.getByRole("heading", { name: "What needs attention", exact: true }).waitFor();
+  await app.getByText("Workflow inputs do not match the required schema.", { exact: true }).waitFor();
+  await app.getByText("Correct the workflow inputs, then prepare the run again.", { exact: true }).waitFor();
+  assert.match(await app.locator('#summary[role="alert"]').innerText(), /validation issues/);
+  assert.doesNotMatch(await app.locator("body").innerText(), /private-node-id|must-not-render/);
+  assert.equal(await app.getByRole("button", { name: "Edit setup", exact: true }).isEnabled(), true);
   assert.equal(await app.getByRole("button", { name: "Start run", exact: true }).isEnabled(), true);
 
   await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: { code: "NETWORK_AMBIGUOUS", message: "Start outcome is uncertain" } } }]; });
   await app.getByRole("button", { name: "Start run", exact: true }).click();
   await waitForCallCount(page, 6);
+  assert.equal(await app.locator("#error-details").isVisible(), false, "old validation issues must clear on the next attempt");
   assert.equal(await app.locator("#primary").textContent(), "Retry exact start");
   await app.getByRole("button", { name: "Retry exact start", exact: true }).waitFor();
   const ambiguous = (await page.evaluate(() => window.__loomexCalls)).at(-1);
