@@ -818,17 +818,266 @@
     if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
   }
 
+  function runHumanRequest(data = runFlow?.result) {
+    if (runFlow?.baselineRequired) return undefined;
+    const request = humanRequest(data);
+    const runId = executionId(data);
+    if (!request || !runId || request?.execution?.id !== runId || humanRequestResolved(request) || runFlow?.resolvedRequestIds?.has(request.id)) return undefined;
+    return String(request.status || "").toLowerCase() === "pending" ? request : undefined;
+  }
+
+  function initializeRunMonitor(data, previous = runFlow, { acceptedCommit = false } = {}) {
+    const runId = executionId(data);
+    if (!runId) throw new Error("The runner did not return a verifiable run identity.");
+    const organizationId = safeText(previous?.selected?.organizationId, 64) || safeText(previous?.organizationId, 64) || safeText(data?.execution?.organizationId, 64);
+    const candidate = {
+      ...(previous || {}),
+      stage: "monitor",
+      result: data,
+      organizationId,
+      operations: previous?.operations || new Map(),
+      humanDrafts: previous?.humanDrafts || new Map(),
+      resolvedRequestIds: previous?.resolvedRequestIds || new Set(),
+      currentRequestId: previous?.currentRequestId,
+      humanMode: undefined,
+      busy: false,
+      readEpoch: previous?.readEpoch || 0,
+      automaticWaits: previous?.automaticWaits || 0,
+      waitTimer: previous?.waitTimer,
+      baselineRequired: Boolean(acceptedCommit && humanRequest(data) && runSequence(data) === undefined),
+      returnToBrowser: Boolean(previous?.returnToBrowser),
+    };
+    runFlow = candidate;
+    try {
+      acceptRunSnapshot(data, runId, { initial: true });
+    } catch (error) {
+      if (!acceptedCommit) {
+        runFlow = previous || { ...candidate, result: { execution: data.execution }, currentRequestId: undefined };
+        throw error;
+      }
+      const safeResult = { ...data };
+      delete safeResult.humanRequest;
+      runFlow = {
+        ...candidate,
+        result: safeResult,
+        currentRequestId: undefined,
+        errorMessage: "The run started, but its human request could not be verified. Refresh run to load the current authoritative state.",
+      };
+      latest = safeResult;
+    }
+  }
+
+  function runSequence(data) {
+    return Number.isSafeInteger(data?.latestSequence) && data.latestSequence >= 0 ? data.latestSequence : undefined;
+  }
+
+  function retainedInteractionOperation() {
+    return [...(runFlow?.operations?.values() || [])].find((operation) =>
+      ["loomex_interaction_respond", "loomex_interaction_decide"].includes(operation.name));
+  }
+
+  function consumeResolvedRunRequest(requestId) {
+    if (!requestId) return;
+    runFlow.resolvedRequestIds.add(requestId);
+    runFlow.humanDrafts.delete(requestId);
+    const operation = retainedInteractionOperation();
+    if (operation?.arguments?.requestId === requestId) runFlow.operations.delete(operation.slot);
+    if (runFlow.currentRequestId === requestId) runFlow.humanMode = undefined;
+  }
+
+  function acceptRunSnapshot(data, expectedRunId, { initial = false } = {}) {
+    if (!data || executionId(data) !== expectedRunId) throw new Error("The runner returned status for a different run.");
+    const previousData = runFlow.result;
+    const execution = data.execution || {};
+    const previousSequence = runSequence(previousData);
+    const incomingSequence = runSequence(data);
+    if (!initial && previousSequence !== undefined && incomingSequence !== undefined && incomingSequence < previousSequence) {
+      throw new Error("The runner returned an older run snapshot.");
+    }
+    if (!initial && terminalRun(previousData?.execution || {}) && !terminalRun(execution)) {
+      throw new Error("The runner returned a non-terminal state for a completed run.");
+    }
+    const incomingOrganization = safeText(execution.organizationId, 64);
+    let candidateOrganization = runFlow.organizationId;
+    let candidateCurrentRequestId = runFlow.currentRequestId;
+    const consumedRequestIds = new Set();
+    if (candidateOrganization && incomingOrganization && incomingOrganization !== candidateOrganization) {
+      throw new Error("The runner returned status for a different organization.");
+    }
+    if (!candidateOrganization && incomingOrganization) candidateOrganization = incomingOrganization;
+    const request = humanRequest(data);
+    if (request) {
+      const requestId = safeText(request.id, 64);
+      if (!requestId || request?.execution?.id !== expectedRunId) {
+        throw new Error("The runner returned a human request that is not bound to this run.");
+      }
+      const requestOrganization = safeText(request?.organizationId, 64);
+      const requestExecutionOrganization = safeText(request?.execution?.organizationId, 64);
+      if (requestOrganization && requestExecutionOrganization && requestOrganization !== requestExecutionOrganization) {
+        throw new Error("The runner returned conflicting organization identities for the human request.");
+      }
+      const suppliedRequestOrganization = requestOrganization || requestExecutionOrganization;
+      if (candidateOrganization && suppliedRequestOrganization && suppliedRequestOrganization !== candidateOrganization) {
+        throw new Error("The runner returned a human request for a different organization.");
+      }
+      if (!candidateOrganization && suppliedRequestOrganization) candidateOrganization = suppliedRequestOrganization;
+      const current = humanRequest(runFlow.result);
+      const currentPending = current && current.id === runFlow.currentRequestId &&
+        !humanRequestResolved(current) && !runFlow.resolvedRequestIds.has(current.id);
+      if (!initial && currentPending && requestId !== current.id) {
+        const advanced = incomingSequence !== undefined && previousSequence !== undefined && incomingSequence > previousSequence;
+        if (!advanced) throw new Error("The runner returned a different request before the current response was resolved.");
+        consumedRequestIds.add(current.id);
+      }
+      if (runFlow.resolvedRequestIds.has(requestId) && !humanRequestResolved(request)) {
+        throw new Error("The runner returned an already resolved request as pending.");
+      }
+      if (!humanRequestResolved(request)) candidateCurrentRequestId = requestId;
+    }
+    const current = humanRequest(previousData);
+    const currentPending = !initial && current && current.id === runFlow.currentRequestId &&
+      !humanRequestResolved(current) && !runFlow.resolvedRequestIds.has(current.id);
+    if (currentPending) {
+      const sameResolved = request && request.id === current.id && humanRequestResolved(request);
+      const advanced = incomingSequence !== undefined && previousSequence !== undefined && incomingSequence > previousSequence;
+      const terminal = terminalRun(execution);
+      if (!request && !advanced && !terminal) {
+        throw new Error("The runner returned an older snapshot that cannot resolve the current request.");
+      }
+      if (sameResolved || !request || request.id !== current.id) consumedRequestIds.add(current.id);
+    }
+    if (terminalRun(execution) && request && !humanRequestResolved(request)) {
+      throw new Error("The runner returned a pending request for a terminal run.");
+    }
+    runFlow.organizationId = candidateOrganization;
+    for (const requestId of consumedRequestIds) consumeResolvedRunRequest(requestId);
+    runFlow.currentRequestId = candidateCurrentRequestId;
+    if ((request || terminalRun(execution)) && runFlow.waitTimer) {
+      clearTimeout(runFlow.waitTimer);
+      runFlow.waitTimer = undefined;
+    }
+    latest = data;
+    runFlow.result = data;
+    return data;
+  }
+
+  function captureRunHumanDraft() {
+    const request = runHumanRequest();
+    if (!request || form.hidden || runFlow?.humanMode === "cancel") return;
+    const controls = {};
+    for (const control of form.querySelectorAll("input, textarea, select")) {
+      if (!control.id) continue;
+      controls[control.id] = { value: control.value, checked: Boolean(control.checked) };
+    }
+    if (Object.keys(controls).length) runFlow.humanDrafts.set(request.id, controls);
+  }
+
+  function restoreRunHumanDraft(request) {
+    const draft = runFlow?.humanDrafts?.get(request.id);
+    if (!draft) return;
+    for (const control of form.querySelectorAll("input, textarea, select")) {
+      const saved = draft[control.id];
+      if (!saved) continue;
+      control.value = saved.value;
+      if ("checked" in control) control.checked = saved.checked;
+      control.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+
+  function appendRunCancelAction(request) {
+    const actions = element("div", { className: "actions" });
+    const cancel = element("button", { type: "button", className: "secondary", disabled: !connected || runFlow.busy || runFlow.operations.size > 0 }, "Cancel run");
+    cancel.addEventListener("click", () => {
+      if (runFlow.busy || runFlow.operations.size > 0) return;
+      captureRunHumanDraft();
+      runFlow.humanMode = "cancel";
+      renderIntegratedRunFlow();
+    });
+    actions.append(cancel);
+    context.append(actions);
+  }
+
+  function renderRunHumanRequest(request) {
+    const requestId = interactionId({ humanRequest: request });
+    const requestType = request.type;
+    const schema = request.responseSchema || request.outputSchema;
+    const operation = runFlow.operations.values().next().value;
+    const responding = operation && ["loomex_interaction_respond", "loomex_interaction_decide"].includes(operation.name);
+    if (runFlow.humanMode === "cancel") {
+      renderRun(runFlow.result.execution || {});
+      const cancelling = operation?.name === "loomex_run_cancel";
+      typedForm({ properties: { reason: { type: "string" } } }, cancelling ? { reason: operation.arguments.reason } : {});
+      if (cancelling) for (const control of form.querySelectorAll("input, textarea, select")) control.disabled = true;
+      secondary.hidden = false; secondary.textContent = "Back to question"; secondary.disabled = runFlow.busy || runFlow.operations.size > 0;
+      primary.hidden = false; primary.className = "danger"; primary.textContent = operation ? "Retry exact cancellation" : "Cancel run";
+      primary.disabled = !connected || runFlow.busy;
+      summary.textContent = "Cancel this run separately from the workflow response.";
+      return;
+    }
+    renderHumanPresentation(request, request.inputSpec);
+    if (!humanPresentation(request)) renderRun(runFlow.result.execution || {});
+    appendRunCancelAction(request);
+    if (requestType === "approval" || runFlow.result.decisionRequired === true) {
+      appendRequestCopy(request, request.inputSpec);
+      form.hidden = false;
+      primary.hidden = false;
+      secondary.hidden = false;
+      if (responding) {
+        primary.textContent = operation.arguments.decision === "reject" ? "Retry exact rejection" : "Retry exact approval";
+        secondary.hidden = true;
+      } else {
+        primary.textContent = "Approve";
+        secondary.textContent = "Reject";
+      }
+      primary.disabled = !connected || runFlow.busy || !requestId;
+      secondary.disabled = !connected || runFlow.busy || !requestId;
+    } else {
+      const initial = responding ? operation.arguments.answer : request.answer;
+      const formReady = typedForm(schema, initial, request.inputSpec, request);
+      if (!responding) restoreRunHumanDraft(request);
+      primary.hidden = false;
+      primary.textContent = responding ? "Retry exact response" : "Continue";
+      primary.disabled = !connected || runFlow.busy || !requestId || !formReady;
+      secondary.hidden = true;
+    }
+    if (responding) {
+      for (const control of form.querySelectorAll("input, textarea, select")) control.disabled = true;
+    }
+    summary.textContent = "Your response is needed to continue this run.";
+  }
+
   function renderRunStarted() {
     form.hidden = true; form.replaceChildren(); secondary.hidden = true; primary.hidden = true; primary.className = "";
     refresh.hidden = false; refresh.textContent = "Refresh run"; refresh.disabled = !connected || runFlow.busy;
+    if (runFlow.baselineRequired) {
+      renderRun(runFlow.result.execution || {});
+      context.setAttribute("aria-busy", String(runFlow.busy));
+      summary.classList.remove("error"); summary.setAttribute("role", "status");
+      summary.textContent = "Run started. Verifying its current human request before accepting a response.";
+      if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
+      return;
+    }
+    if (runFlow.cancellationRequested && !terminalRun(runFlow.result.execution || {})) {
+      renderRun(runFlow.result.execution || {});
+      context.setAttribute("aria-busy", String(runFlow.busy));
+      secondary.hidden = false; secondary.textContent = "Wait for update"; secondary.disabled = !connected || runFlow.busy;
+      summary.classList.remove("error"); summary.setAttribute("role", "status");
+      summary.textContent = "Cancellation requested. Refresh or wait for the runner’s final status.";
+      if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
+      scheduleRunWait();
+      return;
+    }
+    const request = runHumanRequest();
+    if (request) {
+      renderRunHumanRequest(request);
+      context.setAttribute("aria-busy", String(runFlow.busy));
+      if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
+      return;
+    }
     renderRun(runFlow.result.execution || {});
     const steps = element("ol", { className: "progress-steps", "aria-label": "Run progress" });
     for (const [key, label] of [["setup", "Setup"], ["review", "Review"], ["monitor", "Run"]]) steps.append(element("li", key === "monitor" ? { "aria-current": "step" } : {}, label));
     context.insertBefore(steps, context.firstChild);
-    const continueActions = element("div", { className: "actions" });
-    const continueButton = element("button", { type: "button", className: "secondary", disabled: !connected || runFlow.busy || runFlow.conversationBusy }, "Continue in conversation");
-    continueButton.addEventListener("click", () => continueRunInConversation());
-    continueActions.append(continueButton); context.append(continueActions);
     context.setAttribute("aria-busy", String(runFlow.busy));
     summary.classList.remove("error"); summary.setAttribute("role", "status");
     const terminal = terminalRun(runFlow.result.execution || {});
@@ -846,6 +1095,7 @@
       }
     }
     if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
+    scheduleRunWait();
   }
 
   function renderIntegratedRunFlow() {
@@ -885,7 +1135,6 @@
       }
       const afterSuccess = await accept(result, operation.arguments);
       runFlow.operations.delete(slot);
-      runFlow.errorMessage = "";
       authoritativeStateStale = false;
       if (typeof afterSuccess === "function") {
         try { afterSuccess(); } catch { /* A best-effort host notification cannot change the accepted mutation outcome. */ }
@@ -961,11 +1210,36 @@
         bindingDigest: prepared.bindingDigest,
         confirmationKey: prepared.confirmationKey,
       }, acceptRunCommit);
+      if (runFlow.stage === "monitor" && runFlow.baselineRequired && !runFlow.operations.size) {
+        await readRunSnapshot("loomex_run_get");
+      }
       return;
     }
     if (runFlow.stage === "monitor") {
       const runId = executionId(runFlow.result);
       if (!runId || terminalRun(runFlow.result.execution || {})) throw new Error("This run is already complete.");
+      if (runFlow.cancellationRequested) throw new Error("Cancellation has already been requested for this run.");
+      const request = runHumanRequest();
+      const retained = runFlow.operations.values().next().value;
+      if (request && runFlow.humanMode !== "cancel") {
+        const requestId = request.id;
+        if (retained) {
+          await runFlowMutation(retained.name, retained.slot, retained.label, {}, acceptHumanResolution);
+        } else if (request.type === "approval" || runFlow.result.decisionRequired === true) {
+          await runFlowMutation("loomex_interaction_decide", `interaction:approve:${requestId}`, "approval", {
+            requestId, decision: "approve",
+          }, acceptHumanResolution);
+        } else {
+          captureRunHumanDraft();
+          await runFlowMutation("loomex_interaction_respond", `interaction:respond:${requestId}`, "response", {
+            requestId, answer: collectAnswer(),
+          }, acceptHumanResolution);
+        }
+        if (runFlow.resolvedRequestIds.has(requestId) && !runFlow.operations.size) {
+          await readRunSnapshot("loomex_run_get");
+        }
+        return;
+      }
       const slot = `run:cancel:${runId}`;
       if (runFlow.operations.has(slot)) {
         await runFlowMutation("loomex_run_cancel", slot, "cancellation", {}, acceptRunStatus);
@@ -1012,38 +1286,93 @@
     const data = dataOf(result);
     const runId = executionId(data);
     if (!runId || data.preparationId !== request.preparationId || data.executionPolicy !== "host_user/v1") throw new Error("The runner did not return a run bound to the exact preparation and execution policy.");
-    latest = data;
-    runFlow.result = data;
-    runFlow.stage = "monitor";
+    initializeRunMonitor(data, runFlow, { acceptedCommit: true });
     return () => send("ui/update-model-context", { content: [{ type: "text", text: `Loomex started run ${runId}. The app is showing its current authoritative status.` }] }, false);
   }
 
   async function acceptRunStatus(result, request) {
     const data = dataOf(result);
     if (executionId(data) !== request.runId) throw new Error("The runner did not return status for the requested run.");
-    latest = data;
-    runFlow.result = data;
+    try {
+      acceptRunSnapshot(data, request.runId);
+    } catch (error) {
+      runFlow.errorMessage = "The cancellation was accepted, but its returned run state could not be verified. Refresh run to load the current authoritative state.";
+    }
+    runFlow.humanMode = undefined;
+    runFlow.cancellationRequested = true;
   }
 
-  async function continueRunInConversation() {
-    const runId = executionId(runFlow?.result);
-    if (!runId || runFlow?.busy || runFlow?.conversationBusy) return;
-    runFlow.conversationBusy = true;
-    renderIntegratedRunFlow();
-    let message;
-    let errorMessage;
-    try {
-      const result = await send("ui/message", { role: "user", content: [{ type: "text", text:
-        `Monitor Loomex run ${runId} and surface its next required human interaction or final result. Do not start another run.` }] });
-      if (result?.isError) throw new Error("The host could not open the run follow-up.");
-      message = "The conversation has been asked to follow this run and surface its next required action.";
-    } catch (error) { errorMessage = error?.message || "The host could not open the run follow-up."; }
-    finally {
-      runFlow.conversationBusy = false;
-      renderIntegratedRunFlow();
-      if (errorMessage) setError(new Error(errorMessage));
-      else { summary.classList.remove("error"); summary.setAttribute("role", "status"); summary.textContent = message; }
+  async function acceptHumanResolution(result, request) {
+    const data = dataOf(result);
+    const status = String(data?.requestStatus || "").toLowerCase();
+    if (data?.requestId !== request.requestId || data?.executionId !== executionId(runFlow.result) ||
+      !["resolved", "completed", "answered", "approved", "rejected"].includes(status) || data?.error != null) {
+      throw new Error("The runner did not confirm the exact response for this run and request.");
     }
+    runFlow.resolvedRequestIds.add(request.requestId);
+    const current = humanRequest(runFlow.result);
+    if (current?.id === request.requestId) {
+      runFlow.result = { ...runFlow.result, humanRequest: { ...current, status } };
+    }
+    runFlow.humanDrafts.delete(request.requestId);
+    runFlow.currentRequestId = request.requestId;
+    latest = runFlow.result;
+  }
+
+  async function readRunSnapshot(toolName, { automatic = false } = {}) {
+    if (!runFlow || runFlow.stage !== "monitor" || runFlow.busy) return false;
+    if (automatic && (document.visibilityState !== "visible" || runHumanRequest())) return false;
+    const runId = executionId(runFlow.result);
+    if (!runId || terminalRun(runFlow.result.execution || {})) return false;
+    captureRunHumanDraft();
+    const epoch = ++runFlow.readEpoch;
+    if (runFlow.waitTimer) { clearTimeout(runFlow.waitTimer); runFlow.waitTimer = undefined; }
+    runFlow.busy = true;
+    runFlow.errorMessage = "";
+    renderIntegratedRunFlow();
+    try {
+      const args = toolName === "loomex_run_wait" ? { runId, timeoutSeconds: automatic ? 5 : 30 } : { runId };
+      const result = await callTool(toolName, args, false);
+      if (epoch !== runFlow.readEpoch) return false;
+      if (result?.isError || result?.structuredContent?.ok === false) throw new Error(automatic ? "" : "The current run status could not be verified.");
+      const establishingBaseline = runFlow.baselineRequired;
+      acceptRunSnapshot(dataOf(result), runId, { initial: establishingBaseline });
+      runFlow.baselineRequired = false;
+      runFlow.errorMessage = "";
+      if (automatic) runFlow.automaticWaits += 1;
+      else runFlow.automaticWaits = 0;
+      return true;
+    } catch (error) {
+      if (epoch !== runFlow.readEpoch) return false;
+      if (automatic) {
+        runFlow.automaticWaits += 1;
+        if (error?.message) runFlow.errorMessage = "Automatic refresh could not verify the returned run state. Use Refresh run to check again.";
+      } else {
+        const acceptedRequest = humanRequest(runFlow.result);
+        runFlow.errorMessage = acceptedRequest && runFlow.resolvedRequestIds.has(acceptedRequest.id)
+          ? "The response was accepted, but the current run status could not be verified. Refresh run to check it; the response will not be sent again."
+          : error?.message || "The current run status could not be verified.";
+        runFlow.error = undefined;
+      }
+      return false;
+    } finally {
+      if (epoch === runFlow.readEpoch) {
+        runFlow.busy = false;
+        renderIntegratedRunFlow();
+      }
+    }
+  }
+
+  function scheduleRunWait() {
+    if (!runFlow || runFlow.stage !== "monitor" || runFlow.busy || runFlow.waitTimer || runHumanRequest() ||
+      terminalRun(runFlow.result.execution || {}) || document.visibilityState !== "visible" || !connected ||
+      !runFlow.result.waitState || runFlow.automaticWaits >= 3) return;
+    const delays = [750, 2_000, 5_000];
+    const delay = delays[Math.min(runFlow.automaticWaits, delays.length - 1)];
+    runFlow.waitTimer = setTimeout(async () => {
+      runFlow.waitTimer = undefined;
+      await readRunSnapshot("loomex_run_wait", { automatic: true });
+    }, delay);
   }
 
   function dataOf(result) {
@@ -1922,6 +2251,7 @@
   }
 
   function render(result) {
+    if (runFlow?.stage === "monitor") captureRunHumanDraft();
     renderCount += 1;
     if (mode === "browser" && !runFlow) {
       browserEpoch += 1; browserBusy = false;
@@ -1982,8 +2312,10 @@
         initializeRunSetup(output, false);
         renderIntegratedRunFlow();
       } else if (!failed && output.execution && !output.preparationId) {
-        runFlow = { stage: "monitor", result: output, operations: new Map(), busy: false, returnToBrowser: false };
-        renderIntegratedRunFlow();
+        try {
+          initializeRunMonitor(output, null);
+          renderIntegratedRunFlow();
+        } catch (error) { setError(error); }
       } else {
         if (!failed) summary.textContent = "Review the details below before starting.";
         preparationView(output);
@@ -2009,21 +2341,13 @@
         primary.disabled = !connected;
         return;
       }
-      const runId = executionId(output);
-      const run = output.execution || {};
-      renderRun(run);
-      if (terminalRun(run)) {
-        summary.textContent = `${formatStatus(run.status) || "Run"}. Review the result details below.`;
-      } else {
-        summary.textContent = safeText(run.requiredAction) || "This run is in progress.";
-        secondary.textContent = "Wait for update";
-        secondary.hidden = false;
-        secondary.disabled = !connected || !runId;
-        primary.textContent = "Cancel run";
-        primary.className = "danger";
-        primary.hidden = false;
-        primary.disabled = !connected || !runId;
-        typedForm({ properties: { reason: { type: "string" } } }, { reason: "Cancelled by user" });
+      try {
+        if (!runFlow) initializeRunMonitor(output, null);
+        else acceptRunSnapshot(output, executionId(runFlow.result));
+        renderIntegratedRunFlow();
+      } catch (error) {
+        if (runFlow) renderIntegratedRunFlow();
+        setError(error);
       }
     } else if (mode === "interaction") {
       const request = humanRequest(output) || {};
@@ -2232,12 +2556,7 @@
           summary.classList.remove("error"); summary.setAttribute("role", "status");
           summary.textContent = "Runner status checked. Your prepared operation is unchanged.";
         } else if (runFlow.stage === "monitor") {
-          const runId = executionId(runFlow.result);
-          const result = await callTool("loomex_run_get", { runId }, false);
-          if (result?.isError || result?.structuredContent?.ok === false || executionId(dataOf(result)) !== runId) throw new Error("The current run status could not be verified.");
-          runFlow.result = dataOf(result);
-          runFlow.errorMessage = "";
-          renderIntegratedRunFlow();
+          await readRunSnapshot("loomex_run_get");
         }
         return;
       }
@@ -2320,11 +2639,28 @@
       if (runFlow?.stage === "monitor") {
         const runId = executionId(runFlow.result);
         if (!runId || terminalRun(runFlow.result.execution || {})) return;
-        const result = await callTool("loomex_run_wait", { runId, timeoutSeconds: 30 }, false);
-        if (result?.isError || result?.structuredContent?.ok === false || executionId(dataOf(result)) !== runId) throw new Error("The next run update could not be verified.");
-        runFlow.result = dataOf(result);
-        runFlow.errorMessage = "";
-        renderIntegratedRunFlow();
+        if (runFlow.cancellationRequested) {
+          await readRunSnapshot("loomex_run_wait");
+          return;
+        }
+        const request = runHumanRequest();
+        if (request && runFlow.humanMode === "cancel") {
+          runFlow.humanMode = undefined;
+          runFlow.errorMessage = "";
+          renderIntegratedRunFlow();
+          return;
+        }
+        if (request && (request.type === "approval" || runFlow.result.decisionRequired === true)) {
+          const requestId = request.id;
+          await runFlowMutation("loomex_interaction_decide", `interaction:reject:${requestId}`, "rejection", {
+            requestId, decision: "reject",
+          }, acceptHumanResolution);
+          if (runFlow.resolvedRequestIds.has(requestId) && !runFlow.operations.size) {
+            await readRunSnapshot("loomex_run_get");
+          }
+          return;
+        }
+        await readRunSnapshot("loomex_run_wait");
         return;
       }
       const retainedOperation = currentMutationOperation();
@@ -2431,7 +2767,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.10" },
+    appInfo: { name: "loomex", version: "0.2.11" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

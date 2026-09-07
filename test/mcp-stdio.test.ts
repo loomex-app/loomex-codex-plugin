@@ -273,7 +273,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.2.10 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.2.11 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -773,11 +773,12 @@ test("run projections accept canonical string wait states and nested execution I
   const runId = "733ccce0-6fc0-4fe2-93fb-5c2114878103";
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
-      execution: { id: runId },
-      humanRequest: { id: "aa7843c2-7694-426a-ae51-fbc3af88d415" },
+      execution: { id: runId, status: "waiting", name: "Exact run", input: { token: "never-print-summary-token" } },
+      humanRequest: { id: "aa7843c2-7694-426a-ae51-fbc3af88d415", status: "pending", type: "long_text", execution: { id: runId },
+        inputSpec: { inputType: "long_text", question: "Describe your idea" } },
       waitState: "human_action_required",
       automation: null,
-      runner: {},
+      runner: { id: "runner-summary-id", status: "online", name: "Runner summary name" },
       events: [],
       latestSequence: 0,
       hasMoreEvents: false,
@@ -789,6 +790,13 @@ test("run projections accept canonical string wait states and nested execution I
   const structured = result.structuredContent as Record<string, unknown>;
   assert.equal(result.isError, undefined);
   assert.equal((structured.data as Record<string, unknown>).waitState, "human_action_required");
+  const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
+  const summary = JSON.parse(text);
+  assert.deepEqual(summary.execution, { id: runId, status: "waiting", name: "Exact run" });
+  assert.equal(summary.humanRequest.id, "aa7843c2-7694-426a-ae51-fbc3af88d415");
+  assert.equal(summary.humanRequest.inputSpec.question, "Describe your idea");
+  assert.equal(summary.nextAction.tool, "loomex_interaction_get");
+  assert.doesNotMatch(text, /runner-summary-id|online|Runner summary name|never-print-summary-token/);
 });
 
 test("run projections preserve authoritative seven-type input specs for UI and headless clients", async () => {

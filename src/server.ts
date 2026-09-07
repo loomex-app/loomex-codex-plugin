@@ -9,6 +9,7 @@ import {
 import { ToolOutputSchema, type JsonValue, type ToolOutput } from "./protocol.js";
 import { resultSchemaFor } from "./result-schemas.js";
 import { APP_CALLABLE_TOOLS, TOOL_DEFINITIONS, type ToolDefinition } from "./tool-catalog.js";
+import { runSummary } from "./run-summary.js";
 import { registerUiResources } from "./ui.js";
 
 function toParams(input: unknown): Record<string, JsonValue> {
@@ -46,7 +47,7 @@ function contentFor(output: ToolOutput): string {
     ok: true,
     method: output.method,
     requestId: output.requestId,
-    ...(output.data === undefined ? {} : findStableFields(output.data)),
+    ...(output.data === undefined ? {} : (runSummary(output.method, output.data) ?? findStableFields(output.data))),
   });
 }
 
@@ -61,11 +62,11 @@ function timeoutFor(definition: ToolDefinition, params: Record<string, JsonValue
 
 export function createServer(client: PreparationReviewClient = new LocalControlClient()): McpServer {
   const server = new McpServer(
-    { name: "loomex", version: "0.2.10" },
+    { name: "loomex", version: "0.2.11" },
     {
       capabilities: { tools: {}, resources: {} },
       instructions:
-        "Use focused Loomex tools through the owner-checked local runner. For any request to run a workflow, start with loomex_run_setup to collect required inputs and the workspace; headlessly, ask for missing values before preparing. Do not open workflow_view merely to run it. Mutations require a retained UUID idempotency key. Prepare builder sessions, editor sessions, and runs; review each exact host_user/v1 binding with the user; then commit it unchanged. Never request credentials or secret inputs. Page events, results, responses, and artifacts until complete.",
+        "Use focused Loomex tools through the owner-checked local runner. For a new workflow run, start with loomex_run_setup to collect required inputs and the workspace; headlessly, ask for missing values before preparing. For an existing run ID, call loomex_run_get; when a human request is pending, call loomex_interaction_get and present its typed question. Never substitute workflow listing for run monitoring. The run UI handles human responses directly; no chat continuation is required. Do not open workflow_view merely to run it. Mutations require a retained UUID idempotency key. Prepare builder sessions, editor sessions, and runs; review each exact host_user/v1 binding with the user; then commit it unchanged. Never request credentials or secret inputs. Page events, results, responses, and artifacts until complete.",
     },
   );
 

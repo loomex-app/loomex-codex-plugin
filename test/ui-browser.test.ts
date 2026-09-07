@@ -741,6 +741,335 @@ test("run monitoring projects safe state and removes terminal actions", async (t
   assert.equal(await rejected.getByText("The conversation has been asked to retrieve and present the complete result.", { exact: true }).count(), 0);
 });
 
+test("run monitor answers a typed batch and approval against one authoritative run", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for in-app run interaction");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 1100 } });
+  const runId = "10c7b0d2-a45e-4f07-b0a7-061e7bd24692";
+  const organizationId = "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2";
+  const firstRequestId = "20aa6a5d-34cd-4a53-a9ea-06a249ec41bf";
+  const approvalId = "73fd9a53-b42c-46d9-b148-6665bfc66963";
+  const execution = { id: runId, organizationId, status: "waiting", workflowName: "Idea to Implementation", requiredAction: "Answer the workflow question" };
+  const firstRequest = {
+    id: firstRequestId, status: "pending", type: "manual_input", execution: { id: runId, organizationId },
+    title: "Shape the idea",
+    inputSpec: { schemaVersion: "loomex.human-input/v2", collectionMode: "batch", inputType: "text", question: "Idea details", questions: [
+      { id: "idea", inputType: "long_text", question: "What should we build?" },
+      { id: "confirmed", inputType: "boolean", question: "Are these requirements complete?" },
+    ] },
+    responseSchema: { type: "object", properties: { answers: { type: "array" } }, required: ["answers"] },
+  };
+  const app = await mountApp(page, "monitor", { execution, humanRequest: firstRequest, waitState: "human_action_required" });
+  await app.getByRole("textbox", { name: "What should we build? Your answer" }).fill("A local planning board");
+  await app.locator("#question-1-false").check();
+  assert.equal(await app.getByRole("button", { name: "Cancel run", exact: true }).count(), 1, "cancellation stays separate from the answer form");
+
+  const approval = {
+    id: approvalId, status: "pending", type: "approval", execution: { id: runId, organizationId },
+    title: "Approve implementation?", prompt: "Approve the reviewed plan before implementation.",
+  };
+  await page.evaluate(({ execution, firstRequestId, approval }: any) => { window.__workflowResponses = [
+    { structuredContent: { ok: true, data: { requestId: firstRequestId, requestStatus: "resolved", executionId: execution.id, executionStatus: "queued", error: null } } },
+    { structuredContent: { ok: true, data: { execution: { ...execution, requiredAction: "Approve implementation" }, humanRequest: approval, waitState: "human_action_required" } } },
+  ]; }, { execution, firstRequestId, approval });
+  await app.getByRole("button", { name: "Continue", exact: true }).click();
+  await app.getByRole("button", { name: "Approve", exact: true }).waitFor();
+  const firstCalls = await page.evaluate(() => window.__loomexCalls);
+  assert.deepEqual(firstCalls.map((call: any) => call.name), ["loomex_interaction_respond", "loomex_run_get"]);
+  assert.deepEqual(firstCalls[0].arguments.answer, { answers: [
+    { questionId: "idea", value: "A local planning board" },
+    { questionId: "confirmed", value: false },
+  ] });
+  assert.equal(firstCalls[0].arguments.requestId, firstRequestId);
+  assert.deepEqual(firstCalls[1].arguments, { runId });
+
+  const terminal = { execution: { ...execution, status: "completed", requiredAction: undefined, result: { version: 1, summary: "Implementation complete." } } };
+  await page.evaluate(({ runId, approvalId, terminal }: any) => { window.__workflowResponses = [
+    { structuredContent: { ok: true, data: { requestId: approvalId, requestStatus: "approved", executionId: runId, executionStatus: "queued", error: null } } },
+    { structuredContent: { ok: true, data: terminal } },
+  ]; }, { runId, approvalId, terminal });
+  await app.getByRole("button", { name: "Approve", exact: true }).click();
+  await app.getByText("Implementation complete.", { exact: true }).waitFor();
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.deepEqual(calls.map((call: any) => call.name), ["loomex_interaction_respond", "loomex_run_get", "loomex_interaction_decide", "loomex_run_get"]);
+  assert.equal(calls[2].arguments.requestId, approvalId);
+  assert.equal(calls[2].arguments.decision, "approve");
+  assert.equal(await app.getByRole("button", { name: "Continue" }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Approve" }).count(), 0);
+  assert.deepEqual(await page.evaluate(() => window.__loomexMessages), [], "supported human requests never require a chat handoff");
+});
+
+test("run monitor preserves exact ambiguous responses and rejects stale authoritative reads", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for run interaction recovery");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 720, height: 900 } });
+  const runId = "6ce1d68a-8bc8-4c6a-bfd1-00aa94f34bbf";
+  const requestId = "42660045-2c5c-4761-929c-4580d524fbbb";
+  const organizationId = "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2";
+  const execution = { id: runId, organizationId, status: "waiting", workflowName: "Resilient workflow" };
+  const request = { id: requestId, status: "pending", type: "manual_input", execution: { id: runId, organizationId },
+    inputSpec: { inputType: "long_text", question: "Describe the exact goal" },
+    responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } };
+  const app = await mountApp(page, "monitor", { execution, humanRequest: request, waitState: "human_action_required" });
+  const answer = app.getByRole("textbox", { name: "Describe the exact goal Your answer" });
+  await answer.fill("Keep this exact answer");
+  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: { code: "NETWORK_AMBIGUOUS", message: "The response outcome is unknown" } } }]; });
+  await app.getByRole("button", { name: "Continue", exact: true }).click();
+  await app.getByRole("button", { name: "Retry exact response", exact: true }).waitFor({ timeout: 5_000 });
+  const sealed = (await page.evaluate(() => window.__loomexCalls))[0];
+  assert.equal(await answer.isDisabled(), true);
+
+  await page.evaluate(({ requestId, runId }: any) => { window.__workflowResponses = [
+    { structuredContent: { ok: true, data: { requestId, requestStatus: "resolved", executionId: runId, executionStatus: "queued", error: null } } },
+    { isError: true, structuredContent: { ok: false, error: { code: "RUNNER_UNAVAILABLE", message: "Unavailable" } } },
+  ]; }, { requestId, runId });
+  await app.getByRole("button", { name: "Retry exact response", exact: true }).click();
+  await app.getByText("The response was accepted, but the current run status could not be verified.", { exact: false }).waitFor({ timeout: 5_000 });
+  const afterAccepted = await page.evaluate(() => window.__loomexCalls);
+  assert.deepEqual(afterAccepted[1].arguments, sealed.arguments, "an ambiguous response retries the exact request and idempotency key");
+  assert.equal(afterAccepted[2].name, "loomex_run_get");
+  assert.equal(afterAccepted.filter((call: any) => call.name === "loomex_interaction_respond").length, 2);
+  assert.equal(await app.getByRole("button", { name: "Retry exact response" }).count(), 0, "a failed read cannot resurrect an accepted mutation");
+  assert.equal(await app.getByRole("button", { name: "Continue" }).count(), 0);
+
+  await page.evaluate(({ execution, request }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { ...execution, id: "9bec6165-9935-4199-b680-8f5f0f0b16fa" }, humanRequest: request, waitState: "human_action_required",
+  } } }]; }, { execution, request });
+  await app.getByRole("button", { name: "Refresh run", exact: true }).click();
+  await waitForCallCount(page, 4);
+  await app.getByText("The response was accepted, but the current run status could not be verified.", { exact: false }).waitFor();
+  assert.doesNotMatch(await app.locator("body").innerText(), /9bec6165-9935-4199-b680-8f5f0f0b16fa/);
+  assert.equal(await app.getByRole("button", { name: "Continue" }).count(), 0, "a substituted run cannot restore an answered form");
+  assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
+});
+
+test("run monitor preserves a current-request draft and rejects another pending request", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for authoritative request checks");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runId = "593068dc-296b-447c-983a-3aaf5e5526d7";
+  const requestId = "ad397ae3-9d5b-49e4-bbd3-40efb346d91e";
+  const execution = { id: runId, status: "waiting", workflowName: "Current request workflow" };
+  const request = { id: requestId, status: "pending", type: "manual_input", execution: { id: runId },
+    inputSpec: { inputType: "text", question: "Current question" },
+    responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } };
+  const app = await mountApp(page, "monitor", { execution, humanRequest: request, waitState: "human_action_required", latestSequence: 10 });
+  const input = app.getByRole("textbox", { name: "Current question Your answer" });
+  await input.fill("Unsaved local draft");
+  const newer = { ...request, id: "d550b6c9-bf1e-419a-a9d4-72c3c2c5eeef", inputSpec: { inputType: "text", question: "Substituted question" } };
+  await page.evaluate(({ execution, newer }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: { execution, humanRequest: newer, waitState: "human_action_required", latestSequence: 10 } } }]; }, { execution, newer });
+  await app.getByRole("button", { name: "Refresh run", exact: true }).click();
+  await app.getByText("different request before the current response was resolved", { exact: false }).waitFor();
+  assert.equal(await app.getByText("Substituted question", { exact: true }).count(), 0);
+  assert.equal(await input.inputValue(), "Unsaved local draft");
+  assert.equal(await app.getByRole("button", { name: "Continue", exact: true }).isEnabled(), true);
+
+  await page.evaluate(({ execution, request }: any) => document.getElementById("app").contentWindow.postMessage({
+    jsonrpc: "2.0", method: "ui/notifications/tool-result",
+    params: { structuredContent: { ok: true, data: { execution, humanRequest: request, waitState: "human_action_required", latestSequence: 10 } } },
+  }, "*"), { execution, request });
+  await app.getByRole("textbox", { name: "Current question Your answer" }).waitFor();
+  assert.equal(await input.inputValue(), "Unsaved local draft", "refreshing the same authoritative request preserves its draft");
+  await page.evaluate(({ execution, newer }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution, humanRequest: newer, waitState: "human_action_required", latestSequence: 11,
+  } } }]; }, { execution, newer });
+  await app.getByRole("button", { name: "Refresh run", exact: true }).click();
+  await waitForCallCount(page, 2);
+  await app.getByRole("textbox", { name: "Substituted question Your answer" }).waitFor();
+  assert.equal(await app.getByRole("textbox", { name: "Substituted question Your answer" }).inputValue(), "", "a proven successor cannot inherit the prior draft");
+  assert.equal(await app.getByText("Current question", { exact: true }).count(), 0);
+  await page.evaluate(({ execution, request }: any) => document.getElementById("app").contentWindow.postMessage({
+    jsonrpc: "2.0", method: "ui/notifications/tool-result",
+    params: { structuredContent: { ok: true, data: { execution, humanRequest: request, waitState: "human_action_required", latestSequence: 9 } } },
+  }, "*"), { execution, request });
+  await app.getByText("older run snapshot", { exact: false }).waitFor();
+  await app.getByRole("textbox", { name: "Substituted question Your answer" }).waitFor();
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), ["loomex_run_get", "loomex_run_get"]);
+});
+
+test("authoritative successor state reconciles an ambiguous response without reusing its answer", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for run reconciliation");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runId = "86cc60a2-e8ec-40ca-a433-151a9ff241e1";
+  const firstId = "90b7db10-bd7c-466b-a5f6-8c8ced59da0d";
+  const secondId = "f3488c1a-5597-4d80-9e7b-d74e50871f25";
+  const execution = { id: runId, status: "waiting", workflowName: "Reconciled workflow" };
+  const request = (id: string, question: string) => ({ id, status: "pending", type: "manual_input", execution: { id: runId },
+    inputSpec: { inputType: "text", question }, responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } });
+  const app = await mountApp(page, "monitor", { execution, humanRequest: request(firstId, "First question"), latestSequence: 20 }, true);
+  await app.getByRole("textbox", { name: "First question Your answer" }).fill("Sealed first answer");
+  await app.getByRole("button", { name: "Continue", exact: true }).click();
+  await app.getByRole("button", { name: "Retry exact response", exact: true }).waitFor();
+  await page.evaluate(({ execution, successor }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution, humanRequest: successor, latestSequence: 21,
+  } } }]; }, { execution, successor: request(secondId, "Second question") });
+  await app.getByRole("button", { name: "Refresh run", exact: true }).click();
+  await app.getByRole("textbox", { name: "Second question Your answer" }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Retry exact response" }).count(), 0);
+  assert.equal(await app.getByRole("textbox", { name: "Second question Your answer" }).inputValue(), "");
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.deepEqual(calls.map((call: any) => call.name), ["loomex_interaction_respond", "loomex_run_get"]);
+  assert.equal(calls[0].arguments.requestId, firstId);
+});
+
+test("invalid terminal request projection cannot partially consume pending interaction state", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for atomic snapshot validation");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runId = "8756ed7d-ab76-418d-89eb-05466a9a03cd";
+  const firstId = "579eea00-11e2-431f-a844-478b87a95103";
+  const execution = { id: runId, status: "waiting", workflowName: "Atomic workflow" };
+  const first = { id: firstId, status: "pending", type: "manual_input", execution: { id: runId },
+    inputSpec: { inputType: "text", question: "Trusted question" }, responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } };
+  const app = await mountApp(page, "monitor", { execution, humanRequest: first, latestSequence: 40 }, true);
+  await app.getByRole("textbox", { name: "Trusted question Your answer" }).fill("Sealed trusted answer");
+  await app.getByRole("button", { name: "Continue", exact: true }).click();
+  await app.getByRole("button", { name: "Retry exact response", exact: true }).waitFor();
+  const malformedSuccessor = { id: "76cb6623-fee3-4ef1-81ee-4d7cb3bfe6d6", status: "pending", type: "approval", execution: { id: runId }, title: "Impossible terminal question" };
+  await page.evaluate(({ runId, malformedSuccessor }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: runId, status: "completed", workflowName: "Atomic workflow" }, humanRequest: malformedSuccessor, latestSequence: 41,
+  } } }]; }, { runId, malformedSuccessor });
+  await app.getByRole("button", { name: "Refresh run", exact: true }).click();
+  await app.getByText("pending request for a terminal run", { exact: false }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Retry exact response", exact: true }).isEnabled(), true);
+  assert.equal(await app.getByRole("textbox", { name: "Trusted question Your answer" }).inputValue(), "Sealed trusted answer");
+  assert.equal(await app.getByText("Impossible terminal question", { exact: true }).count(), 0);
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.deepEqual(calls.map((call: any) => call.name), ["loomex_interaction_respond", "loomex_run_get"]);
+});
+
+test("accepted commit and cancellation receipts survive malformed optional request projections", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for accepted mutation boundaries");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runId = "b50c82d7-e497-4811-951e-c4c96fc9616a";
+  const preparationId = "0d55a15b-64c3-4d06-bcc2-591e4d4c185b";
+  const prepared = { preparationId, bindingDigest: "d".repeat(64), confirmationKey: "e67be35d-7803-4462-855c-11efcc463c78",
+    binding: { workflowId: "c816dafc-ed1d-4d82-bb79-954f7659cb33", versionId: "5a87c6ce-6e34-4f39-817a-f5362701892a",
+      organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", installationId: "62e9d3fa-097b-46fb-9f87-34b4d8c1b40b",
+      workspacePath: "/Users/example/project", inputs: {}, executionPolicy: "host_user/v1", providerConfiguration: {} } };
+  const presentation = { schemaVersion: "loomex/preparation-review/v1", preparationId, bindingDigest: prepared.bindingDigest,
+    workflowId: prepared.binding.workflowId, versionId: prepared.binding.versionId, organizationId: prepared.binding.organizationId,
+    workflowName: "Accepted boundary", workflowVersion: 1, organizationName: "Loomex Studio", providers: [] };
+  const app = await mountApp(page, "prepare", prepared, false, false, presentation);
+  const invalidRequest = { id: "8bdf9524-321e-40e5-ad6a-a1cb0706a9df", status: "pending", type: "manual_input",
+    execution: { id: "19f4bf64-9ae9-46c5-8747-660532985034" }, inputSpec: { inputType: "text", question: "Wrong run question" } };
+  const baselineRequest = { id: "f1fb91c6-9db2-4f16-aa38-cc43be13e2a5", status: "pending", type: "manual_input", execution: { id: runId },
+    inputSpec: { inputType: "text", question: "Verified baseline question" }, responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } };
+  await page.evaluate(({ runId, preparationId, invalidRequest, baselineRequest }: any) => { window.__workflowResponses = [
+    { structuredContent: { ok: true, data: {
+      execution: { id: runId, status: "running", workflowName: "Accepted boundary" }, executionPolicy: "host_user/v1", preparationId, humanRequest: invalidRequest,
+    } } },
+    { structuredContent: { ok: true, data: {
+      execution: { id: runId, status: "waiting", workflowName: "Accepted boundary" }, humanRequest: baselineRequest,
+    } } },
+  ]; }, { runId, preparationId, invalidRequest, baselineRequest });
+  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await app.getByRole("textbox", { name: "Verified baseline question Your answer" }).waitFor();
+  assert.equal(await app.getByText("Wrong run question", { exact: true }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Retry exact start" }).count(), 0);
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), ["loomex_run_commit", "loomex_run_get"]);
+
+  const cancelPage = await browser.newPage();
+  const requestId = "2cb31855-0787-4ebd-8d4d-00cd67551ba6";
+  const monitor = await mountApp(cancelPage, "monitor", { execution: { id: runId, status: "waiting", workflowName: "Accepted cancellation" }, latestSequence: 30,
+    humanRequest: { id: requestId, status: "pending", type: "manual_input", execution: { id: runId },
+      inputSpec: { inputType: "text", question: "Pending question" }, responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } } });
+  await monitor.getByRole("button", { name: "Cancel run", exact: true }).click();
+  await monitor.getByRole("textbox", { name: "Cancellation reason", exact: true }).fill("Stop this exact run");
+  await cancelPage.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: { code: "NETWORK_AMBIGUOUS", message: "Unknown cancellation outcome" } } }]; });
+  await monitor.getByRole("button", { name: "Cancel run", exact: true }).click();
+  await monitor.getByRole("button", { name: "Retry exact cancellation", exact: true }).waitFor();
+  assert.equal(await monitor.getByRole("textbox", { name: "Cancellation reason", exact: true }).inputValue(), "Stop this exact run");
+  assert.equal(await monitor.getByRole("textbox", { name: "Cancellation reason", exact: true }).isDisabled(), true);
+  const firstCancel = (await cancelPage.evaluate(() => window.__loomexCalls))[0];
+  await cancelPage.evaluate(({ runId, requestId }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: runId, status: "canceled", workflowName: "Accepted cancellation" }, latestSequence: 31,
+    humanRequest: { id: requestId, status: "pending", type: "manual_input", execution: { id: runId } },
+  } } }]; }, { runId, requestId });
+  await monitor.getByRole("button", { name: "Retry exact cancellation", exact: true }).click();
+  await monitor.getByText("The cancellation was accepted, but its returned run state could not be verified.", { exact: false }).waitFor();
+  assert.equal(await monitor.getByRole("button", { name: "Retry exact cancellation" }).count(), 0);
+  assert.equal(await monitor.getByRole("button", { name: "Cancel run" }).count(), 0);
+  const cancelCalls = await cancelPage.evaluate(() => window.__loomexCalls);
+  assert.deepEqual(cancelCalls[1].arguments, firstCancel.arguments);
+});
+
+test("accepted non-terminal cancellation cannot reopen a fresh cancel mutation", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for cancellation state");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runId = "25f6118e-35df-4bd9-bc60-b2158662e49c";
+  const request = { id: "34aa95a1-782e-40b3-9188-cb15871e50b9", status: "pending", type: "approval", execution: { id: runId }, title: "Approve?" };
+  const app = await mountApp(page, "monitor", { execution: { id: runId, status: "waiting", workflowName: "Cancellation queued" }, humanRequest: request, latestSequence: 4 });
+  await app.getByRole("button", { name: "Cancel run", exact: true }).click();
+  await app.getByRole("textbox", { name: "Cancellation reason", exact: true }).fill("No longer needed");
+  await page.evaluate(({ runId }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    execution: { id: runId, status: "running", workflowName: "Cancellation queued" }, jobs: [], details: {},
+  } } }]; }, { runId });
+  await app.getByRole("button", { name: "Cancel run", exact: true }).click();
+  await app.getByText("The cancellation was accepted, but its returned run state could not be verified.", { exact: false }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Cancel run" }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Approve" }).count(), 0);
+  assert.equal((await page.evaluate(() => window.__loomexCalls)).filter((call: any) => call.name === "loomex_run_cancel").length, 1);
+});
+
+test("conflicting request organization identities never become actionable", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for organization binding");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runId = "13d37ea0-233d-4a21-8bb3-a8988e46e3da";
+  const app = await mountApp(page, "monitor", { execution: { id: runId, status: "waiting", workflowName: "Bound organization" },
+    humanRequest: { id: "07f5d14b-22a1-44bc-8adb-c8664cf8914c", status: "pending", type: "approval",
+      organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", execution: { id: runId, organizationId: "e7988aa5-6130-4275-b77d-d525e4acf31b" }, title: "Wrong organization" } });
+  await app.getByText("conflicting organization identities", { exact: false }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Approve" }).count(), 0);
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls), []);
+});
+
+test("automatic monitor validation failures stop after the bounded retry budget", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for bounded monitor waits");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runId = "07005ee5-242c-4d99-9ee3-a37351e479b4";
+  const execution = { id: runId, status: "waiting", workflowName: "Bounded monitor" };
+  const app = await mountApp(page, "monitor", { execution });
+  await page.clock.install();
+  await page.evaluate(({ execution }: any) => {
+    const wrong = { structuredContent: { ok: true, data: { execution: { ...execution, id: "10884cb0-0328-420d-9e9f-10139a0f24f4" }, waitState: "waiting", latestSequence: 2 } } };
+    window.__workflowResponses = [wrong, wrong, wrong, wrong];
+    document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result",
+      params: { structuredContent: { ok: true, data: { execution, waitState: "waiting", latestSequence: 1 } } } }, "*");
+  }, { execution });
+  await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
+  for (const milliseconds of [1_000, 2_500, 5_500]) {
+    await page.clock.fastForward(milliseconds);
+    await page.waitForFunction((minimum: number) => window.__loomexCalls.length >= minimum, milliseconds === 1_000 ? 1 : milliseconds === 2_500 ? 2 : 3);
+  }
+  await page.clock.fastForward(30_000);
+  assert.equal(await page.evaluate(() => window.__loomexCalls.length), 3);
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), ["loomex_run_wait", "loomex_run_wait", "loomex_run_wait"]);
+});
+
 test("actionable validation errors render only safe issue fields", async (t) => {
   const available = await browserTools();
   if (!available) { assert.fail("Chromium is required for the error presentation gate"); }
@@ -1057,9 +1386,8 @@ test("integrated run setup validates inputs, grants one canonical workspace, pre
   assert.deepEqual(retried.arguments, ambiguous.arguments, "ambiguous retry must preserve every sealed field and the same idempotency key");
   const contexts = await page.evaluate(() => window.__loomexModelContexts);
   assert.equal(contexts.length, 0, "a best-effort model-context failure must not turn a successful commit into a retry");
-  await app.getByRole("button", { name: "Continue in conversation", exact: true }).evaluate((button: any) => { button.click(); button.click(); });
-  await page.waitForFunction(() => window.__loomexMessages.length >= 1, undefined, { timeout: 5000 }).catch(async () => { throw new Error(JSON.stringify({ messages: await page.evaluate(() => window.__loomexMessages), body: await app.locator("body").innerText() })); });
-  assert.equal((await page.evaluate(() => window.__loomexMessages)).length, 1, "conversation continuation must be single-flight");
+  assert.equal(await app.getByRole("button", { name: "Continue in conversation", exact: true }).count(), 0);
+  assert.equal((await page.evaluate(() => window.__loomexMessages)).length, 0, "run monitoring must stay in the app");
 });
 
 test("substituted commit and cancellation results stay on the sealed run and retry exact requests", async (t) => {

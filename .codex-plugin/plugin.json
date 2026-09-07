@@ -1,6 +1,6 @@
 {
   "name": "loomex",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "Build, review, run, and monitor Loomex workflows through the local Loomex runner.",
   "author": {
     "name": "Loomex"

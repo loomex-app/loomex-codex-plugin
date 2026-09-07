@@ -21,9 +21,9 @@ ordinary value.
 Finalize an editor with `confirm: false` to preview its exact proposed update.
 Use `confirm: true` only after the user approves applying that preview.
 
-When the user asks to run a workflow (including a typed command), start with
+When the user asks to start a new workflow run (including a typed command), start with
 `loomex_run_setup`. It opens one integrated flow for inputs, workspace, review
-and run status. Do not open `loomex_workflow_view` as a run prerequisite.
+and run status. It renders pending questions and approval decisions directly and follows the same run after each explicit response. Do not open `loomex_workflow_view` as a run prerequisite.
 `loomex_workflow_get` is a headless read; reserve `loomex_workflow_view` for an
 explicit request to inspect the workflow visually.
 
@@ -63,3 +63,12 @@ ratings are integers within the supplied minimum/maximum (default 1–5). Submit
 only answer values and stable question IDs, not copied prompts or option labels.
 Do not infer a boolean, rating or choice from a default control value. Use the
 optional interaction view when available; the same response tools work headlessly.
+
+For an existing run ID, begin with `loomex_run_get`, not workflow discovery or
+a new preparation. Read `data.execution.status` as the run status;
+`data.runner.status` describes runner connectivity. If the run has a pending
+human request, call `loomex_interaction_get` with that exact request ID and
+present its typed question. In a headless conversation, ask the user and submit
+only their explicit answer; afterward refresh the same run. In the custom UI,
+questions and approval decisions are handled in the run card without a chat
+handoff. Never interpret a request to monitor as a request to list workflows.
