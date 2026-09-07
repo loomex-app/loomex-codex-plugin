@@ -1027,6 +1027,18 @@ test("workflow browser restores scope, handles large responses and shares respon
     await app.getByRole("button", { name: "View complete response", exact: true }).waitFor();
     assert.doesNotMatch(await app.locator("body").innerText(), /No workflows/);
   }
+  const recovery = await mountApp(page, "browser", rows);
+  await page.evaluate((data: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data } }]; }, paged);
+  await recovery.getByRole("button", { name: "Next", exact: true }).click();
+  await recovery.getByRole("button", { name: "View complete response", exact: true }).waitFor();
+  await recovery.getByRole("button", { name: "Refresh", exact: true }).click();
+  await recovery.getByText("Page 2 · 2 workflows").waitFor();
+  assert.equal(await recovery.getByRole("button", { name: "Previous", exact: true }).isEnabled(), true);
+  await page.evaluate((data: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data } }]; }, paged);
+  await recovery.getByRole("button", { name: "View: One", exact: true }).click();
+  await recovery.getByRole("button", { name: "View complete response", exact: true }).waitFor();
+  await recovery.getByRole("button", { name: "Back to workflows", exact: true }).click();
+  await recovery.getByText("Page 2 · 2 workflows").waitFor();
   const app = await mountApp(page, "browser", paged, false, false, null, true);
   await app.getByRole("button", { name: "View complete response", exact: true }).click();
   await app.locator("#summary.error").waitFor();

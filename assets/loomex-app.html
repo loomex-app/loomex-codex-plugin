@@ -1062,6 +1062,7 @@
   let browserArgs = { limit: 20 };
   let browserHistory = [];
   let browserSelected = null;
+  let browserDetailResponse = null;
   let browserBusy = false;
   let browserEpoch = 0;
   const workflowIdValid = (id) => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -1084,11 +1085,14 @@
       if (epoch !== browserEpoch) return;
       if (result.isError || result.structuredContent?.ok === false) throw new Error("Workflows could not be loaded. Try Refresh again.");
       const data = dataOf(result);
-      if (pagedResponse(data)) { browserPage = data; browserSelected = null; if (name === "loomex_workflows_list") browserArgs = args; }
+      if (pagedResponse(data)) {
+        if (name === "loomex_workflows_list") { browserDetailResponse = null; commit(data); }
+        else browserDetailResponse = { data, workflowId: args.workflowId };
+      }
       else {
       if (name === "loomex_workflows_list" && !Array.isArray(data.workflows)) throw new Error("The workflow list is unavailable. Continue in the conversation.");
       if (name === "loomex_workflow_get" && (!data.workflow || data.workflow.id !== args.workflowId)) throw new Error("The workflow details could not be verified. Refresh and try again.");
-      commit(data);
+      browserDetailResponse = null; commit(data);
       }
       authoritativeStateStale = false;
       summary.textContent = browserSelected ? "Review this workflow before preparing a run." : "Choose a workflow to review or prepare.";
@@ -1122,8 +1126,9 @@
     const hero = element("div", { className: "ui-hero" });
     hero.append(element("h2", {}, browserSelected ? safeText(browserSelected.workflow.name) || "Workflow" : "Workflows"));
     context.append(hero);
-    const paged = pagedResponse(browserPage);
-    if (paged && !browserSelected) {
+    const paged = pagedResponse(browserDetailResponse?.data || browserPage);
+    if (paged && (!browserSelected || browserDetailResponse)) {
+      if (browserDetailResponse) context.append(browserButton("Back to workflows", () => { browserDetailResponse = null; browserSelected = null; renderBrowser(); summary.textContent = "Choose a workflow to review or prepare."; }));
       context.append(element("p", { className: "ui-caption" }, "This workflow response is too large for the inline view. Read the complete response in the conversation."));
       context.append(browserButton("View complete response", async () => {
         browserBusy = true; renderBrowser();
@@ -1246,7 +1251,7 @@
     context.hidden = true;
 
     if (mode === "browser") {
-      if (!failed) { browserPage = output; browserSelected = null; }
+      if (!failed) { browserPage = output; browserSelected = null; browserDetailResponse = null; }
       summary.textContent = failed ? "Workflows could not be loaded. Try Refresh again." : "Choose a workflow to review or prepare.";
       renderBrowser();
     } else if (mode === "prepare") {
@@ -1472,7 +1477,8 @@
     try {
       const data = latest || {};
       if (mode === "browser") {
-        if (browserSelected) await browserRead("loomex_workflow_get", { workflowId: browserSelected.workflow.id }, (data) => { browserSelected = data; });
+        if (browserDetailResponse) await browserRead("loomex_workflow_get", { workflowId: browserDetailResponse.workflowId }, (data) => { browserSelected = data; });
+        else if (browserSelected) await browserRead("loomex_workflow_get", { workflowId: browserSelected.workflow.id }, (data) => { browserSelected = data; });
         else await loadBrowserPage(browserArgs, browserHistory);
         return;
       }
