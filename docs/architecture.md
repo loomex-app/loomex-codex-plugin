@@ -96,3 +96,16 @@ An accepted Start or human response cannot be replayed by handoff recovery. The 
 ## Command entry points
 
 Fifteen focused plugin skills expose user operations through the same 51 MCP tools. The existing `loomex-workflows` skill routes help and multi-operation requests. Shared packaged references own identity resolution, exact execution review, monitoring and human continuation, avoiding duplicated lifecycle rules across commands. No tool schema, backend endpoint, or runner policy is added. Skill invocation is model-guided; it does not bypass confirmation or act as a deterministic shell command. See [command guide](commands.md).
+
+
+## Presentation and chat continuation
+
+A pending request verified by the run projection leads directly to one
+`loomex_interaction_view` call. The view performs the authoritative read and
+returns `awaitingUserAnswer`, with no self-referential presentation action.
+Headless clients use the separate `headlessAction` to read the complete schema.
+The conversation remembers the displayed request ID and pauses until the user
+submits or explicitly asks to reopen it. Shared skills and UI continuation text
+follow the same sequence; tool output previews never substitute for complete
+schemas. A continuation identifies the exact existing run and starts with a
+fresh read, not a repeated commit or accepted answer.

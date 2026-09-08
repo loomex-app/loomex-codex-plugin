@@ -1,8 +1,8 @@
 # Typed human responses
 
-Fetch `loomex_interaction_get` for the exact pending request. Validate request/run and organization identities against the selected run. Use the complete structuredContent.data.humanRequest including inputSpec and responseSchema; text summaries are bounded previews.
+Use the exact pending request ID from the selected run's authoritative snapshot and validate request/run and organization identities. In a UI-capable host call `loomex_interaction_view` once; it fetches the current complete schema itself. Do not first fetch `loomex_interaction_get`, open a run view or duplicate the form in chat. Remember the displayed request ID and pause monitoring until submission; reopen only when requested. The card presents one question at a time and an editable answer preview before explicit submission.
 
-In a UI-capable host, call `loomex_interaction_view` once. It shows one question at a time, preserves drafts and presents an editable preview before explicit submission. Pause monitoring while awaiting the user; never repeatedly open the unanswered card. Headlessly collect explicit answers and preview them before submission. Submit only after the user confirms the answer set; a bare answer-command invocation does not answer anything.
+On a headless host use `loomex_interaction_get` instead. Use the complete structuredContent.data.humanRequest including inputSpec and responseSchema; text summaries are bounded previews. Headlessly collect explicit answers and preview them before submission. Submit only after the user confirms the answer set; a bare answer-command invocation does not answer anything.
 
 inputSpec owns text, stable IDs, type, choices, Other behavior and rating bounds. responseSchema owns payload structure. Support text, long_text, date, rating, boolean, radio and checkbox in single or mixed batches. Dates are YYYY-MM-DD; ratings respect supplied integer bounds; false is an explicit value, not missing. Other requires its text. Send stable question/option IDs and values, not labels as identifiers. Never invent defaults or collect secrets.
 

@@ -620,7 +620,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_interaction_view",
     rpcMethod: "interactions.get",
     title: "Answer Loomex questions",
-    description: "Show this exact human interaction as a focused question flow with answer review. First use loomex_interaction_get to inspect its authoritative run identity and schema. Opening this view does not answer the question. Pause chat polling until the user submits or asks to check status.",
+    description: "Show this exact human interaction as a focused question flow with answer review. Use the pending request ID verified against the selected run. This tool fetches its authoritative identity and complete schema itself; do not precede it with interaction_get. Show only once per pending request unless the user asks to reopen it. Opening this view does not answer the question. Pause chat polling until the user submits or asks to check status.",
     inputSchema: z.object({ requestId: Uuid }).strict(),
     mutating: false,
     destructive: false,

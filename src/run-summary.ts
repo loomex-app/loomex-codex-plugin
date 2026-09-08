@@ -102,7 +102,8 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
     } else if (pendingRequest) {
       if (uuid(rawRequest.id) && requestBelongsToRun) {
         summary.requiresUserInput = true;
-        summary.nextAction = { tool: "loomex_interaction_get", arguments: { requestId: rawRequest.id } };
+        summary.nextAction = { tool: "loomex_interaction_view", arguments: { requestId: rawRequest.id } };
+        summary.headlessAction = { tool: "loomex_interaction_get", arguments: { requestId: rawRequest.id } };
       } else summary.stateNeedsVerification = true;
     } else if (data.humanRequest !== undefined && data.humanRequest !== null ||
         data.waitState === "agent_dispatch_required" || data.waitState === "human_action_required") {
@@ -115,7 +116,7 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
   } else if (method === "interactions.get" && pendingRequest && uuid(rawRequest.id) && uuid(requestExecution.id) && organizationConsistent &&
       (!rawExecution.id || requestBelongsToRun) && !TERMINAL.has(status)) {
     summary.requiresUserInput = true;
-    summary.presentationAction = { tool: "loomex_interaction_view", arguments: { requestId: rawRequest.id } };
+    summary.awaitingUserAnswer = true;
   }
   return summary;
 }

@@ -273,7 +273,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.4.0 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.5.0 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -821,7 +821,7 @@ test("run projections accept canonical string wait states and nested execution I
   assert.deepEqual(summary.execution, { id: runId, status: "waiting", name: "Exact run" });
   assert.equal(summary.humanRequest.id, "aa7843c2-7694-426a-ae51-fbc3af88d415");
   assert.equal(summary.humanRequest.inputSpec.question, "Describe your idea");
-  assert.equal(summary.nextAction.tool, "loomex_interaction_get");
+  assert.equal(summary.nextAction.tool, "loomex_interaction_view");
   assert.doesNotMatch(text, /runner-summary-id|online|Runner summary name|never-print-summary-token/);
 });
 
@@ -1144,5 +1144,35 @@ test("chat monitoring data tools never remount views and display tools fetch aut
     const result = await client.callTool({ name, arguments: args });
     assert.notEqual(result.isError, true);
     assert.equal(runner.requests.at(-1)?.method, method);
+    if (name === "loomex_interaction_view") {
+      const summary = JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
+      assert.equal(summary.awaitingUserAnswer, true);
+      assert.equal(summary.presentationAction, undefined, "a view must not request another copy of itself");
+      assert.equal(summary.nextAction, undefined);
+    }
   }
+});
+
+
+test("headless monitoring fetches the typed interaction and pauses without suggesting a UI", async () => {
+  const runId = "adc7b3ba-1979-47d2-ac14-638ed91c5f82";
+  const requestId = "8081f734-5175-492b-b412-b1d88d8e3a7d";
+  const humanRequest = { id: requestId, status: "pending", execution: { id: runId },
+    inputSpec: { inputType: "long_text", question: "Describe the idea" }, responseSchema: { type: "object" } };
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, request.method === "runs.get"
+    ? { execution: { id: runId, status: "waiting" }, humanRequest, events: [], latestSequence: 7, hasMoreEvents: false, timedOut: false, details: {} }
+    : { humanRequest, details: {} }));
+  const client = await connect(runner);
+  const snapshot = await client.callTool({ name: "loomex_run_get", arguments: { runId } });
+  const summary = JSON.parse((snapshot.content as Array<{ text: string }>)[0]!.text);
+  assert.equal(summary.headlessAction.tool, "loomex_interaction_get");
+  const question = await client.callTool({ name: summary.headlessAction.tool, arguments: summary.headlessAction.arguments });
+  assert.notEqual(question.isError, true);
+  const questionSummary = JSON.parse((question.content as Array<{ text: string }>)[0]!.text);
+  assert.equal(questionSummary.awaitingUserAnswer, true);
+  assert.equal(questionSummary.presentationAction, undefined);
+  assert.equal(questionSummary.nextAction, undefined);
+  assert.deepEqual((question.structuredContent as { data: { humanRequest: unknown } }).data.humanRequest, humanRequest);
+  assert.deepEqual(runner.requests.map(request => request.method), ["runs.get", "interactions.get"]);
 });

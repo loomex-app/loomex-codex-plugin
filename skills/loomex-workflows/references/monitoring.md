@@ -25,16 +25,17 @@ ask for the missing run identity; do not guess or create one.
    Continue waiting through quiet periods; report meaningful stage changes,
    actionable failures, required input or completion without repeating unchanged
    status. Follow bounded event/result pages when needed.
-3. When a pending human request appears, fetch `loomex_interaction_get` with
-   its exact request ID. Verify its execution and organization identities match
-   the monitored run. Use the complete `structuredContent.data.humanRequest`,
-   including `inputSpec` and `responseSchema`; text summaries are only previews.
-4. In this UI-enabled workflow, call `loomex_interaction_view` once for that
-   pending request. The card shows one question at a time, previous/next arrows,
-   and an answer review before explicit submission. Pause chat polling and await
-   the user's answers. Do not open the same unanswered card repeatedly, submit
-   defaults, answer on the user's behalf, or poll continuously while awaiting
-   input. A headless host asks the user directly and sends only explicit answers.
+3. When a pending human request appears, verify its execution and organization
+   identities against the monitored run. In a UI-capable host call
+   `loomex_interaction_view` once with its exact request ID. That view fetches
+   the current complete schema itself; do not first call `interaction_get` or
+   open `run_view`. On a headless host use `loomex_interaction_get` instead,
+   and collect answers using the full `structuredContent.data.humanRequest`,
+   including `inputSpec` and `responseSchema`. Summaries are bounded previews.
+4. Remember the displayed request ID and pause chat polling for the user's
+   answer. Do not repeat an unanswered card unless asked to reopen it. The card
+   owns question navigation, answer preview and explicit submission. Do not
+   duplicate the form in chat, submit defaults or answer on the user's behalf.
 5. After an accepted answer/approval or a follow-up from that card, read and
    follow the same run again. Do not replay an accepted response. Fetch current
    state first if the handoff was interrupted.

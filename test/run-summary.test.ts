@@ -20,7 +20,7 @@ test("run summaries preserve execution and request identities without leaking ne
     const result = runSummary(method, data);
     assert.deepEqual(result?.execution, { id: runId, status: "waiting", workflowName: "Idea to Implementation", currentNodeName: "Describe Your Idea" });
     assert.deepEqual(result?.nextAction, method === "runs.commit" ? { tool: "loomex_run_get", arguments: { runId } }
-      : ["runs.get", "runs.wait", "runs.events"].includes(method) ? { tool: "loomex_interaction_get", arguments: { requestId } } : undefined);
+      : ["runs.get", "runs.wait", "runs.events"].includes(method) ? { tool: "loomex_interaction_view", arguments: { requestId } } : undefined);
     assert.match(JSON.stringify(result), /What would you like to build/);
     assert.doesNotMatch(JSON.stringify(result), /private-|runner-id|internal-runner|Runner name|online|detail-id/);
   }
@@ -79,16 +79,18 @@ test("chat continuation advances the exact run through baseline, bounded waits, 
   assert.deepEqual(runSummary("runs.commit", active)?.nextAction, { tool: "loomex_run_get", arguments: { runId } });
   for (const method of ["runs.get", "runs.wait"]) {
     assert.deepEqual(runSummary(method, active)?.nextAction, { tool: "loomex_run_wait", arguments: { runId, timeoutSeconds: 30, afterSequence: 23 } });
-    assert.deepEqual(runSummary(method, data)?.nextAction, { tool: "loomex_interaction_get", arguments: { requestId } });
+    assert.deepEqual(runSummary(method, data)?.nextAction, { tool: "loomex_interaction_view", arguments: { requestId } });
     assert.equal(runSummary(method, data)?.requiresUserInput, true);
     for (const status of ["completed", "failed", "canceled", "EXPIRED"]) {
       assert.deepEqual(runSummary(method, { ...active, execution: { ...active.execution, status } })?.nextAction,
         { tool: "loomex_run_result", arguments: { runId } });
     }
   }
-  assert.deepEqual(runSummary("interactions.get", data)?.presentationAction, { tool: "loomex_interaction_view", arguments: { requestId } });
-  assert.deepEqual(runSummary("interactions.get", { humanRequest: data.humanRequest })?.presentationAction,
-    { tool: "loomex_interaction_view", arguments: { requestId } });
+  for (const snapshot of [data, { humanRequest: data.humanRequest }]) {
+    assert.equal(runSummary("interactions.get", snapshot)?.awaitingUserAnswer, true);
+    assert.equal(runSummary("interactions.get", snapshot)?.presentationAction, undefined);
+    assert.equal(runSummary("interactions.get", snapshot)?.nextAction, undefined);
+  }
   assert.equal(runSummary("runs.result", { ...active, execution: { ...active.execution, status: "completed" } })?.nextAction, undefined);
   assert.equal(runSummary("runs.get", { ...active, execution: { ...active.execution, status: "deleted" } })?.nextAction, undefined);
   assert.equal(runSummary("runs.get", { execution: { id: runId, status: "unknown_state" } })?.nextAction, undefined);
@@ -146,4 +148,12 @@ test("truncated event pages cannot advance beyond the authoritative sequence", (
     assert.equal(runSummary("runs.events", snapshot)?.nextAction, undefined);
     assert.equal(runSummary("runs.events", snapshot)?.stateNeedsVerification, true);
   }
+});
+
+ test("a displayed interaction pauses for the user instead of requesting another card", () => {
+  const displayed = runSummary("interactions.get", data);
+  assert.equal(displayed?.awaitingUserAnswer, true);
+  assert.equal(displayed?.presentationAction, undefined);
+  assert.equal(displayed?.nextAction, undefined);
+  assert.deepEqual(runSummary("runs.get", data)?.headlessAction, { tool: "loomex_interaction_get", arguments: { requestId } });
 });

@@ -244,15 +244,51 @@ async function waitForSettledAppSize(page: any, afterNotificationCount?: number)
   assert.ok(sizes.after <= 12, "A static view must not repeatedly report the same size");
 }
 
+async function appLayoutSnapshot(page: any): Promise<{
+  mainHeight: number;
+  hostHeight: number;
+  reportedHeight: number;
+  scrollY: number;
+  focus: string;
+  focusVisible: boolean;
+}> {
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  return page.evaluate(() => {
+    const frame = document.getElementById("app");
+    const appDocument = frame.contentDocument;
+    const main = appDocument.querySelector("main");
+    const active = appDocument.activeElement;
+    const activeStyle = active ? appDocument.defaultView.getComputedStyle(active) : null;
+    const activeRect = active?.getBoundingClientRect();
+    return {
+      mainHeight: Math.ceil(main.getBoundingClientRect().height),
+      hostHeight: Math.ceil(frame.getBoundingClientRect().height),
+      reportedHeight: Math.ceil(Number.parseFloat(frame.style.height)),
+      scrollY: Math.round(window.scrollY),
+      focus: active?.getAttribute("aria-label") || active?.id || active?.textContent?.trim() || "",
+      focusVisible: Boolean(activeRect?.width && activeRect?.height && activeStyle?.visibility !== "hidden" && activeStyle?.display !== "none"),
+    };
+  });
+}
+
+function assertStableLoadingLayout(before: Awaited<ReturnType<typeof appLayoutSnapshot>>, during: Awaited<ReturnType<typeof appLayoutSnapshot>>, focus: string): void {
+  assert.equal(during.mainHeight, before.mainHeight, "loading keeps the full app height stable");
+  assert.equal(during.hostHeight, before.hostHeight, "loading keeps the embedding host height stable");
+  assert.equal(during.reportedHeight, before.reportedHeight, "loading does not publish a transient host size");
+  assert.equal(during.scrollY, before.scrollY, "loading preserves the viewport");
+  assert.equal(during.focus, focus, "loading moves focus to its visible in-place status");
+  assert.equal(during.focusVisible, true, "loading keeps focus on a visible element");
+}
+
 async function captureRequestedScreenshots(page: any, prefix: string): Promise<void> {
   const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
   if (!directory) return;
   await mkdir(directory, { recursive: true });
   const frame = page.locator("#app");
   const original = page.viewportSize() || { width: 820, height: 1300 };
-  for (const [name, width] of [["wide", 820], ["mobile", 390]] as const) {
+  for (const [name, width, theme] of [["wide", 820, "light"], ["mobile", 390, "light"], ["dark", 820, "dark"]] as const) {
     await page.setViewportSize({ width, height: 1300 });
-    await page.emulateMedia({ colorScheme: "light" });
+    await page.emulateMedia({ colorScheme: theme });
     await frame.evaluate((element: any) => { element.style.height = `${element.contentDocument.documentElement.scrollHeight}px`; });
     await frame.screenshot({ path: resolve(directory, `${prefix}-${name}.png`) });
   }
@@ -323,6 +359,7 @@ test("question UI collects seven mixed answer types, validates, preserves drafts
   await app.getByRole("textbox", { name: "Short answer? Your answer" }).waitFor();
   assert.equal(await app.locator("#question-0-value").getAttribute("aria-labelledby"), "question-0-legend question-0-control-label");
   assert.equal(await app.getByRole("group", { name: /Enable it/ }).getByRole("radio", { checked: true }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Review answers", exact: true }).count(), 0, "review is not persistent before the last question");
 
   await app.locator("#question-0-value").fill("Ada");
   await app.getByRole("button", { name: "Next question" }).click();
@@ -359,10 +396,21 @@ test("question UI collects seven mixed answer types, validates, preserves drafts
   await app.locator("#question-6-option-0").check();
   await app.locator("#question-6-other-choice").check();
   await app.locator("#question-6-other-text").fill("Custom feature");
+  await captureRequestedScreenshots(page, "batch-question-last");
 
-  await app.getByRole("button", { name: "Review answers" }).click();
+  assert.equal(await app.getByRole("button", { name: "Next question", exact: true }).count(), 0);
+  assert.equal(await app.locator(".question-stepper").getByRole("button", { name: "Review answers", exact: true }).count(), 1);
+  assert.equal(await app.locator("#primary").isVisible(), false);
+  const reviewButton = app.locator(".question-stepper").getByRole("button", { name: "Review answers", exact: true });
+  await reviewButton.focus();
+  const reviewScrollBefore = await app.locator("body").evaluate((body: any) => body.ownerDocument.defaultView.scrollY);
+  await reviewButton.click();
   assert.equal((await page.evaluate(() => window.__loomexCalls.length)), 0);
   await app.getByRole("heading", { name: "Answer preview", exact: true }).waitFor();
+  assert.equal(await app.locator(":focus").textContent(), "Answer preview", "preview transition focuses its visible heading");
+  assert.equal(await app.locator(":focus").getAttribute("tabindex"), "-1");
+  assert.equal(await app.locator(":focus").isVisible(), true, "preview focus is never left in hidden question content");
+  assert.equal(await app.locator("body").evaluate((body: any) => body.ownerDocument.defaultView.scrollY), reviewScrollBefore, "preview focus preserves the viewport");
   await app.getByText("Custom choice", { exact: false }).waitFor();
   assert.equal(await app.locator("fieldset:visible").count(), 0);
   await captureRequestedScreenshots(page, "answer-review");
@@ -371,7 +419,9 @@ test("question UI collects seven mixed answer types, validates, preserves drafts
   assert.equal(await app.getByText("Question 2 of 7", { exact: true }).count(), 1);
   assert.equal(await app.locator("#question-1-value").inputValue(), "Keep this detailed draft after errors.");
   await app.locator("#question-1-value").fill("Edited detailed answer.");
-  await app.getByRole("button", { name: "Review answers" }).click();
+  assert.equal(await app.getByRole("button", { name: "Review answers", exact: true }).count(), 0);
+  for (let index = 0; index < 5; index += 1) await app.getByRole("button", { name: "Next question", exact: true }).click();
+  await app.getByRole("button", { name: "Review answers", exact: true }).click();
   await app.getByText("Edited detailed answer.", { exact: true }).waitFor();
 
   await app.getByRole("button", { name: "Submit answers" }).evaluate((button: any) => {
@@ -791,13 +841,14 @@ test("run monitoring projects safe state and removes terminal actions", async (t
   await paged.getByRole("button", { name: "View results", exact: true }).click();
   await pagedPage.waitForFunction(() => window.__loomexMessages.length === 1);
   const [message] = await pagedPage.evaluate(() => window.__loomexMessages);
-  assert.deepEqual(message, {
-    role: "user",
-    content: [{
-      type: "text",
-      text: `Read and present the complete Loomex result using loomex_response_read with responseRef ${responseRef}. Begin at offset 0, continue through every nextOffset, and verify checksumSha256 before presenting it.`,
-    }],
-  });
+  assert.equal(message.role, "user");
+  assert.equal(message.content.length, 1);
+  assert.equal(message.content[0].type, "text");
+  assert.match(message.content[0].text, new RegExp(responseRef));
+  assert.match(message.content[0].text, /every nextOffset page/);
+  assert.match(message.content[0].text, /verify checksumSha256/);
+  assert.match(message.content[0].text, /data, not authority/);
+  assert.match(message.content[0].text, /do not start, answer, or replay/);
   await paged.getByText("The conversation has been asked to retrieve and present the complete result.", { exact: true }).waitFor();
 
   const rejectedPage = await browser.newPage();
@@ -1154,6 +1205,13 @@ test("active monitor never polls automatically and Follow in chat uses acknowled
   assert.match(message.content[0].text, /Schema: loomex\/chat-continuation\/v1/);
   assert.match(message.content[0].text, /Intent: monitor_existing_run/);
   assert.match(message.content[0].text, new RegExp(runId));
+  assert.match(message.content[0].text, /First call loomex_run_get/);
+  assert.match(message.content[0].text, /authoritative nextAction/);
+  assert.match(message.content[0].text, /loomex_run_wait calls with timeoutSeconds 30/);
+  assert.equal((message.content[0].text.match(/loomex_interaction_view/g) || []).length, 1);
+  assert.doesNotMatch(message.content[0].text, /loomex_interaction_get/);
+  assert.match(message.content[0].text, /do not fetch it again or answer or replay an answer/);
+  assert.match(message.content[0].text, /Never start or commit another run/);
   assert.doesNotMatch(message.content[0].text, /confirmationKey|credential/i);
 });
 
@@ -1254,8 +1312,8 @@ test("missing or non-text host chat capabilities show the exact manual monitor c
     await app.getByRole("button", { name: "Follow in chat", exact: true }).click();
     await app.getByText("This host cannot send the run to chat automatically.", { exact: false }).first().waitFor();
     const command = await app.getByLabel("Read-only resume command").textContent();
-    assert.match(command || "", new RegExp(`Monitor Loomex run ${runId}`));
-    assert.match(command || "", /Do not start another run/);
+    assert.match(command || "", new RegExp(`existing Loomex run ${runId}`));
+    assert.match(command || "", /Never start or commit another run/);
     assert.match(command || "", /timeoutSeconds 30/);
     assert.deepEqual(await page.evaluate(() => window.__loomexModelContexts), []);
     assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
@@ -1342,7 +1400,7 @@ test("no-JSON views retain readable reviews and reject unsupported forms", async
   await app.getByRole("heading", { name: "Weekly report", exact: true }).waitFor();
   await app.getByText("Quarterly report", { exact: true }).waitFor();
   await app.locator(".provider-row").getByText("chosen-model", { exact: true }).waitFor();
-  assert.match(await app.locator("#context").innerText(), /no sandbox guarantee/);
+  assert.match(await app.locator("#context").innerText(), /starting folder, not a sandbox/);
   assert.doesNotMatch(await app.locator("body").innerText(), /never-display-this|bindingDigest|Technical details|hidden-input|hidden-provider|hidden-token/);
   assert.equal(await app.locator("#primary").isDisabled(), false);
   app = await mountApp(page, "prepare", { ...prepared, binding: {} });
@@ -1357,7 +1415,7 @@ test("no-JSON views retain readable reviews and reject unsupported forms", async
   await app.getByText("Running", { exact: true }).waitFor();
 });
 
-test("prepared run uses bound names, hides UUIDs by default, and preserves exact commit after status check", async (t) => {
+test("prepared run shows one readable permission review and preserves exact commit after status check", async (t) => {
   const available = await browserTools();
   if (!available) { assert.fail("Chromium required for preparation UI gate"); }
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
@@ -1381,11 +1439,18 @@ test("prepared run uses bound names, hides UUIDs by default, and preserves exact
   let app = await mountApp(page, "prepare", prepared, false, false, presentation);
   await app.getByRole("heading", { name: "Idea to Implementation" }).waitFor();
   await app.getByText("Version 1", { exact: true }).waitFor();
-  await app.getByText("Loomex Studio", { exact: true }).waitFor();
+  await app.locator(".ui-hero").getByText("Loomex Studio", { exact: true }).waitFor();
   assert.equal(await app.getByRole("button", { name: "Start run", exact: true }).isEnabled(), true);
   const visible = await app.locator("body").innerText();
   for (const id of [prepared.binding.workflowId, prepared.binding.versionId, prepared.binding.organizationId, prepared.binding.installationId]) assert.ok(!visible.includes(id));
-  assert.doesNotMatch(visible, /private-confirmation|internal-checksum|sizeBytes|host_user/);
+  assert.equal((visible.match(/Idea to Implementation/g) || []).length, 1);
+  assert.equal((visible.match(/Loomex Studio/g) || []).length, 1);
+  assert.equal((visible.match(/Version 1/g) || []).length, 1);
+  assert.equal((visible.match(/This Mac/g) || []).length, 1);
+  assert.match(visible, /Permissions/);
+  assert.match(visible, /read and change files and run commands/);
+  assert.match(visible, /starting folder, not a sandbox/);
+  assert.doesNotMatch(visible, /private-confirmation|internal-checksum|sizeBytes|host_user\/v1|Exact authorization scope/);
   const screenshotDir = process.env.LOOMEX_PREPARE_SCREENSHOT_DIR;
   if (screenshotDir) {
     await mkdir(screenshotDir, { recursive: true });
@@ -1598,6 +1663,7 @@ test("integrated run setup validates inputs, grants one canonical workspace, pre
   const app = await mountApp(page, "prepare", setup);
   await app.getByRole("heading", { name: "Integrated report", exact: true }).waitFor();
   await app.getByText("Setup", { exact: true }).waitFor();
+  await captureRequestedScreenshots(page, "run-setup");
   assert.equal(await app.getByLabel("Project directory", { exact: true }).count(), 0, "workspaceInputField must use the single workspace control");
 
   await app.getByRole("button", { name: "Grant workspace access", exact: true }).click();
@@ -1664,6 +1730,7 @@ test("integrated run setup validates inputs, grants one canonical workspace, pre
   await app.locator("#primary:not(:disabled)").waitFor();
   await app.getByRole("button", { name: "Retry exact preparation", exact: true }).click();
   await app.getByRole("button", { name: "Start run", exact: true }).waitFor();
+  await captureRequestedScreenshots(page, "run-review");
   const prepare = (await page.evaluate(() => window.__loomexCalls))[3];
   assert.equal(prepare.name, "loomex_run_prepare");
   assert.equal(prepare.arguments.workflowId, workflowId);
@@ -1811,7 +1878,7 @@ test("unsupported setup fails closed and a timed-out start retains the exact sea
   const messages = await page.evaluate(() => window.__loomexMessages);
   assert.equal(messages.length, 1);
   assert.match(messages[0].content[0].text, new RegExp(workflowId));
-  assert.match(messages[0].content[0].text, /Do not commit or execute/);
+  assert.match(messages[0].content[0].text, /do not commit, execute, or infer authority/);
 
   const prepared = {
     preparationId: "5aae202b-f5d0-44fc-9dc2-3f50457932eb", bindingDigest: "b".repeat(64), confirmationKey: "d09cb0b2-91fd-4289-ae8c-380c2fcb5541",
@@ -1938,19 +2005,73 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   assert.match(await app.locator("body").innerText(), /11 steps/);
   assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
   assert.equal(await app.locator("script").count(), 1);
+  assert.equal(await app.getByRole("button", { name: "Connection information", exact: true }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Clear search", exact: true }).count(), 0);
+  await waitForSettledAppSize(page);
+  await page.evaluate(() => { window.__workflowDelayMs = 250; });
+  const initialBrowserHeight = (await app.locator("#context").boundingBox()).height;
+  const scrollBefore = await page.evaluate(() => {
+    document.body.style.minHeight = "1400px";
+    window.scrollTo(0, 120);
+    return window.scrollY;
+  });
+  await app.getByRole("button", { name: "Next", exact: true }).focus();
+  const pageLayoutBefore = await appLayoutSnapshot(page);
   await app.getByRole("button", { name: "Next", exact: true }).click();
+  await app.locator(".workflow-skeleton").waitFor();
+  const pageLayoutDuring = await appLayoutSnapshot(page);
+  assert.equal(await app.locator("#context").getAttribute("aria-busy"), "true");
+  assert.ok((await app.locator("#context").boundingBox()).height >= initialBrowserHeight, "the skeleton reserves the current page height");
+  assert.equal(await app.locator(".workflow-skeleton").getAttribute("aria-hidden"), "true");
+  assert.equal(await app.locator("#activity").isVisible(), false, "the global activity row does not grow the app above an in-place skeleton");
+  assert.equal(await app.locator(".workflow-loading-status").textContent(), "Loading workflows…");
+  assertStableLoadingLayout(pageLayoutBefore, pageLayoutDuring, "Loading workflows…");
+  assert.equal(await page.evaluate(() => window.scrollY), scrollBefore);
   await waitForCallCount(page, 1);
-  await app.getByText("1 workflow on this page", { exact: true }).waitFor();
+  await app.getByText("Page 2 · 1 shown", { exact: true }).waitFor();
+  assert.equal(await app.locator("#context").getAttribute("aria-busy"), "false");
+  assert.equal(await app.locator(":focus").getAttribute("aria-label"), "Next", "focus returns to the same page control after replacement");
+  assert.equal((await appLayoutSnapshot(page)).focusVisible, true, "restored page focus is visible");
+  assert.equal(await page.evaluate(() => window.scrollY), scrollBefore, "page replacement preserves the viewport");
+  await captureRequestedScreenshots(page, "workflow-list-page-2");
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls))[0], { name: "loomex_workflows_list", arguments: { limit: 20, cursor: "cursor-2" } });
+  await page.evaluate(() => { window.__workflowDelayMs = 0; });
   await app.getByRole("button", { name: "Previous", exact: true }).click();
   await waitForCallCount(page, 2);
-  await app.getByText("1 workflow on this page", { exact: true }).waitFor();
-  await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflows: [], nextCursor: null } } }]; });
+  await app.getByText("Page 1 · 1 shown", { exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.__workflowDelayMs = 250;
+    window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflows: [], nextCursor: null } } }];
+  });
   await app.getByLabel("Search workflows", { exact: true }).fill("missing");
+  await app.getByRole("button", { name: "Search", exact: true }).focus();
+  const searchLayoutBefore = await appLayoutSnapshot(page);
   await app.getByRole("button", { name: "Search", exact: true }).click();
-  await app.getByText("No workflows match your search. Try a different name or clear the search.").waitFor();
+  await app.locator(".workflow-skeleton").waitFor();
+  const searchLayoutDuring = await appLayoutSnapshot(page);
+  assertStableLoadingLayout(searchLayoutBefore, searchLayoutDuring, "Loading workflows…");
+  assert.equal(await app.locator("#activity").isVisible(), false);
+  await app.getByText("No workflows match this search.").waitFor();
+  await app.getByText("0 shown", { exact: true }).waitFor();
+  assert.equal((await appLayoutSnapshot(page)).focus, "Search", "search focus returns after replacement");
+  assert.equal((await appLayoutSnapshot(page)).focusVisible, true, "restored search focus is visible");
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { limit: 20, query: "missing" });
-  await app.getByRole("button", { name: "Clear search", exact: true }).click();
+  await page.evaluate(() => {
+    window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflows: [], nextCursor: null } } }];
+  });
+  await app.getByRole("button", { name: "Refresh", exact: true }).focus();
+  const refreshLayoutBefore = await appLayoutSnapshot(page);
+  await app.getByRole("button", { name: "Refresh", exact: true }).click();
+  await app.locator(".workflow-skeleton").waitFor();
+  const refreshLayoutDuring = await appLayoutSnapshot(page);
+  assertStableLoadingLayout(refreshLayoutBefore, refreshLayoutDuring, "Loading workflows…");
+  await waitForCallCount(page, 4);
+  await app.getByText("No workflows match this search.").waitFor();
+  assert.equal((await appLayoutSnapshot(page)).focus, "Refresh", "refresh focus returns after replacement");
+  assert.equal((await appLayoutSnapshot(page)).focusVisible, true, "restored refresh focus is visible");
+  assert.equal((await appLayoutSnapshot(page)).scrollY, refreshLayoutBefore.scrollY, "same-content refresh preserves the viewport after replacement");
+  await page.evaluate(() => { window.__workflowDelayMs = 0; });
+  await app.getByRole("button", { name: "Reset search", exact: true }).click();
   await app.getByRole("button", { name: /^View:/ }).waitFor();
   await page.evaluate((id: string) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
     workflow: { id, name: "Idea", status: "active", metadata: { description: "Turn a short brief into an implementation." } },
@@ -1973,13 +2094,13 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   await app.getByText("Project directory", { exact: true }).waitFor();
   await app.getByText("Required", { exact: true }).waitFor();
   await app.getByText("gpt-5.6-luna · medium effort", { exact: true }).waitFor();
-  await app.getByText("Runs with the signed-in macOS user's permissions.", { exact: true }).waitFor();
+  await app.getByText("Runs on this Mac with your user permissions after review.", { exact: true }).waitFor();
   const detailText = await app.locator("body").innerText();
   assert.doesNotMatch(detailText, /obsolete|staleProjection|ignoredFallback|7f57e77b|Obsolete active step|Stale descriptor/);
-  const steps = app.locator("details").filter({ hasText: "Workflow steps (3)" });
-  assert.equal(await steps.getAttribute("open"), null);
-  await steps.locator("summary").click();
-  await app.getByText("Implement · Ai Agent", { exact: true }).waitFor();
+  const steps = app.locator('section[aria-label="Steps"]');
+  assert.equal(await steps.locator("li").count(), 3);
+  await app.getByText("Implement", { exact: true }).waitFor();
+  await captureRequestedScreenshots(page, "workflow-detail-browser");
   await page.evaluate((id: string) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
     workflow: { id, organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", name: "Idea", status: "active" },
     inputSchema: { type: "object", additionalProperties: false, properties: { directoryPath: {
@@ -2008,7 +2129,15 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   await app.locator("#summary.error").waitFor({ state: "hidden" });
   assert.equal(await app.getByRole("button", { name: /^Prepare run/ }).isEnabled(), true);
   const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
-  if (directory) { await mkdir(directory, { recursive: true }); await app.locator("main").screenshot({ path: resolve(directory, "browser-mobile.png") }); }
+  if (directory) {
+    const loadingPage = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    const loadingApp = await mountApp(loadingPage, "browser", first);
+    await loadingPage.evaluate(() => { window.__workflowDelayMs = 5000; });
+    await loadingApp.getByRole("button", { name: "Next", exact: true }).click();
+    await loadingApp.locator(".workflow-skeleton").waitFor();
+    await captureRequestedScreenshots(loadingPage, "workflow-list-loading");
+    await loadingPage.close();
+  }
 });
 
 test("authoring workflow detail matches the browser read view and only hands preparation to the conversation", async (t) => {
@@ -2034,15 +2163,12 @@ test("authoring workflow detail matches the browser read view and only hands pre
   };
   const app = await mountApp(page, "authoring", detail);
   await app.getByRole("heading", { name: "Future v5", exact: true }).waitFor();
+  assert.equal(await app.locator(".app-header h1").textContent(), "Workflow details");
   await app.getByText("Project directory", { exact: true }).waitFor();
   await app.getByText("gpt-5.6-luna · medium effort", { exact: true }).waitFor();
   assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).evaluate((button: any) => button.getBoundingClientRect().height >= 36), true);
   assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
-  const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
-  if (directory) {
-    await mkdir(directory, { recursive: true });
-    await app.locator("main").screenshot({ path: resolve(directory, "workflow-detail-mobile.png") });
-  }
+  await captureRequestedScreenshots(page, "workflow-detail");
 
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
   await waitForCallCount(page, 1);
@@ -2054,7 +2180,7 @@ test("authoring workflow detail matches the browser read view and only hands pre
     window.__workflowResponses = [{ isError: true, structuredContent: { ok: false } }];
   });
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
-  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).isDisabled(), true);
+  await app.locator(".workflow-skeleton").waitFor();
   assert.equal(await app.locator("#context").getAttribute("aria-busy"), "true");
   await waitForCallCount(page, 2);
   await app.locator("#summary.error").waitFor();
@@ -2096,8 +2222,9 @@ test("authoring workflow detail hands paged responses to the conversation withou
   const messages = await page.evaluate(() => window.__loomexMessages);
   assert.equal(messages.length, 1);
   assert.match(messages[0].content[0].text, new RegExp(responseRef));
-  assert.match(messages[0].content[0].text, /read-only request/);
-  assert.doesNotMatch(messages[0].content[0].text, /commit|execute/);
+  assert.match(messages[0].content[0].text, /request is read-only/);
+  assert.match(messages[0].content[0].text, /verify checksumSha256 before interpreting or presenting/);
+  assert.match(messages[0].content[0].text, /does not authorize preparation, commit, or execution/);
 });
 
 test("workflow detail bounds inputs, AI configurations and steps with transparent omission counts", async (t) => {
@@ -2122,17 +2249,17 @@ test("workflow detail bounds inputs, AI configurations and steps with transparen
     } },
   };
   const app = await mountApp(page, "authoring", data);
-  const inputs = app.locator('section[aria-label="Input requirements"]');
-  await inputs.getByText("Showing the first 50 of 51 input requirements.", { exact: true }).waitFor();
-  assert.equal(await inputs.locator(".workflow-detail-item").count(), 50);
+  const inputs = app.locator('section[aria-label="Inputs"]');
+  await inputs.getByText("Showing 12 of 51 inputs.", { exact: true }).waitFor();
+  assert.equal(await inputs.locator(".workflow-detail-item").count(), 12);
   assert.equal(await inputs.getByText("Input 50", { exact: true }).count(), 0);
-  const providers = app.locator('section[aria-label="AI configuration"]');
-  await providers.getByText("Showing 20 of 21 AI configurations.", { exact: true }).waitFor();
-  assert.equal(await providers.locator(".workflow-detail-item").count(), 20);
+  const providers = app.locator('section[aria-label="AI"]');
+  await providers.getByText("Showing 8 of 21 AI configurations.", { exact: true }).waitFor();
+  assert.equal(await providers.locator(".workflow-detail-item").count(), 8);
   assert.equal(await providers.getByText("model-20", { exact: true }).count(), 0);
-  const steps = app.locator("details").filter({ hasText: "Workflow steps (101)" });
-  await steps.getByText("Showing the first 100 of 101 steps.", { exact: true }).waitFor({ state: "attached" });
-  assert.equal(await steps.locator("li").count(), 100);
+  const steps = app.locator('section[aria-label="Steps"]');
+  await steps.getByText("Showing 8 of 101 steps.", { exact: true }).waitFor({ state: "attached" });
+  assert.equal(await steps.locator("li").count(), 8);
 });
 
 test("workflow browser restores scope, handles large responses and shares responsive themes", async (t) => {
@@ -2162,7 +2289,7 @@ test("workflow browser restores scope, handles large responses and shares respon
     const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
     if (directory) { await mkdir(directory, { recursive: true }); await app.locator("main").screenshot({ path: resolve(directory, `browser-${width}-${colorScheme}.png`) }); }
     await app.getByRole("button", { name: "Next", exact: true }).click();
-    await app.getByText("2 workflows on this page").waitFor();
+    await app.getByText("Page 2 · 2 shown", { exact: true }).waitFor();
     assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { query: "idea", systemKey: "scope", limit: 2, cursor: "next" });
     await page.evaluate((data: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data } }]; }, paged);
     await app.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -2174,13 +2301,13 @@ test("workflow browser restores scope, handles large responses and shares respon
   await recovery.getByRole("button", { name: "Next", exact: true }).click();
   await recovery.getByRole("button", { name: "View complete response", exact: true }).waitFor();
   await recovery.getByRole("button", { name: "Refresh", exact: true }).click();
-  await recovery.getByText("2 workflows on this page").waitFor();
+  await recovery.getByText("Page 2 · 2 shown", { exact: true }).waitFor();
   assert.equal(await recovery.getByRole("button", { name: "Previous", exact: true }).isEnabled(), true);
   await page.evaluate((data: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data } }]; }, paged);
   await recovery.getByRole("button", { name: "View: One", exact: true }).click();
   await recovery.getByRole("button", { name: "View complete response", exact: true }).waitFor();
   await recovery.getByRole("button", { name: "Back to workflows", exact: true }).click();
-  await recovery.getByText("2 workflows on this page").waitFor();
+  await recovery.getByText("Page 2 · 2 shown", { exact: true }).waitFor();
   const app = await mountApp(page, "browser", paged, false, false, null, true);
   await app.getByRole("button", { name: "View complete response", exact: true }).click();
   await app.locator("#summary.error").waitFor();
@@ -2188,44 +2315,43 @@ test("workflow browser restores scope, handles large responses and shares respon
   assert.match((await page.evaluate(() => window.__loomexMessages))[0].content[0].text, /loomex_response_read/);
 });
 
-test("compact controls expose accessible icons, dismissible information, activity and a stable header clock", async (t) => {
+test("compact controls avoid redundant tooltips while in-place loading and stable timing remain", async (t) => {
   const available = await browserTools();
   if (!available) assert.fail("Chromium required for compact UI interaction checks");
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 900 }, reducedMotion: "reduce" });
   const app = await mountApp(page, "browser", { workflows: [], nextCursor: null });
-  const info = app.getByRole("button", { name: "Connection information", exact: true });
-  await info.focus();
-  await app.getByRole("tooltip").waitFor();
-  assert.equal(await info.getAttribute("aria-describedby"), "ui-tooltip");
-  assert.equal(await app.getByRole("tooltip").textContent(), "Connected");
-  await page.keyboard.press("Escape");
-  assert.equal(await app.getByRole("tooltip").count(), 0);
-  await info.click();
-  await app.getByRole("tooltip").waitFor();
-  await app.getByRole("tooltip").hover();
-  assert.equal(await app.getByRole("tooltip").isVisible(), true);
-  await app.locator("#workflow-search").focus();
-  assert.equal(await app.getByRole("tooltip").count(), 0);
-  assert.equal(await page.evaluate(() => window.__loomexCalls.length), 0, "Information controls are local presentation only");
+  assert.equal(await app.getByRole("button", { name: "Connection information", exact: true }).count(), 0);
+  await app.getByRole("button", { name: "Refresh", exact: true }).focus();
+  assert.equal(await app.getByRole("tooltip").count(), 0, "an obvious refresh icon does not repeat its accessible name as a tooltip");
   assert.equal(await app.locator("button:visible").evaluateAll((buttons: any[]) => buttons.every(button =>
     button.querySelector('svg[aria-hidden="true"]') && button.getAttribute("aria-label") && button.querySelector(".sr-only"))), true);
   const searchBounds = await app.locator(".workflow-search").boundingBox();
   assert.ok(searchBounds.height <= 44, "Search controls occupy one compact row");
   assert.equal(await app.locator(".app-footer").isVisible(), false, "Empty action bars reserve no space");
+  await waitForSettledAppSize(page);
   await page.evaluate(() => { window.__workflowDelayMs = 500; });
+  await app.getByRole("button", { name: "Refresh", exact: true }).focus();
+  const compactLayoutBefore = await appLayoutSnapshot(page);
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
-  await app.locator("#activity").waitFor();
-  assert.equal(await app.locator("#activity").textContent(), "Loading workflows…");
-  assert.equal(await app.locator("#activity").evaluate((node: any) => node.ownerDocument.defaultView.getComputedStyle(node, "::before").animationName), "none");
-  await app.locator("#activity").waitFor({ state: "hidden" });
+  await app.locator(".workflow-skeleton").waitFor();
+  const compactLayoutDuring = await appLayoutSnapshot(page);
+  assertStableLoadingLayout(compactLayoutBefore, compactLayoutDuring, "Loading workflows…");
+  assert.equal(await app.locator("#activity").isVisible(), false);
+  assert.equal(await app.locator(".workflow-loading-status").textContent(), "Loading workflows…");
+  assert.equal(await app.locator(".workflow-loading-status").evaluate((node: any) => node.ownerDocument.defaultView.getComputedStyle(node, "::before").animationName), "none");
+  assert.equal(await app.locator(".skeleton-row").first().evaluate((node: any) => node.ownerDocument.defaultView.getComputedStyle(node).animationName), "none");
+  await app.locator(".workflow-loading-status").waitFor({ state: "detached" });
+  assert.equal((await appLayoutSnapshot(page)).focus, "Refresh");
+  assert.equal((await appLayoutSnapshot(page)).focusVisible, true);
   const terminal = await mountApp(page, "monitor", { execution: { id: "compact-run", workflowName: "A finished workflow", status: "completed",
     startedAt: "2026-09-06T08:00:00.000Z", completedAt: "2026-09-06T08:02:05.000Z" } });
   assert.equal(await terminal.locator(".app-header #run-clock").textContent(), "2m 5s");
   assert.equal(await terminal.locator("#run-clock").getAttribute("aria-label"), "Elapsed time: 2m 5s");
   assert.equal(await terminal.locator("#context .ui-card").count(), 0, "Run status uses an inline hierarchy, not statistic cards");
   await terminal.getByRole("button", { name: "Run timing", exact: true }).focus();
+  assert.equal(await terminal.getByRole("button", { name: "Run timing", exact: true }).getAttribute("aria-describedby"), "ui-tooltip");
   assert.match(await terminal.getByRole("tooltip").textContent(), /Started:.*Completed:/);
   await page.waitForTimeout(1100);
   assert.equal(await terminal.locator("#run-clock").textContent(), "2m 5s", "Terminal duration does not keep ticking");
