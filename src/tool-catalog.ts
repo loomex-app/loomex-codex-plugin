@@ -186,10 +186,26 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   },
   {
     name: "loomex_workflows_list",
-    uiUri: BROWSER_UI_URI,
     rpcMethod: "workflows.list",
     title: "List Loomex workflows",
-    description: "Discover workflows in the selected organization with cursor pagination.",
+    description: "Discover workflows headlessly in the selected organization with cursor pagination. Use loomex_workflows_view for a browsable visual list. This is not a monitoring tool for an existing run.",
+    inputSchema: z
+      .object({
+        query: z.string().optional(),
+        cursor: Cursor,
+        limit: PageLimit,
+        systemKey: z.string().optional(),
+      })
+      .strict(),
+    mutating: false,
+    destructive: false,
+  },
+  {
+    name: "loomex_workflows_view",
+    uiUri: BROWSER_UI_URI,
+    rpcMethod: "workflows.list",
+    title: "Browse Loomex workflows",
+    description: "Show a compact workflow list for the user to browse, inspect, or prepare. Reads the current authorized list for the supplied search and cursor. Use loomex_workflows_list for headless discovery; do not open this view when following an existing run.",
     inputSchema: z
       .object({
         query: z.string().optional(),
@@ -500,7 +516,16 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_run_get",
     rpcMethod: "runs.get",
     title: "Get Loomex run",
-    description: "Get current authoritative run state and a bounded page of recent execution information.",
+    description: "Read current authoritative state for this exact existing run without opening a UI. For one-off status requests, report this snapshot only. When explicitly asked to monitor or follow, use nextAction in the result: inspect a pending interaction, retrieve terminal results, or long-poll this same run. Never list workflows or prepare another run to monitor it.",
+    inputSchema: z.object({ runId: Uuid, ...StreamQuery }).strict(),
+    mutating: false,
+    destructive: false,
+  },
+  {
+    name: "loomex_run_view",
+    rpcMethod: "runs.get",
+    title: "View Loomex run",
+    description: "Show a snapshot of this exact run only when the user requests a visual status view. This card never polls. Use loomex_run_get and loomex_run_wait to follow the run in chat.",
     inputSchema: z.object({ runId: Uuid, ...StreamQuery }).strict(),
     mutating: false,
     destructive: false,
@@ -586,7 +611,16 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_interaction_get",
     rpcMethod: "interactions.get",
     title: "Get Loomex interaction",
-    description: "Get one pending interaction with its typed answer schema and authoritative state.",
+    description: "Read this interaction and its authoritative run identity and complete typed answer schema without opening a UI. Use loomex_interaction_view to collect answers visually, or ask the user headlessly. Do not poll or invent answers while a human response is pending.",
+    inputSchema: z.object({ requestId: Uuid }).strict(),
+    mutating: false,
+    destructive: false,
+  },
+  {
+    name: "loomex_interaction_view",
+    rpcMethod: "interactions.get",
+    title: "Answer Loomex questions",
+    description: "Show this exact human interaction as a focused question flow with answer review. First use loomex_interaction_get to inspect its authoritative run identity and schema. Opening this view does not answer the question. Pause chat polling until the user submits or asks to check status.",
     inputSchema: z.object({ requestId: Uuid }).strict(),
     mutating: false,
     destructive: false,
@@ -693,7 +727,7 @@ export const TOOL_NAMES = TOOL_DEFINITIONS.map((definition) => definition.name);
 export const APP_CALLABLE_TOOLS = new Set([
   "loomex_readiness", "loomex_workspaces_list", "loomex_workspace_grant",
   "loomex_workflows_list", "loomex_workflow_get", "loomex_run_setup",
-  "loomex_run_prepare", "loomex_run_commit", "loomex_run_get", "loomex_run_wait", "loomex_run_cancel",
+  "loomex_run_prepare", "loomex_run_commit", "loomex_run_get", "loomex_run_cancel",
   "loomex_builder_get", "loomex_builder_commit", "loomex_builder_respond", "loomex_editor_commit",
   "loomex_interaction_get", "loomex_interaction_respond", "loomex_interaction_decide",
 ]);

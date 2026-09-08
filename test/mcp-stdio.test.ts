@@ -273,7 +273,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.2.14 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.3.0 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -287,7 +287,7 @@ test("SDK stdio discovery exposes only the focused 0.2.14 tool catalog", async (
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [...TOOL_NAMES].sort());
-  assert.equal(names.length, 48);
+  assert.equal(names.length, 51);
   assert.equal(names.includes("protocol.negotiate"), false);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.some((name) => /legacy|alias|v1/i.test(name)), false);
@@ -1087,14 +1087,14 @@ test("state replacement and execution-resuming tools advertise destructive effec
   }
 });
 
-test("workflow listing attaches browser metadata and preserves the initial search on remount", async () => {
+test("workflow list view attaches browser metadata and preserves the initial search on remount", async () => {
   let runner!: FakeRunner;
   runner = new FakeRunner((request, socket) => runner.respond(socket, request, { workflows: [], nextCursor: null }));
   const client = await connect(runner);
   const tools = await client.listTools();
-  const listing = tools.tools.find((tool) => tool.name === "loomex_workflows_list");
+  const listing = tools.tools.find((tool) => tool.name === "loomex_workflows_view");
   assert.match(String((listing?._meta?.ui as { resourceUri: string }).resourceUri), /browser\.html/);
-  const result = await client.callTool({ name: "loomex_workflows_list", arguments: { query: "idea", limit: 20 } });
+  const result = await client.callTool({ name: "loomex_workflows_view", arguments: { query: "idea", limit: 20 } });
   assert.deepEqual(result._meta?.["loomex/workflowListQuery"], { query: "idea", limit: 20 });
 });
 
@@ -1117,4 +1117,32 @@ test("stable UI resources resolve previously shipped cached references only", as
   await assert.rejects(client.readResource({ uri: "ui://loomex/authoring-99.0.0.html" }));
   await assert.rejects(client.readResource({ uri: "ui://loomex/unknown-0.2.3.html" }));
   await assert.rejects(client.readResource({ uri: "ui://loomex/browser-0.2.3.html" }));
+});
+
+test("chat monitoring data tools never remount views and display tools fetch authoritative snapshots", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, request.method === "workflows.list"
+    ? { workflows: [], nextCursor: null, details: {} }
+    : request.method === "interactions.get" ? { humanRequest: { id: "8081f734-5175-492b-b412-b1d88d8e3a7d", status: "pending", execution: { id: "adc7b3ba-1979-47d2-ac14-638ed91c5f82" } }, details: {} }
+    : { execution: { id: "adc7b3ba-1979-47d2-ac14-638ed91c5f82", status: "running" }, events: [], latestSequence: 9, hasMoreEvents: false, timedOut: false, details: {} }));
+  const client = await connect(runner);
+  const { tools } = await client.listTools();
+  for (const name of ["loomex_workflows_list", "loomex_run_get", "loomex_run_wait", "loomex_interaction_get"]) {
+    const tool = tools.find(tool => tool.name === name);
+    assert.equal((tool?._meta?.ui as { resourceUri?: string })?.resourceUri, undefined, name);
+    assert.equal(tool?._meta?.["openai/outputTemplate"], undefined, name);
+  }
+  assert.deepEqual(tools.find(tool => tool.name === "loomex_run_wait")?._meta?.ui, { visibility: ["model"] });
+  for (const [name, uri, args, method] of [
+    ["loomex_workflows_view", "browser", { query: "idea", limit: 10 }, "workflows.list"],
+    ["loomex_run_view", "monitor", { runId: "adc7b3ba-1979-47d2-ac14-638ed91c5f82" }, "runs.get"],
+    ["loomex_interaction_view", "interaction", { requestId: "8081f734-5175-492b-b412-b1d88d8e3a7d" }, "interactions.get"],
+  ] as const) {
+    const tool = tools.find(tool => tool.name === name);
+    assert.equal((tool?._meta?.ui as { resourceUri?: string })?.resourceUri, `ui://loomex/${uri}.html`);
+    assert.equal(tool?.annotations?.readOnlyHint, true);
+    const result = await client.callTool({ name, arguments: args });
+    assert.notEqual(result.isError, true);
+    assert.equal(runner.requests.at(-1)?.method, method);
+  }
 });

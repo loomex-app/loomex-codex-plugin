@@ -19,13 +19,14 @@ test("run summaries preserve execution and request identities without leaking ne
   for (const method of ["runs.get", "runs.wait", "runs.events", "runs.result", "runs.commit", "interactions.get"]) {
     const result = runSummary(method, data);
     assert.deepEqual(result?.execution, { id: runId, status: "waiting", workflowName: "Idea to Implementation", currentNodeName: "Describe Your Idea" });
-    assert.deepEqual(result?.nextAction, method === "interactions.get" ? undefined : { tool: "loomex_interaction_get", arguments: { requestId } });
+    assert.deepEqual(result?.nextAction, method === "runs.commit" ? { tool: "loomex_run_get", arguments: { runId } }
+      : ["runs.get", "runs.wait", "runs.events"].includes(method) ? { tool: "loomex_interaction_get", arguments: { requestId } } : undefined);
     assert.match(JSON.stringify(result), /What would you like to build/);
     assert.doesNotMatch(JSON.stringify(result), /private-|runner-id|internal-runner|Runner name|online|detail-id/);
   }
 });
 
-test("stale or mismatched human requests cannot become actionable summaries", () => {
+test("stale or mismatched human requests cannot become answer actions", () => {
   for (const changed of [
     { ...data, humanRequest: { ...data.humanRequest, status: "resolved" } },
     { ...data, humanRequest: { ...data.humanRequest, execution: { id: "other-run" } } },
@@ -35,7 +36,11 @@ test("stale or mismatched human requests cannot become actionable summaries", ()
     { ...data, humanRequest: { ...data.humanRequest, id: "invalid" } },
     { ...data, execution: { id: "11111111-1111-1111-1111-111111111111" }, humanRequest: { ...data.humanRequest, execution: { id: "11111111-1111-1111-1111-111111111111" } } },
     { ...data, execution: { id: "a".repeat(161) }, humanRequest: { ...data.humanRequest, execution: { id: "a".repeat(160) + "b" } } },
-  ]) assert.equal(runSummary("runs.get", changed)?.nextAction, undefined);
+  ]) {
+    const next = runSummary("runs.get", changed)?.nextAction as { tool?: string } | undefined;
+    assert.notEqual(next?.tool, "loomex_interaction_get");
+    assert.notEqual(next?.tool, "loomex_interaction_view");
+  }
 });
 
 test("question and list previews remain bounded while preserving counts and pagination", () => {
@@ -63,6 +68,82 @@ test("resolution and spool summaries retain read-only continuation without secre
   assert.doesNotMatch(JSON.stringify(runSummary("interactions.decide", { requestId, error: { token: "private-token" } })), /private-token/);
   assert.deepEqual(runSummary("runs.result", { responseRef: requestId, sizeBytes: 50000, nextOffset: 0, checksumSha256: "a".repeat(64), encoding: "json" }), {
     responseRef: requestId, sizeBytes: 50000, nextOffset: 0, checksumSha256: "a".repeat(64), encoding: "json",
+    originatingOperationComplete: true, doNotReplayOriginatingOperation: true,
+    nextAction: { tool: "loomex_response_read", arguments: { responseRef: requestId, offset: 0 } },
   });
   assert.doesNotMatch(JSON.stringify(runSummary("runs.prepare", { preparationId: requestId, confirmationKey: "private-confirmation", binding: data.execution.input })), /private-confirmation|internal-runner/);
+});
+
+test("chat continuation advances the exact run through baseline, bounded waits, question and result", () => {
+  const active = { execution: { id: runId, status: "running" }, latestSequence: 23, timedOut: true };
+  assert.deepEqual(runSummary("runs.commit", active)?.nextAction, { tool: "loomex_run_get", arguments: { runId } });
+  for (const method of ["runs.get", "runs.wait"]) {
+    assert.deepEqual(runSummary(method, active)?.nextAction, { tool: "loomex_run_wait", arguments: { runId, timeoutSeconds: 30, afterSequence: 23 } });
+    assert.deepEqual(runSummary(method, data)?.nextAction, { tool: "loomex_interaction_get", arguments: { requestId } });
+    assert.equal(runSummary(method, data)?.requiresUserInput, true);
+    for (const status of ["completed", "failed", "canceled", "EXPIRED"]) {
+      assert.deepEqual(runSummary(method, { ...active, execution: { ...active.execution, status } })?.nextAction,
+        { tool: "loomex_run_result", arguments: { runId } });
+    }
+  }
+  assert.deepEqual(runSummary("interactions.get", data)?.presentationAction, { tool: "loomex_interaction_view", arguments: { requestId } });
+  assert.deepEqual(runSummary("interactions.get", { humanRequest: data.humanRequest })?.presentationAction,
+    { tool: "loomex_interaction_view", arguments: { requestId } });
+  assert.equal(runSummary("runs.result", { ...active, execution: { ...active.execution, status: "completed" } })?.nextAction, undefined);
+  assert.equal(runSummary("runs.get", { ...active, execution: { ...active.execution, status: "deleted" } })?.nextAction, undefined);
+  assert.equal(runSummary("runs.get", { execution: { id: runId, status: "unknown_state" } })?.nextAction, undefined);
+  assert.doesNotMatch(JSON.stringify(runSummary("runs.wait", active)), /loomex_workflows_list|loomex_run_commit|loomex_run_prepare/);
+});
+
+test("invalid question identities and organization substitutions pause chat continuation", () => {
+  for (const humanRequest of [
+    { ...data.humanRequest, id: "invalid" },
+    { ...data.humanRequest, execution: { id: "cb0a8e45-9c68-4ae0-bc60-09300d9848b3" } },
+    { ...data.humanRequest, organizationId: "cb0a8e45-9c68-4ae0-bc60-09300d9848b3", execution: { id: runId, organizationId: requestId } },
+  ]) {
+    const output = runSummary("runs.get", { ...data, humanRequest });
+    assert.equal(output?.nextAction, undefined);
+    assert.equal(output?.stateNeedsVerification, true);
+    assert.equal(runSummary("interactions.get", { ...data, humanRequest })?.presentationAction, undefined);
+  }
+  for (const latestSequence of [-1, 1.5, "23", Number.MAX_SAFE_INTEGER + 1]) {
+    assert.deepEqual(runSummary("runs.wait", { execution: { id: runId, status: "running" }, latestSequence })?.nextAction,
+      { tool: "loomex_run_wait", arguments: { runId, timeoutSeconds: 30 } });
+  }
+});
+
+
+test("monitoring drains event pages before questions, waits or terminal results", () => {
+  for (const method of ["runs.get", "runs.wait", "runs.events"]) {
+    for (const status of ["waiting", "completed"]) {
+      const snapshot = { ...data, execution: { ...data.execution, status }, events: [{ sequence: 2 }], latestSequence: 3, hasMoreEvents: true };
+      assert.deepEqual(runSummary(method, snapshot)?.nextAction, { tool: "loomex_run_events", arguments: { runId, afterSequence: 2 } });
+      for (const events of [[], [{ sequence: -1 }], [{ sequence: 2 }, { sequence: 1 }]]) {
+        assert.equal(runSummary(method, { ...snapshot, events })?.stateNeedsVerification, true);
+        assert.equal(runSummary(method, { ...snapshot, events })?.nextAction, undefined);
+      }
+    }
+  }
+});
+
+test("unverifiable human or dispatch states never enter a rapid wait loop", () => {
+  for (const humanRequest of [{}, { ...data.humanRequest, status: "resolved" }, "malformed"]) {
+    const result = runSummary("runs.wait", { ...data, humanRequest });
+    assert.equal(result?.stateNeedsVerification, true);
+    assert.equal(result?.nextAction, undefined);
+  }
+  assert.equal(runSummary("runs.wait", { execution: data.execution, waitState: "agent_dispatch_required" })?.nextAction, undefined);
+  const receipt = runSummary("runs.commit", { responseRef: requestId, nextOffset: 5 });
+  assert.equal(receipt?.doNotReplayOriginatingOperation, true);
+  assert.deepEqual(receipt?.nextAction, { tool: "loomex_response_read", arguments: { responseRef: requestId, offset: 0 } });
+});
+
+
+test("truncated event pages cannot advance beyond the authoritative sequence", () => {
+  for (const latestSequence of [undefined, 2, 1, -1, 2.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const snapshot = { execution: data.execution, events: [{ sequence: 2 }], hasMoreEvents: true,
+      ...(latestSequence === undefined ? {} : { latestSequence }) };
+    assert.equal(runSummary("runs.events", snapshot)?.nextAction, undefined);
+    assert.equal(runSummary("runs.events", snapshot)?.stateNeedsVerification, true);
+  }
 });

@@ -3,6 +3,7 @@ import type { JsonValue } from "./protocol.js";
 
 type ObjectValue = Record<string, JsonValue>;
 const PAGE_PREVIEW = 8;
+const ACTIVE = new Set(["queued", "pending", "running", "waiting", "paused", "canceling", "cancelling"]);
 const TERMINAL = new Set(["completed", "failed", "canceled", "cancelled", "deleted", "succeeded", "expired"]);
 
 const uuidSchema = z.uuid();
@@ -52,7 +53,13 @@ function page(data: ObjectValue, key: string, project: (value: JsonValue) => Obj
 /** Model-facing run state must never be overwritten by nested runner/context fields. */
 export function runSummary(method: string, data: ObjectValue): ObjectValue | undefined {
   if (!method.startsWith("runs.") && !method.startsWith("interactions.")) return undefined;
-  if (typeof data.responseRef === "string") return fields(data, ["responseRef", "sizeBytes", "nextOffset", "checksumSha256", "encoding"]);
+  if (typeof data.responseRef === "string") return {
+    ...fields(data, ["responseRef", "sizeBytes", "nextOffset", "checksumSha256", "encoding"]),
+    originatingOperationComplete: true,
+    doNotReplayOriginatingOperation: true,
+    ...(uuid(data.responseRef) ? { nextAction: { tool: "loomex_response_read", arguments: { responseRef: data.responseRef, offset: 0 } } }
+      : { stateNeedsVerification: true }),
+  };
   if (method === "runs.list") return page(data, "executions", run);
   if (method === "interactions.list") return page(data, "humanRequests", (value) => fields(object(value), ["id", "status", "type", "title"]));
   if (method === "interactions.respond" || method === "interactions.decide") {
@@ -70,9 +77,45 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
   const rawExecution = object(data.execution);
   const rawRequest = object(data.humanRequest);
   const requestExecution = object(rawRequest.execution);
-  const requestBelongsToRun = uuid(rawExecution.id) && uuid(requestExecution.id) && requestExecution.id === rawExecution.id;
-  if (method.startsWith("runs.") && request.status === "pending" && uuid(rawRequest.id) && requestBelongsToRun && !TERMINAL.has(String(execution.status).toLowerCase())) {
-    summary.nextAction = { tool: "loomex_interaction_get", arguments: { requestId: rawRequest.id } };
+  const organizations = [rawExecution.organizationId, rawRequest.organizationId, requestExecution.organizationId]
+    .filter((value) => value !== undefined && value !== null);
+  const organizationConsistent = organizations.every((value) => uuid(value)) && new Set(organizations).size <= 1;
+  const requestBelongsToRun = uuid(rawExecution.id) && uuid(requestExecution.id) && requestExecution.id === rawExecution.id && organizationConsistent;
+  const status = String(execution.status || "").toLowerCase();
+  const pendingRequest = request.status === "pending";
+  // A commit/cancel receipt is not the authoritative monitoring baseline.
+  if ((method === "runs.commit" || method === "runs.cancel") && uuid(rawExecution.id)) {
+    summary.nextAction = { tool: "loomex_run_get", arguments: { runId: rawExecution.id } };
+  } else if ((method === "runs.get" || method === "runs.wait" || method === "runs.events") && uuid(rawExecution.id)) {
+    if (data.hasMoreEvents === true) {
+      const events = Array.isArray(data.events) ? data.events : [];
+      const sequences = events.map(event => object(event).sequence);
+      const last = sequences.at(-1);
+      if (typeof last === "number" && Number.isSafeInteger(last) && last >= 0 &&
+          typeof data.latestSequence === "number" && Number.isSafeInteger(data.latestSequence) && data.latestSequence > last &&
+          sequences.every((value, index) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
+            (index === 0 || value > (sequences[index - 1] as number)))) {
+        summary.nextAction = { tool: "loomex_run_events", arguments: { runId: rawExecution.id, afterSequence: last } };
+      } else summary.stateNeedsVerification = true;
+    } else if (TERMINAL.has(status)) {
+      if (status !== "deleted") summary.nextAction = { tool: "loomex_run_result", arguments: { runId: rawExecution.id } };
+    } else if (pendingRequest) {
+      if (uuid(rawRequest.id) && requestBelongsToRun) {
+        summary.requiresUserInput = true;
+        summary.nextAction = { tool: "loomex_interaction_get", arguments: { requestId: rawRequest.id } };
+      } else summary.stateNeedsVerification = true;
+    } else if (data.humanRequest !== undefined && data.humanRequest !== null ||
+        data.waitState === "agent_dispatch_required" || data.waitState === "human_action_required") {
+      summary.stateNeedsVerification = true;
+    } else if (ACTIVE.has(status)) {
+      summary.nextAction = { tool: "loomex_run_wait", arguments: { runId: rawExecution.id, timeoutSeconds: 30,
+        ...(Number.isSafeInteger(data.latestSequence) && typeof data.latestSequence === "number" && data.latestSequence >= 0
+          ? { afterSequence: data.latestSequence } : {}) } };
+    }
+  } else if (method === "interactions.get" && pendingRequest && uuid(rawRequest.id) && uuid(requestExecution.id) && organizationConsistent &&
+      (!rawExecution.id || requestBelongsToRun) && !TERMINAL.has(status)) {
+    summary.requiresUserInput = true;
+    summary.presentationAction = { tool: "loomex_interaction_view", arguments: { requestId: rawRequest.id } };
   }
   return summary;
 }
