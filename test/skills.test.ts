@@ -170,4 +170,23 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
       }
     }
   });
+
+  await t.test("execution entry points carry local task workspace context", async () => {
+    const common = await readFile(join(skillsRoot, "loomex-workflows/references/common.md"), "utf8");
+    assert.match(common, /actual current working directory/);
+    assert.match(common, /taskContext\.cwd/);
+    assert.match(common, /workspacePath/);
+    assert.match(common, /remote or cloud task/i);
+    assert.match(common, /never derive a path from the plugin process working directory/i);
+
+    for (const skill of ["loomex-run", "loomex-browse", "loomex-inspect", "loomex-create", "loomex-edit"]) {
+      const source = await readFile(join(skillsRoot, skill, "SKILL.md"), "utf8");
+      assert.match(source, /local Codex task cwd/, `${skill} must use the active local task workspace when available`);
+    }
+
+    const authoring = await readFile(join(skillsRoot, "loomex-workflows/references/authoring.md"), "utf8");
+    assert.match(authoring, /Do not add a project-directory input or `settings\.workspaceInputField`/);
+    assert.match(authoring, /Existing stored versions.*remain valid and readable/);
+    assert.match(authoring, /"source": "execution_context", "value": "workspace\.path"/);
+  });
 });

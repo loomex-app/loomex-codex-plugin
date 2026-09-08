@@ -247,8 +247,13 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
       properties: Record<string, unknown>;
       required?: string[];
     };
-    assert.deepEqual(Object.keys(input.properties).sort(), Object.keys(method.inputSchema.properties).sort());
-    assert.deepEqual([...(input.required ?? [])].sort(), [...(method.inputSchema.required ?? [])].sort());
+    const localOnly = new Set(definition.localOnlyInputKeys ?? []);
+    for (const key of localOnly) {
+      assert.equal(Object.hasOwn(input.properties, key), true, `${definition.name} declares an unknown local-only field ${key}`);
+      assert.equal(input.required?.includes(key) ?? false, false, `${definition.name} local-only field ${key} must remain optional`);
+    }
+    assert.deepEqual(Object.keys(input.properties).filter((key) => !localOnly.has(key)).sort(), Object.keys(method.inputSchema.properties).sort());
+    assert.deepEqual([...(input.required ?? [])].filter((key) => !localOnly.has(key)).sort(), [...(method.inputSchema.required ?? [])].sort());
 
     const resultSchema = resultSchemaFor(method.name);
     assert.ok(resultSchema);
@@ -273,7 +278,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.5.0 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.6.0 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -336,13 +341,22 @@ test("run setup collects schema through a read-only entry point without opening 
   assert.equal(APP_CALLABLE_TOOLS.has("loomex_run_commit"), true);
   assert.equal(APP_CALLABLE_TOOLS.has("loomex_workspace_grant"), true);
   assert.equal(APP_CALLABLE_TOOLS.has("loomex_workflow_update"), false);
-  const result = await client.callTool({ name: "loomex_run_setup", arguments: { workflowId, version: "5" } });
+  const result = await client.callTool({ name: "loomex_run_setup", arguments: {
+    workflowId,
+    version: "5",
+    taskContext: { cwd: "/Users/example/current-task" },
+    workspacePath: "/Users/example/chosen-workspace",
+  } });
   const output = result.structuredContent as { ok: boolean; data: { inputSchema: unknown } };
   assert.equal(output.ok, true, JSON.stringify(result));
   assert.deepEqual(output.data.inputSchema, inputSchema);
   assert.equal(runner.requests.length, 1);
   assert.equal(runner.requests[0]?.method, "workflows.get");
   assert.deepEqual(runner.requests[0]?.params, { workflowId, version: "5" });
+  assert.deepEqual(result._meta?.["loomex/taskWorkspace"], {
+    taskContext: { cwd: "/Users/example/current-task" },
+    workspacePath: "/Users/example/chosen-workspace",
+  });
 });
 
 test("readiness makes one owner-checked RPC call and returns structured IDs", async () => {
@@ -1087,15 +1101,30 @@ test("state replacement and execution-resuming tools advertise destructive effec
   }
 });
 
-test("workflow list view attaches browser metadata and preserves the initial search on remount", async () => {
+test("workflow views route task workspace metadata without changing runner requests", async () => {
+  const workflowId = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
   let runner!: FakeRunner;
-  runner = new FakeRunner((request, socket) => runner.respond(socket, request, { workflows: [], nextCursor: null }));
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, request.method === "workflows.list"
+    ? { workflows: [], nextCursor: null }
+    : { workflow: { id: workflowId }, selectedVersion: { id: "8b29c880-1c68-4d47-a1ff-477ab28d3c49" } }));
   const client = await connect(runner);
   const tools = await client.listTools();
   const listing = tools.tools.find((tool) => tool.name === "loomex_workflows_view");
   assert.match(String((listing?._meta?.ui as { resourceUri: string }).resourceUri), /browser\.html/);
-  const result = await client.callTool({ name: "loomex_workflows_view", arguments: { query: "idea", limit: 20 } });
+  const taskContext = { cwd: "/Users/example/current-task" };
+  const result = await client.callTool({ name: "loomex_workflows_view", arguments: { query: "idea", limit: 20, taskContext } });
   assert.deepEqual(result._meta?.["loomex/workflowListQuery"], { query: "idea", limit: 20 });
+  assert.deepEqual(result._meta?.["loomex/taskWorkspace"], { taskContext });
+  assert.deepEqual(runner.requests.at(-1)?.params, { query: "idea", limit: 20 });
+
+  const detail = await client.callTool({ name: "loomex_workflow_view", arguments: { workflowId, taskContext } });
+  assert.deepEqual(detail._meta?.["loomex/taskWorkspace"], { taskContext });
+  assert.deepEqual(runner.requests.at(-1)?.params, { workflowId });
+
+  const withoutContext = await client.callTool({ name: "loomex_workflows_view", arguments: { limit: 5 } });
+  assert.equal(withoutContext._meta?.["loomex/taskWorkspace"], undefined, "task context must not leak across tool calls");
+  assert.deepEqual(withoutContext._meta?.["loomex/workflowListQuery"], { limit: 5 });
+  assert.deepEqual(runner.requests.at(-1)?.params, { limit: 5 });
 });
 
 

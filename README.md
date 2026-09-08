@@ -38,3 +38,9 @@ Builder sessions, editor sessions, and workflow execution use two-step
 prepare/commit operations. Each prepare tool returns the canonical workspace,
 provider and execution policy binding, digest, and confirmation key. Call its
 matching commit tool only after those facts have been reviewed and accepted.
+
+Local task entry points default workspace selection to the actual Codex task
+working directory supplied by the calling skill. An explicit user path wins.
+This context is handled inside the plugin and is never inferred from the MCP
+server process or forwarded as a runner protocol field; grants and prepared
+bindings still establish the canonical execution workspace.

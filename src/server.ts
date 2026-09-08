@@ -16,6 +16,25 @@ function toParams(input: unknown): Record<string, JsonValue> {
   return input as Record<string, JsonValue>;
 }
 
+function runnerParamsFor(
+  definition: ToolDefinition,
+  input: Record<string, JsonValue>,
+): Record<string, JsonValue> {
+  if (!definition.localOnlyInputKeys?.length) return input;
+  const localKeys = new Set(definition.localOnlyInputKeys);
+  return Object.fromEntries(Object.entries(input).filter(([key]) => !localKeys.has(key)));
+}
+
+function taskWorkspaceMeta(input: Record<string, JsonValue>): Record<string, JsonValue> | undefined {
+  const taskContext = input.taskContext;
+  const workspacePath = input.workspacePath;
+  if (taskContext === undefined && workspacePath === undefined) return undefined;
+  return {
+    ...(taskContext === undefined ? {} : { taskContext }),
+    ...(workspacePath === undefined ? {} : { workspacePath }),
+  };
+}
+
 function findStableFields(value: JsonValue, depth = 0): Record<string, JsonValue> {
   if (depth > 2 || value === null || typeof value !== "object" || Array.isArray(value)) return {};
   const output: Record<string, JsonValue> = {};
@@ -62,7 +81,7 @@ function timeoutFor(definition: ToolDefinition, params: Record<string, JsonValue
 
 export function createServer(client: PreparationReviewClient = new LocalControlClient()): McpServer {
   const server = new McpServer(
-    { name: "loomex", version: "0.5.0" },
+    { name: "loomex", version: "0.6.0" },
     {
       capabilities: { tools: {}, resources: {} },
       instructions: [
@@ -114,7 +133,13 @@ export function createServer(client: PreparationReviewClient = new LocalControlC
       },
       async (input, extra) => {
         const parsed = definition.inputSchema.parse(input);
-        const params = toParams(parsed);
+        const toolInput = toParams(parsed);
+        const params = runnerParamsFor(definition, toolInput);
+        const taskWorkspace = taskWorkspaceMeta(toolInput);
+        const resultMeta = {
+          ...(definition.rpcMethod === "workflows.list" ? { "loomex/workflowListQuery": params } : {}),
+          ...(taskWorkspace === undefined ? {} : { "loomex/taskWorkspace": taskWorkspace }),
+        };
         try {
           const output = await client.call(definition.rpcMethod, params, {
             mutating: definition.mutating,
@@ -131,7 +156,7 @@ export function createServer(client: PreparationReviewClient = new LocalControlC
           return {
             structuredContent: output,
             content: [{ type: "text", text: contentFor(output) }],
-            ...(definition.rpcMethod === "workflows.list" ? { _meta: { "loomex/workflowListQuery": params } } : {}),
+            ...(Object.keys(resultMeta).length ? { _meta: resultMeta } : {}),
             ...(preparationReview === undefined
               ? {}
               : { _meta: { "loomex/preparationReview": preparationReview } }),
@@ -142,6 +167,7 @@ export function createServer(client: PreparationReviewClient = new LocalControlC
             isError: true,
             structuredContent: output,
             content: [{ type: "text", text: contentFor(output) }],
+            ...(Object.keys(resultMeta).length ? { _meta: resultMeta } : {}),
           };
         }
       },

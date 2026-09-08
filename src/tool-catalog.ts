@@ -23,6 +23,8 @@ export interface ToolDefinition {
   readonly mutating: boolean;
   readonly destructive: boolean;
   readonly uiUri?: string;
+  /** Input fields handled by this MCP adapter and never sent over local-control. */
+  readonly localOnlyInputKeys?: readonly string[];
 }
 
 const Empty = z.object({}).strict();
@@ -37,6 +39,20 @@ const TimeoutSeconds = z.number().int().min(0).optional();
 const AbsolutePath = z.string().min(1).refine((value) => value.startsWith("/"), {
   message: "Path must be absolute; the runner resolves and verifies its canonical path.",
 });
+const TaskContext = z
+  .object({
+    cwd: AbsolutePath.describe("The actual current working directory of the active local Codex task."),
+  })
+  .strict();
+const TaskWorkspaceInput = {
+  taskContext: TaskContext.optional().describe(
+    "Optional context supplied by the calling Codex skill for the active local task. This is a workspace suggestion, not execution authority.",
+  ),
+  workspacePath: AbsolutePath.optional().describe(
+    "An explicit workspace chosen by the user for this operation. When present, it overrides taskContext.cwd in setup.",
+  ),
+};
+const TASK_WORKSPACE_INPUT_KEYS = ["taskContext", "workspacePath"] as const;
 const JsonObject = z.record(z.string(), JsonValueSchema);
 
 function containsSecretInput(value: JsonValue): boolean {
@@ -205,17 +221,19 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     uiUri: BROWSER_UI_URI,
     rpcMethod: "workflows.list",
     title: "Browse Loomex workflows",
-    description: "Show a compact workflow list for the user to browse, inspect, or prepare. Reads the current authorized list for the supplied search and cursor. Use loomex_workflows_list for headless discovery; do not open this view when following an existing run.",
+    description: "Show a compact workflow list for the user to browse, inspect, or prepare. For a local Codex task, pass its actual cwd as taskContext.cwd so a later Prepare action starts with that workspace; pass workspacePath only for an explicit user override. Reads the current authorized list for the supplied search and cursor. Use loomex_workflows_list for headless discovery; do not open this view when following an existing run.",
     inputSchema: z
       .object({
         query: z.string().optional(),
         cursor: Cursor,
         limit: PageLimit,
         systemKey: z.string().optional(),
+        ...TaskWorkspaceInput,
       })
       .strict(),
     mutating: false,
     destructive: false,
+    localOnlyInputKeys: TASK_WORKSPACE_INPUT_KEYS,
   },
   {
     name: "loomex_workflow_get",
@@ -230,21 +248,23 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_workflow_view",
     rpcMethod: "workflows.get",
     title: "View Loomex workflow",
-    description: "Open a visual workflow detail view only when the user asks to inspect a workflow. Do not call this as a prerequisite to running; use loomex_run_setup instead.",
-    inputSchema: z.object({ workflowId: Uuid, version: z.string().optional() }).strict(),
+    description: "Open a visual workflow detail view only when the user asks to inspect a workflow. For a local Codex task, pass its actual cwd as taskContext.cwd so the optional Prepare action starts with that workspace; pass workspacePath only for an explicit user override. Do not call this as a prerequisite to running; use loomex_run_setup instead.",
+    inputSchema: z.object({ workflowId: Uuid, version: z.string().optional(), ...TaskWorkspaceInput }).strict(),
     mutating: false,
     destructive: false,
     uiUri: AUTHORING_UI_URI,
+    localOnlyInputKeys: TASK_WORKSPACE_INPUT_KEYS,
   },
   {
     name: "loomex_run_setup",
     rpcMethod: "workflows.get",
     title: "Set up Loomex run",
-    description: "Start here when the user asks to run a workflow, including typed commands. Read the exact workflow input schema and open the integrated input/workspace form. This read-only action grants no workspace and starts nothing. In a headless host, ask for every missing required input and workspace in conversation before calling loomex_run_prepare. Do not silently omit inputs or invent values.",
-    inputSchema: z.object({ workflowId: Uuid, version: z.string().optional() }).strict(),
+    description: "Start here when the user asks to run a workflow, including typed commands. For a local Codex task, pass its actual cwd as taskContext.cwd; setup uses it as the initial workspace. Pass workspacePath only when the user explicitly chose another workspace. This read-only action opens the exact workflow input schema, grants no workspace, and starts nothing. Without local task context or an explicit workspace, collect the workspace manually. Do not silently omit inputs or invent values.",
+    inputSchema: z.object({ workflowId: Uuid, version: z.string().optional(), ...TaskWorkspaceInput }).strict(),
     mutating: false,
     destructive: false,
     uiUri: PREPARE_UI_URI,
+    localOnlyInputKeys: TASK_WORKSPACE_INPUT_KEYS,
   },
   {
     name: "loomex_workflow_create",

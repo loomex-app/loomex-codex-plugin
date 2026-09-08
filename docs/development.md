@@ -41,7 +41,7 @@ All input objects are strict. If a workflow-definition field can recursively con
 
 ## Tool and UI rules
 
-Each public runner method needs one focused MCP definition and one method-specific strict result schema. Tool text must state full-host authority wherever the user grants a workspace or approves execution. Keep the prepare and commit operations separate; commit may only send the IDs and digest produced by the reviewed preparation.
+Each public runner method needs one focused MCP definition and one method-specific strict result schema. Adapter-only fields must be declared in `localOnlyInputKeys`, stripped before local-control, and tested against the pinned runner schema. Tool text must state full-host authority wherever the user grants a workspace or approves execution. Keep the prepare and commit operations separate; commit may only send the IDs and digest produced by the reviewed preparation.
 
 All operations must work headlessly. Adding a UI resource cannot be the only way to complete a lifecycle step. UI resources must call registered tools through the MCP Apps bridge, render tool results as untrusted data, remain self-contained, and retain a CSP with no external network. The current resources support only inline display and must fail back to headless tools when initialization is unavailable.
 
@@ -113,4 +113,4 @@ The prepare view's runner check is a read-only status check that retains prepara
 
 Every custom view uses the tokens and components documented in [design-system.md](design-system.md). Styling must not branch on `data-mode`; differences come from semantic components and action variants. Content-size reporting applies to all five resources. Run the shared browser visual matrix when changing tokens, shell layout, forms, status messages or actions.
 
-Workflow browser coverage exercises search, empty results, forward/back cursor pages, details/back, read failure and recovery, text-safe labels and preparation handoff without execution. Verify an installed cached package discovers five resources and the list tool advertises the browser resource.
+Workflow browser coverage exercises search, empty results, forward/back cursor pages, details/back, read failure and recovery, text-safe labels, task-workspace metadata retention, manual and explicit workspace selection, and preparation handoff without execution. Verify an installed cached package discovers five resources and the list tool advertises the browser resource.

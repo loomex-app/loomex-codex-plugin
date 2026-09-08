@@ -33,7 +33,7 @@ $loomex:loomex-answer <run-id>
 $loomex:loomex-results <run-id>
 ```
 
-Text after the skill expresses your intent; it is not parsed as shell arguments. Missing workflow, version, workspace or required inputs are collected before execution. Ambiguous names produce a selection. Run IDs refer to existing executions and never cause a new run. `status` reads once; `follow` monitors in the active conversation and pauses for your questions.
+Text after the skill expresses your intent; it is not parsed as shell arguments. Local run, browse, create, and edit entry points use the active Codex task directory as their workspace unless you provide another path. Remote or cloud tasks without a local cwd ask for a workspace when execution requires one. Missing workflow, version, or required inputs are collected before execution. Ambiguous names produce a selection. Run IDs refer to existing executions and never cause a new run. `status` reads once; `follow` monitors in the active conversation and pauses for your questions.
 
 `run` opens setup, reviews the exact preparation, and starts only after acceptance. Publishing and activation remain separate. Invoking cancel or delete without an identified target prompts selection; an explicit authorized request for an exact target does not need redundant confirmation. Deleting a run does not delete its workflow or workspace.
 

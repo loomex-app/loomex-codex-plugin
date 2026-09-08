@@ -1632,6 +1632,69 @@ test("stale preparations require a fresh review without reusing confirmation or 
   assert.equal(integratedReprepare.arguments.workspacePath, binding.workspacePath);
 });
 
+test("task workspace defaults can be changed before grant without becoming workflow inputs", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium required for task workspace setup");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 900 } });
+  const workflowId = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const organizationId = "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2";
+  const versionId = "8b29c880-1c68-4d47-a1ff-477ab28d3c49";
+  const setup = {
+    workflow: { id: workflowId, organizationId, name: "Task-aware workflow" },
+    inputSchema: { type: "object", additionalProperties: false, properties: { title: { type: "string", title: "Title" } }, required: ["title"] },
+    selectedVersion: { id: versionId, workflowId, versionNumber: 1, definition: { settings: {
+      inputSchema: { type: "object", properties: { title: { type: "string", title: "Title" } }, required: ["title"] },
+    }, nodes: [] } },
+  };
+  const taskContext = { cwd: "/Users/example/current-task" };
+  const app = await mountApp(page, "prepare", setup, false, false, null, false, {
+    "loomex/taskWorkspace": { taskContext, workspacePath: "/Users/example/explicit-choice" },
+  });
+  const workspace = app.getByLabel("Workspace directory *", { exact: true });
+  await workspace.waitFor();
+  assert.equal(await workspace.inputValue(), "/Users/example/explicit-choice", "an explicit user workspace wins over task cwd");
+  assert.equal(await workspace.getAttribute("readonly"), "");
+  assert.equal(await app.getByText("Selected for this run. Change it if needed.", { exact: true }).isVisible(), true);
+  await app.getByLabel("Title *", { exact: true }).fill("Release notes");
+  await app.getByRole("button", { name: "Change workspace", exact: true }).click();
+  await workspace.fill("/Users/example/changed-workspace");
+  await page.evaluate(({ organizationId }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    workspace: { path: "/Users/example/changed-workspace", organizationId, installationId: "62e9d3fa-097b-46fb-9f87-34b4d8c1b40b" },
+    executionPolicy: "host_user/v1",
+  } } }]; }, { organizationId });
+  await app.getByRole("button", { name: "Grant workspace access", exact: true }).click();
+  await app.getByRole("button", { name: "Review run", exact: true }).waitFor();
+  const grant = (await page.evaluate(() => window.__loomexCalls))[0];
+  assert.equal(grant.name, "loomex_workspace_grant");
+  assert.equal(grant.arguments.workspacePath, "/Users/example/changed-workspace");
+  assert.equal("directoryPath" in grant.arguments, false);
+  assert.equal(await workspace.inputValue(), "/Users/example/changed-workspace");
+  assert.equal(await app.getByRole("button", { name: "Change workspace", exact: true }).isVisible(), true);
+
+  const reusedPage = await browser.newPage({ viewport: { width: 760, height: 900 } });
+  const reusedApp = await mountApp(reusedPage, "prepare", setup, false, false, null, false, {
+    "loomex/taskWorkspace": { taskContext },
+  });
+  const reusedWorkspace = reusedApp.getByLabel("Workspace directory *", { exact: true });
+  await reusedWorkspace.waitFor();
+  assert.equal(await reusedWorkspace.inputValue(), taskContext.cwd);
+  await reusedPage.evaluate((setupData: any) => {
+    const frame = document.getElementById("app");
+    frame.contentWindow.postMessage({
+      jsonrpc: "2.0",
+      method: "ui/notifications/tool-result",
+      params: { structuredContent: { ok: true, data: setupData } },
+    }, "*");
+  }, setup);
+  await reusedPage.waitForFunction(() =>
+    document.getElementById("app")?.contentDocument?.getElementById("run-workspace")?.value === "",
+  );
+  assert.equal(await reusedWorkspace.inputValue(), "", "a context-free top-level result must not reuse the prior task path");
+  assert.equal(await reusedApp.getByRole("button", { name: "Change workspace", exact: true }).count(), 0);
+});
+
 test("integrated run setup validates inputs, grants one canonical workspace, prepares the selected version, and starts once", async (t) => {
   const available = await browserTools();
   if (!available) assert.fail("Chromium required for integrated run setup");
@@ -1665,6 +1728,7 @@ test("integrated run setup validates inputs, grants one canonical workspace, pre
   await app.getByText("Setup", { exact: true }).waitFor();
   await captureRequestedScreenshots(page, "run-setup");
   assert.equal(await app.getByLabel("Project directory", { exact: true }).count(), 0, "workspaceInputField must use the single workspace control");
+  assert.equal(await app.getByRole("button", { name: "Change workspace", exact: true }).count(), 0, "missing task context keeps manual workspace entry available");
 
   await app.getByRole("button", { name: "Grant workspace access", exact: true }).click();
   await app.getByText("Complete the required inputs before continuing.", { exact: true }).waitFor();
@@ -1996,8 +2060,9 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
   const id = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const taskContext = { cwd: "/Users/example/current-task" };
   const first = { workflows: [{ id, name: "Idea <script>bad()</script>", description: "Develop an idea", definitionStatus: "published", latestVersion: 4, nodeCount: 11 }], nextCursor: "cursor-2" };
-  const app = await mountApp(page, "browser", first);
+  const app = await mountApp(page, "browser", first, false, false, null, false, { "loomex/taskWorkspace": { taskContext } });
   await app.getByRole("heading", { name: "Browse workflows", exact: true }).waitFor();
   await captureRequestedScreenshots(page, "workflow-list");
   assert.match(await app.locator("body").innerText(), /Published/);
@@ -2116,10 +2181,13 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   await app.getByRole("button", { name: /^Prepare run/ }).click();
   await app.getByRole("heading", { name: "Idea", exact: true }).waitFor();
   await app.getByLabel("Project directory *", { exact: true }).waitFor();
+  assert.equal(await app.getByLabel("Project directory *", { exact: true }).inputValue(), taskContext.cwd);
+  assert.equal(await app.getByLabel("Project directory *", { exact: true }).getAttribute("readonly"), "");
+  assert.equal(await app.getByRole("button", { name: "Change workspace", exact: true }).isVisible(), true);
   const messages = await page.evaluate(() => window.__loomexMessages);
   assert.equal(messages.length, 0);
   assert.equal((await page.evaluate(() => window.__loomexCalls)).at(-1).name, "loomex_run_setup");
-  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { workflowId: id, version: "5" });
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { workflowId: id, version: "5", taskContext });
   await app.getByRole("button", { name: "Back to workflows", exact: true }).click();
   await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false } }]; });
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -2148,6 +2216,7 @@ test("authoring workflow detail matches the browser read view and only hands pre
   const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
   const id = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
   const versionId = "8b29c880-1c68-4d47-a1ff-477ab28d3c49";
+  const taskContext = { cwd: "/Users/example/authoring-task" };
   const detail = {
     workflow: { id, organizationId: "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2", name: "Future v5", status: "active", metadata: { description: "Build and review a project." } },
     activeVersion: { id: versionId, workflowId: id, versionNumber: 5, definition: { nodes: [] } },
@@ -2161,7 +2230,7 @@ test("authoring workflow detail matches the browser read view and only hands pre
     } },
     inputSchema: { type: "object", properties: { directoryPath: { title: "Project directory", type: "string" } }, required: ["directoryPath"] },
   };
-  const app = await mountApp(page, "authoring", detail);
+  const app = await mountApp(page, "authoring", detail, false, false, null, false, { "loomex/taskWorkspace": { taskContext } });
   await app.getByRole("heading", { name: "Future v5", exact: true }).waitFor();
   assert.equal(await app.locator(".app-header h1").textContent(), "Workflow details");
   await app.getByText("Project directory", { exact: true }).waitFor();
@@ -2199,10 +2268,11 @@ test("authoring workflow detail matches the browser read view and only hands pre
 
   await app.getByRole("button", { name: "Prepare run", exact: true }).click();
   await app.getByRole("heading", { name: "Future v5", exact: true }).waitFor();
-  await app.getByLabel("Project directory *", { exact: true }).waitFor();
+  await app.getByLabel("Workspace directory *", { exact: true }).waitFor();
+  assert.equal(await app.getByLabel("Workspace directory *", { exact: true }).inputValue(), taskContext.cwd);
   const calls = await page.evaluate(() => window.__loomexCalls);
   assert.deepEqual(calls.map((call: any) => call.name), ["loomex_workflow_get", "loomex_workflow_get", "loomex_workflow_get", "loomex_run_setup"]);
-  assert.deepEqual(calls.at(-1).arguments, { workflowId: id, version: "5" });
+  assert.deepEqual(calls.at(-1).arguments, { workflowId: id, version: "5", taskContext });
   const messages = await page.evaluate(() => window.__loomexMessages);
   assert.equal(messages.length, 0);
   assert.equal(await app.getByRole("heading", { name: "Future v5", exact: true }).isVisible(), true);
