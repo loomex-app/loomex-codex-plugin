@@ -127,7 +127,9 @@ async function mountApp(
                 answer: { value: "Submitted once" },
               },
             }
-          : initialData;
+          : message.params.name === "loomex_run_get" && window.__lastRunData
+            ? window.__lastRunData
+            : initialData;
         const result = window.__workflowResponses?.length ? window.__workflowResponses.shift() : shouldFailFirst && callNumber === 1
           ? {
               isError: true,
@@ -137,6 +139,8 @@ async function mountApp(
               },
             }
           : { structuredContent: { ok: true, data: resultData } };
+        const returnedData = result?.structuredContent?.ok === true ? result.structuredContent.data : undefined;
+        if (returnedData?.execution?.id) window.__lastRunData = returnedData;
         window.setTimeout(() => {
           event.source.postMessage({ jsonrpc: "2.0", id: message.id, result }, "*");
           if (window.__failModelContextAfterNextToolResponse) {
@@ -201,6 +205,12 @@ async function waitForCallCount(page: any, count: number): Promise<void> {
     }));
     throw new Error(`Expected ${count} tool calls: ${JSON.stringify(diagnostics)}`, { cause: error });
   }
+}
+
+async function waitForToolCount(page: any, name: string, count: number): Promise<void> {
+  await page.waitForFunction(({ expectedName, expectedCount }: any) =>
+    window.__loomexCalls.filter((call: any) => call.name === expectedName).length >= expectedCount,
+  { expectedName: name, expectedCount: count }, { timeout: 5_000 });
 }
 
 async function waitForSettledAppSize(page: any, afterNotificationCount?: number): Promise<void> {
@@ -983,6 +993,20 @@ test("accepted commit and cancellation receipts survive malformed optional reque
   assert.equal(await app.getByRole("button", { name: "Retry exact start" }).count(), 0);
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), ["loomex_run_commit", "loomex_run_get"]);
 
+  const minimalPage = await browser.newPage();
+  const minimal = await mountApp(minimalPage, "prepare", prepared, false, false, presentation);
+  const asynchronousRequest = { id: "1e5bc673-0d04-43ab-a037-8ad40bc86d35", status: "pending", type: "manual_input", execution: { id: runId },
+    inputSpec: { inputType: "long_text", question: "Question created after commit" }, responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } };
+  await minimalPage.evaluate(({ runId, preparationId, asynchronousRequest }: any) => { window.__workflowResponses = [
+    { structuredContent: { ok: true, data: { execution: { id: runId, status: "queued", workflowName: "Accepted boundary" }, executionPolicy: "host_user/v1", preparationId } } },
+    { structuredContent: { ok: true, data: { execution: { id: runId, status: "running", workflowName: "Accepted boundary" } } } },
+    { structuredContent: { ok: true, data: { execution: { id: runId, status: "waiting", workflowName: "Accepted boundary" }, humanRequest: asynchronousRequest } } },
+  ]; }, { runId, preparationId, asynchronousRequest });
+  await minimal.getByRole("button", { name: "Start run", exact: true }).click();
+  await minimal.getByRole("textbox", { name: "Question created after commit Your answer" }).waitFor();
+  assert.deepEqual((await minimalPage.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), ["loomex_run_commit", "loomex_run_get", "loomex_run_wait"]);
+  assert.equal(await minimal.getByRole("button", { name: "Retry exact start" }).count(), 0);
+
   const cancelPage = await browser.newPage();
   const requestId = "2cb31855-0787-4ebd-8d4d-00cd67551ba6";
   const monitor = await mountApp(cancelPage, "monitor", { execution: { id: runId, status: "waiting", workflowName: "Accepted cancellation" }, latestSequence: 30,
@@ -1068,6 +1092,33 @@ test("automatic monitor validation failures stop after the bounded retry budget"
   await page.clock.fastForward(30_000);
   assert.equal(await page.evaluate(() => window.__loomexCalls.length), 3);
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), ["loomex_run_wait", "loomex_run_wait", "loomex_run_wait"]);
+});
+
+test("automatic monitoring continues through more than three valid active snapshots", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for active monitor polling");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runId = "c2d06603-5da9-46e4-aa9c-a100971928e8";
+  const execution = { id: runId, status: "running", workflowName: "Long-running workflow" };
+  const app = await mountApp(page, "monitor", { execution });
+  await page.clock.install();
+  const request = { id: "bfa2e22c-3d2a-4a87-8968-e53b10a248b0", status: "pending", type: "manual_input", execution: { id: runId },
+    inputSpec: { inputType: "text", question: "Question after sustained work" }, responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } };
+  await page.evaluate(({ execution, request }: any) => {
+    window.__workflowResponses = [2, 3, 4, 5].map((latestSequence) => ({ structuredContent: { ok: true, data: { execution, latestSequence } } }));
+    window.__workflowResponses.push({ structuredContent: { ok: true, data: { execution: { ...execution, status: "waiting" }, humanRequest: request, latestSequence: 6 } } });
+    document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result",
+      params: { structuredContent: { ok: true, data: { execution, latestSequence: 1 } } } }, "*");
+  }, { execution, request });
+  for (let count = 1; count <= 5; count += 1) {
+    await page.clock.fastForward(6_000);
+    await page.waitForFunction((minimum: number) => window.__loomexCalls.length >= minimum, count);
+  }
+  await app.getByRole("textbox", { name: "Question after sustained work Your answer" }).waitFor();
+  assert.equal(await page.evaluate(() => window.__loomexCalls.length), 5);
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), Array(5).fill("loomex_run_wait"));
 });
 
 test("actionable validation errors render only safe issue fields", async (t) => {
@@ -1217,14 +1268,14 @@ test("prepared run uses bound names, hides UUIDs by default, and preserves exact
     executionPolicy: "host_user/v1", preparationId: "5aae202b-f5d0-44fc-9dc2-3f50457932eb",
   } } }]; });
   await app.getByRole("button", { name: "Start run", exact: true }).click();
-  await waitForCallCount(page, 3);
+  await waitForToolCount(page, "loomex_run_get", 1);
   await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
   const calls = await page.evaluate(() => window.__loomexCalls);
-  assert.equal(calls[2].name, "loomex_run_commit");
-  assert.deepEqual(Object.keys(calls[2].arguments).sort(), ["preparationId", "bindingDigest", "confirmationKey", "idempotencyKey"].sort());
-  assert.equal(calls[2].arguments.preparationId, prepared.preparationId);
-  assert.equal(calls[2].arguments.bindingDigest, prepared.bindingDigest);
-  assert.equal(calls[2].arguments.confirmationKey, prepared.confirmationKey);
+  const commit = calls.find((call: any) => call.name === "loomex_run_commit");
+  assert.deepEqual(Object.keys(commit.arguments).sort(), ["preparationId", "bindingDigest", "confirmationKey", "idempotencyKey"].sort());
+  assert.equal(commit.arguments.preparationId, prepared.preparationId);
+  assert.equal(commit.arguments.bindingDigest, prepared.bindingDigest);
+  assert.equal(commit.arguments.confirmationKey, prepared.confirmationKey);
   const contexts = await page.evaluate(() => window.__loomexModelContexts);
   assert.equal(contexts.length, 1);
   assert.match(contexts[0].content[0].text, /1c5f36e6-ac6f-41a3-b593-edf31e691e37/);
@@ -1381,7 +1432,7 @@ test("integrated run setup validates inputs, grants one canonical workspace, pre
   await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
   await app.getByText("Draft report", { exact: true }).waitFor();
   const calls = await page.evaluate(() => window.__loomexCalls);
-  const retried = calls.at(-1);
+  const retried = calls.filter((call: any) => call.name === "loomex_run_commit").at(-1);
   assert.equal(calls.filter((call: any) => call.name === "loomex_run_commit").length, 3, "double click must add one commit call");
   assert.deepEqual(retried.arguments, ambiguous.arguments, "ambiguous retry must preserve every sealed field and the same idempotency key");
   const contexts = await page.evaluate(() => window.__loomexModelContexts);
@@ -1427,9 +1478,9 @@ test("substituted commit and cancellation results stay on the sealed run and ret
     executionPolicy: "host_user/v1", preparationId,
   } } }]; }, { runId, preparationId });
   await app.getByRole("button", { name: "Retry exact start", exact: true }).click();
-  await waitForCallCount(page, 2);
+  await waitForToolCount(page, "loomex_run_get", 1);
   await app.getByText("Original run", { exact: true }).waitFor();
-  const acceptedCommit = (await page.evaluate(() => window.__loomexCalls))[1];
+  const acceptedCommit = (await page.evaluate(() => window.__loomexCalls)).filter((call: any) => call.name === "loomex_run_commit")[1];
   assert.deepEqual(acceptedCommit.arguments, rejectedCommit.arguments);
 
   await app.getByLabel("reason", { exact: true }).fill("Stop this exact run");
@@ -1438,12 +1489,12 @@ test("substituted commit and cancellation results stay on the sealed run and ret
     executionPolicy: "host_user/v1",
   } } }]; });
   await app.getByRole("button", { name: "Cancel run", exact: true }).click();
-  await waitForCallCount(page, 3);
+  await waitForToolCount(page, "loomex_run_cancel", 1);
   await app.getByText("The runner did not return status for the requested run.", { exact: false }).waitFor();
   await app.locator("#primary:not(:disabled)").waitFor();
   assert.equal(await app.getByText("Substituted cancellation", { exact: true }).count(), 0);
   await app.getByText("Original run", { exact: true }).waitFor();
-  const rejectedCancel = (await page.evaluate(() => window.__loomexCalls))[2];
+  const rejectedCancel = (await page.evaluate(() => window.__loomexCalls)).filter((call: any) => call.name === "loomex_run_cancel")[0];
   assert.equal(await app.getByLabel("reason", { exact: true }).inputValue(), "Stop this exact run");
   assert.equal(await app.getByLabel("reason", { exact: true }).isDisabled(), true);
 
@@ -1452,9 +1503,9 @@ test("substituted commit and cancellation results stay on the sealed run and ret
     executionPolicy: "host_user/v1",
   } } }]; }, runId);
   await app.getByRole("button", { name: "Retry exact cancellation", exact: true }).click();
-  await waitForCallCount(page, 4);
+  await waitForToolCount(page, "loomex_run_cancel", 2);
   await app.getByText("Canceled. Review the result below.", { exact: true }).waitFor();
-  const acceptedCancel = (await page.evaluate(() => window.__loomexCalls))[3];
+  const acceptedCancel = (await page.evaluate(() => window.__loomexCalls)).filter((call: any) => call.name === "loomex_run_cancel")[1];
   assert.deepEqual(acceptedCancel.arguments, rejectedCancel.arguments);
   assert.equal(await app.getByRole("button", { name: "Cancel run", exact: true }).count(), 0);
 });
@@ -1504,11 +1555,12 @@ test("unsupported setup fails closed and a timed-out start retains the exact sea
     executionPolicy: "host_user/v1", preparationId: "5aae202b-f5d0-44fc-9dc2-3f50457932eb",
   } } }]; });
   await app.getByRole("button", { name: "Retry exact start", exact: true }).click();
-  await page.waitForFunction(() => window.__loomexCalls.length === 2);
+  await waitForToolCount(page, "loomex_run_commit", 2);
   await page.clock.fastForward(1);
+  await waitForToolCount(page, "loomex_run_get", 1);
   const calls = await page.evaluate(() => window.__loomexCalls);
-  assert.equal(calls.length, 2);
   assert.deepEqual(calls[1].arguments, first.arguments);
+  assert.deepEqual(calls.find((call: any) => call.name === "loomex_run_get"), { name: "loomex_run_get", arguments: { runId: "1c5f36e6-ac6f-41a3-b593-edf31e691e37" } });
   await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
 });
 

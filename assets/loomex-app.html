@@ -842,9 +842,10 @@
       humanMode: undefined,
       busy: false,
       readEpoch: previous?.readEpoch || 0,
-      automaticWaits: previous?.automaticWaits || 0,
+      automaticFailures: previous?.automaticFailures || 0,
+      automaticPolls: previous?.automaticPolls || 0,
       waitTimer: previous?.waitTimer,
-      baselineRequired: Boolean(acceptedCommit && humanRequest(data) && runSequence(data) === undefined),
+      baselineRequired: Boolean(acceptedCommit),
       returnToBrowser: Boolean(previous?.returnToBrowser),
     };
     runFlow = candidate;
@@ -1339,13 +1340,14 @@
       acceptRunSnapshot(dataOf(result), runId, { initial: establishingBaseline });
       runFlow.baselineRequired = false;
       runFlow.errorMessage = "";
-      if (automatic) runFlow.automaticWaits += 1;
-      else runFlow.automaticWaits = 0;
+      runFlow.automaticFailures = 0;
+      if (automatic) runFlow.automaticPolls = Math.min(runFlow.automaticPolls + 1, 2);
+      else runFlow.automaticPolls = 0;
       return true;
     } catch (error) {
       if (epoch !== runFlow.readEpoch) return false;
       if (automatic) {
-        runFlow.automaticWaits += 1;
+        runFlow.automaticFailures += 1;
         if (error?.message) runFlow.errorMessage = "Automatic refresh could not verify the returned run state. Use Refresh run to check again.";
       } else {
         const acceptedRequest = humanRequest(runFlow.result);
@@ -1366,9 +1368,9 @@
   function scheduleRunWait() {
     if (!runFlow || runFlow.stage !== "monitor" || runFlow.busy || runFlow.waitTimer || runHumanRequest() ||
       terminalRun(runFlow.result.execution || {}) || document.visibilityState !== "visible" || !connected ||
-      !runFlow.result.waitState || runFlow.automaticWaits >= 3) return;
+      runFlow.automaticFailures >= 3) return;
     const delays = [750, 2_000, 5_000];
-    const delay = delays[Math.min(runFlow.automaticWaits, delays.length - 1)];
+    const delay = delays[Math.min(runFlow.automaticPolls, delays.length - 1)];
     runFlow.waitTimer = setTimeout(async () => {
       runFlow.waitTimer = undefined;
       await readRunSnapshot("loomex_run_wait", { automatic: true });
@@ -2765,9 +2767,18 @@
     if (message.method === "ui/notifications/tool-result") render(message.params);
   }, { passive: true });
 
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" && runFlow?.waitTimer) {
+      clearTimeout(runFlow.waitTimer);
+      runFlow.waitTimer = undefined;
+    } else if (document.visibilityState === "visible") {
+      scheduleRunWait();
+    }
+  }, { passive: true });
+
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.11" },
+    appInfo: { name: "loomex", version: "0.2.12" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));
