@@ -705,6 +705,7 @@ test("run monitoring projects safe state and removes terminal actions", async (t
       startedAt: new Date().toISOString(),
     },
   });
+  await active.locator("#cancellation-details > summary").click();
   await active.getByRole("textbox", { name: "Cancellation reason", exact: true }).waitFor();
   await active.getByRole("button", { name: "Wait for update", exact: true }).click();
   await waitForCallCount(activePage, 1);
@@ -1084,7 +1085,7 @@ test("automatic monitor validation failures stop after the bounded retry budget"
     document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result",
       params: { structuredContent: { ok: true, data: { execution, waitState: "waiting", latestSequence: 1 } } } }, "*");
   }, { execution });
-  await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
+  await app.getByText("Waiting for the next workflow update…", { exact: true }).waitFor();
   for (const milliseconds of [1_000, 2_500, 5_500]) {
     await page.clock.fastForward(milliseconds);
     await page.waitForFunction((minimum: number) => window.__loomexCalls.length >= minimum, milliseconds === 1_000 ? 1 : milliseconds === 2_500 ? 2 : 3);
@@ -1269,7 +1270,7 @@ test("prepared run uses bound names, hides UUIDs by default, and preserves exact
   } } }]; });
   await app.getByRole("button", { name: "Start run", exact: true }).click();
   await waitForToolCount(page, "loomex_run_get", 1);
-  await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
+  await app.getByText("Running. Updates appear here automatically.", { exact: true }).waitFor();
   const calls = await page.evaluate(() => window.__loomexCalls);
   const commit = calls.find((call: any) => call.name === "loomex_run_commit");
   assert.deepEqual(Object.keys(commit.arguments).sort(), ["preparationId", "bindingDigest", "confirmationKey", "idempotencyKey"].sort());
@@ -1558,7 +1559,7 @@ test("integrated run setup validates inputs, grants one canonical workspace, pre
   } } }]; });
   await page.evaluate(() => { window.__failModelContextAfterNextToolResponse = true; });
   await app.getByRole("button", { name: "Retry exact start", exact: true }).evaluate((button: any) => { button.click(); button.click(); });
-  await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
+  await app.getByText("Running. Updates appear here automatically.", { exact: true }).waitFor();
   await app.getByText("Draft report", { exact: true }).waitFor();
   const calls = await page.evaluate(() => window.__loomexCalls);
   const retried = calls.filter((call: any) => call.name === "loomex_run_commit").at(-1);
@@ -1612,6 +1613,7 @@ test("substituted commit and cancellation results stay on the sealed run and ret
   const acceptedCommit = (await page.evaluate(() => window.__loomexCalls)).filter((call: any) => call.name === "loomex_run_commit")[1];
   assert.deepEqual(acceptedCommit.arguments, rejectedCommit.arguments);
 
+  await app.locator("#cancellation-details > summary").click();
   await app.getByLabel("reason", { exact: true }).fill("Stop this exact run");
   await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
     execution: { id: "24cb0c0a-0fc8-4a18-a0d9-1105d64e1824", name: "Other run", status: "canceled", currentNodeName: "Substituted cancellation" },
@@ -1690,7 +1692,7 @@ test("unsupported setup fails closed and a timed-out start retains the exact sea
   const calls = await page.evaluate(() => window.__loomexCalls);
   assert.deepEqual(calls[1].arguments, first.arguments);
   assert.deepEqual(calls.find((call: any) => call.name === "loomex_run_get"), { name: "loomex_run_get", arguments: { runId: "1c5f36e6-ac6f-41a3-b593-edf31e691e37" } });
-  await app.getByText("Run started. Its current status is shown below.", { exact: true }).waitFor();
+  await app.getByText("Running. Updates appear here automatically.", { exact: true }).waitFor();
 });
 
 test("all five views share design tokens, responsive components, focus states and host sizing", async (t) => {
@@ -1731,9 +1733,9 @@ test("all five views share design tokens, responsive components, focus states an
       const expectedHeading = mode === "browser" ? "Workflows" : mode === "prepare" ? "Idea to Implementation" : mode === "monitor" ? "Idea to Implementation" : "Tell us about your idea";
       await app.getByRole("heading", { name: expectedHeading, exact: true }).waitFor();
       assert.equal(await app.locator(".app-header, .app-body, .app-footer").count(), 3);
-      assert.equal(await app.locator(".app-header h1").textContent(), "Loomex");
-      assert.equal(await app.locator(".app-footer #connection").textContent(), "Connected");
-      assert.equal(await app.locator("#view-label").textContent(), mode === "browser" ? "Workflow browser" : mode === "prepare" ? "Run workflow" : mode === "monitor" ? "Run monitor" : mode === "authoring" ? "Workflow authoring review" : "Human interaction");
+      assert.equal(await app.locator(".app-header h1").textContent(), mode === "browser" ? "Browse workflows" : mode === "prepare" ? "Review run" : mode === "monitor" ? "Run monitor" : mode === "authoring" ? "Authoring review" : "Your response");
+      assert.equal(await app.locator(".app-header #connection").textContent(), "Connected");
+      assert.equal(await app.locator(".app-mark, #view-label").count(), 0);
       if (mode === "authoring" || mode === "interaction") await app.locator("fieldset textarea").waitFor();
       await waitForSettledAppSize(page);
       const styles = await app.locator("main").evaluate((main: any) => {
@@ -1749,7 +1751,7 @@ test("all five views share design tokens, responsive components, focus states an
       else assert.deepEqual(styles, baseline, `${mode} must use the same shared shell and controls`);
       assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
       const visibleAction = (await app.locator("#primary").isVisible()) ? app.locator("#primary") : app.locator("#refresh");
-      assert.equal(await visibleAction.evaluate((button: any) => button.getBoundingClientRect().height >= 42), true);
+      assert.equal(await visibleAction.evaluate((button: any) => button.getBoundingClientRect().height >= 36), true);
       assert.equal(await app.locator("#diagnostics, #state, #json-answer").count(), 0);
       if (directory) await app.locator("main").screenshot({ path: resolve(directory, `${mode}-${width < 520 ? "mobile" : theme}.png`) });
       const focusTarget = (await app.locator("textarea").count()) ? app.locator("textarea").first() : visibleAction;
@@ -1851,7 +1853,7 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   await app.locator("#summary.error").waitFor();
   assert.equal(await app.getByRole("button", { name: /^Prepare run/ }).isDisabled(), true);
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
-  await app.getByText("Choose a workflow to review or prepare.").waitFor();
+  await app.locator("#summary.error").waitFor({ state: "hidden" });
   assert.equal(await app.getByRole("button", { name: /^Prepare run/ }).isEnabled(), true);
   const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
   if (directory) { await mkdir(directory, { recursive: true }); await app.locator("main").screenshot({ path: resolve(directory, "browser-mobile.png") }); }
@@ -1882,7 +1884,7 @@ test("authoring workflow detail matches the browser read view and only hands pre
   await app.getByRole("heading", { name: "Future v5", exact: true }).waitFor();
   await app.getByText("Project directory", { exact: true }).waitFor();
   await app.getByText("gpt-5.6-luna · medium effort", { exact: true }).waitFor();
-  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).evaluate((button: any) => button.getBoundingClientRect().height >= 42), true);
+  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).evaluate((button: any) => button.getBoundingClientRect().height >= 36), true);
   assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
   const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
   if (directory) {
@@ -1913,7 +1915,7 @@ test("authoring workflow detail matches the browser read view and only hands pre
   }, detail);
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
   await waitForCallCount(page, 3);
-  await app.getByText("Review this workflow before preparing a run.", { exact: true }).waitFor();
+  await app.locator("#summary.error").waitFor({ state: "hidden" });
   assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).isEnabled(), true);
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls))[2], { name: "loomex_workflow_get", arguments: { workflowId: id, version: "5" } });
 
@@ -2001,7 +2003,7 @@ test("workflow browser restores scope, handles large responses and shares respon
     const rowHeights = await app.locator(".workflow-row").evaluateAll((items: any[]) => items.map((item) => item.getBoundingClientRect().height));
     if (width === 760) assert.ok(rowHeights.every((height: number) => height <= 90), `Desktop workflow rows should remain compact: ${rowHeights.join(", ")}`);
     assert.equal(await app.locator(".workflow-row.ui-card").count(), 0);
-    assert.equal(await app.locator(".workflow-row-actions button").evaluateAll((buttons: any[]) => buttons.every((button) => button.getBoundingClientRect().height >= 42)), true);
+    assert.equal(await app.locator(".workflow-row-actions button").evaluateAll((buttons: any[]) => buttons.every((button) => button.getBoundingClientRect().height >= 36)), true);
     await app.getByLabel("Search workflows", { exact: true }).focus();
     assert.equal(await app.getByLabel("Search workflows", { exact: true }).evaluate((el: any) => el.ownerDocument.defaultView.getComputedStyle(el).outlineStyle), "solid");
     await waitForSettledAppSize(page);
@@ -2032,4 +2034,47 @@ test("workflow browser restores scope, handles large responses and shares respon
   await app.locator("#summary.error").waitFor();
   assert.equal(await page.evaluate(() => window.__loomexCalls.length), 0);
   assert.match((await page.evaluate(() => window.__loomexMessages))[0].content[0].text, /loomex_response_read/);
+});
+
+test("compact controls expose accessible icons, dismissible information, activity and a stable header clock", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium required for compact UI interaction checks");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 900 }, reducedMotion: "reduce" });
+  const app = await mountApp(page, "browser", { workflows: [], nextCursor: null });
+  const info = app.getByRole("button", { name: "Connection information", exact: true });
+  await info.focus();
+  await app.getByRole("tooltip").waitFor();
+  assert.equal(await info.getAttribute("aria-describedby"), "ui-tooltip");
+  assert.equal(await app.getByRole("tooltip").textContent(), "Connected");
+  await page.keyboard.press("Escape");
+  assert.equal(await app.getByRole("tooltip").count(), 0);
+  await info.click();
+  await app.getByRole("tooltip").waitFor();
+  await app.getByRole("tooltip").hover();
+  assert.equal(await app.getByRole("tooltip").isVisible(), true);
+  await app.locator("#workflow-search").focus();
+  assert.equal(await app.getByRole("tooltip").count(), 0);
+  assert.equal(await page.evaluate(() => window.__loomexCalls.length), 0, "Information controls are local presentation only");
+  assert.equal(await app.locator("button:visible").evaluateAll((buttons: any[]) => buttons.every(button =>
+    button.querySelector('svg[aria-hidden="true"]') && button.getAttribute("aria-label") && button.querySelector(".sr-only"))), true);
+  const searchBounds = await app.locator(".workflow-search").boundingBox();
+  assert.ok(searchBounds.height <= 44, "Search controls occupy one compact row");
+  assert.equal(await app.locator(".app-footer").isVisible(), false, "Empty action bars reserve no space");
+  await page.evaluate(() => { window.__workflowDelayMs = 500; });
+  await app.getByRole("button", { name: "Refresh", exact: true }).click();
+  await app.locator("#activity").waitFor();
+  assert.equal(await app.locator("#activity").textContent(), "Loading workflows…");
+  assert.equal(await app.locator("#activity").evaluate((node: any) => node.ownerDocument.defaultView.getComputedStyle(node, "::before").animationName), "none");
+  await app.locator("#activity").waitFor({ state: "hidden" });
+  const terminal = await mountApp(page, "monitor", { execution: { id: "compact-run", workflowName: "A finished workflow", status: "completed",
+    startedAt: "2026-09-06T08:00:00.000Z", completedAt: "2026-09-06T08:02:05.000Z" } });
+  assert.equal(await terminal.locator(".app-header #run-clock").textContent(), "2m 5s");
+  assert.equal(await terminal.locator("#run-clock").getAttribute("aria-label"), "Elapsed time: 2m 5s");
+  assert.equal(await terminal.locator("#context .ui-card").count(), 0, "Run status uses an inline hierarchy, not statistic cards");
+  await terminal.getByRole("button", { name: "Run timing", exact: true }).focus();
+  assert.match(await terminal.getByRole("tooltip").textContent(), /Started:.*Completed:/);
+  await page.waitForTimeout(1100);
+  assert.equal(await terminal.locator("#run-clock").textContent(), "2m 5s", "Terminal duration does not keep ticking");
 });

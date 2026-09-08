@@ -12,8 +12,8 @@
       --green-700: #18765e; --green-600: #237e66;
       --red-700: #b3263a; --red-300: #ff8c9b; --white: #fff;
       --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px; --space-6: 24px;
-      --radius-small: 6px; --radius-control: 9px; --radius-card: 12px;
-      --font-small: 12px; --font-body: 14px; --font-title: 27px;
+      --radius-small: 6px; --radius-control: 7px; --radius-card: 8px;
+      --font-small: 12px; --font-body: 14px; --font-title: 20px;
       --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
       /* Semantic tokens: themes change these, never individual views. */
@@ -27,49 +27,48 @@
       --surface: color-mix(in srgb, var(--foreground) 3%, var(--background));
       --focus: color-mix(in srgb, var(--accent) 60%, var(--foreground));
       /* Component tokens: shared shell, cards and controls. */
-      --shell-width: 720px; --shell-padding: var(--space-6); --section-gap: var(--space-5);
-      --card-padding: var(--space-4); --card-background: var(--background);
-      --control-height: 42px; --control-border: color-mix(in srgb, var(--foreground) 44%, transparent);
+      --shell-width: 720px; --shell-padding: var(--space-3); --section-gap: var(--space-3);
+      --card-padding: var(--space-3); --card-background: var(--background);
+      --control-height: 36px; --control-border: color-mix(in srgb, var(--foreground) 44%, transparent);
       font: var(--font-body)/1.5 var(--font-sans);
     }
     @media (prefers-color-scheme: dark) { :root { --accent: var(--green-600); --danger: var(--red-300); } }
     * { box-sizing: border-box; }
     body { margin: 0; color: var(--foreground); background: var(--background); }
     main { display: grid; width: 100%; max-width: var(--shell-width); margin: 0 auto; padding: 0 var(--shell-padding); }
-    .app-header, .app-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-    .app-header { min-height: 72px; border-bottom: 1px solid var(--line); }
-    .app-brand { display: flex; align-items: center; min-width: 0; gap: var(--space-3); }
-    .app-mark { display: grid; flex: none; place-items: center; width: 30px; height: 30px; border-radius: 10px; background: var(--accent); color: var(--on-accent); font-size: 15px; font-weight: 800; }
-    .app-heading { min-width: 0; display: grid; gap: 1px; }
-    h1 { margin: 0; font-size: 15px; font-weight: 750; line-height: 1.25; }
-    #view-label { margin: 0; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
-    .app-body { display: grid; gap: var(--section-gap); padding: var(--space-5) 0; }
-    .app-footer { min-height: 68px; border-top: 1px solid var(--line); }
-    #connection { flex: none; font-size: 11px; color: var(--muted); }
+    .app-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 48px; }
+    h1 { margin: 0; font-size: 13px; font-weight: 650; line-height: 1.3; color: var(--muted); }
+    .header-tools { display: flex; align-items: center; gap: var(--space-1); }
+    .app-body { display: grid; gap: var(--section-gap); padding: 0 0 var(--space-2); }
+    .app-footer { padding: var(--space-1) 0 var(--space-2); }
+    .app-footer:not(:has(button:not([hidden]))) { display: none; }
+    .run-clock { display: inline-flex; align-items: center; gap: var(--space-1); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .run-clock svg { width: 14px; height: 14px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
     #summary { margin: 0; padding: 0; border: 0; background: transparent; font-size: 13px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
     #summary.error { color: var(--danger); background: var(--danger-soft); border-radius: var(--radius-control); padding: var(--space-3) var(--space-4); }
     .ui-stack, .field { display: grid; gap: var(--section-gap); }
     .ui-hero, .request-copy { display: grid; gap: var(--space-2); }
     .ui-hero h2, .request-copy h2 { margin: 0; font-size: var(--font-title); line-height: 1.2; font-weight: 700; letter-spacing: -.035em; overflow-wrap: anywhere; }
     .request-copy p { margin: 0; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
-    .ui-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--font-small); }
+    .ui-meta { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--font-small); }
     .ui-badge { max-width: 100%; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: var(--radius-small); padding: 2px 7px; font-size: 11px; font-weight: 650; }
     .ui-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
     .ui-card, fieldset { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: var(--radius-card); padding: var(--card-padding); background: var(--card-background); }
     .ui-card { display: grid; align-content: start; gap: var(--space-2); }
-    .ui-label { margin: 0; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .045em; text-transform: uppercase; }
+    .ui-label { margin: 0; color: var(--muted); font-size: 12px; font-weight: 550; }
     .ui-value { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
     .workspace-path { margin: 0; font: 11px/1.6 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
     .provider-row { display: grid; gap: 2px; }
     .ui-caption, .hint, .form-guide { margin: 0; font-size: var(--font-small); line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
-    .ui-section { border-top: 1px solid var(--line); padding-top: var(--space-4); display: grid; gap: var(--space-3); }
+    .ui-section { border-top: 1px solid var(--line); padding-top: var(--space-2); display: grid; gap: var(--space-3); }
     .ui-section h3 { margin: 0; }
     .workflow-rows { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
     .workflow-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-2) 0; border-bottom: 1px solid var(--line); }
     .workflow-row-copy { min-width: 0; display: grid; gap: 2px; }
     .workflow-row-actions, .workflow-search-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
     .workflow-row-actions button, .workflow-search-actions button { min-height: var(--control-height); padding: var(--space-2) var(--space-3); }
-    .workflow-detail { display: grid; gap: var(--space-4); }
+    .workflow-detail { display: grid; gap: var(--space-3); }
     .workflow-detail-heading { display: flex; align-items: start; justify-content: space-between; gap: var(--space-3); }
     .workflow-detail-heading .ui-hero { min-width: 0; }
     .workflow-detail-section { display: grid; gap: var(--space-2); border-top: 1px solid var(--line); padding-top: var(--space-3); }
@@ -94,8 +93,8 @@
     .ui-disclosure { color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); padding-top: var(--space-3); }
     .ui-disclosure summary { cursor: pointer; width: fit-content; padding: var(--space-1) 0; }
     .ui-disclosure dl { padding-top: var(--space-3); font-size: 11px; }
-    .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
-    .app-body > .actions, .app-body .workflow-detail > .actions, .app-body nav.actions, .app-body section.actions { border-top: 1px solid var(--line); padding-top: var(--space-4); }
+    .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+    .app-body > .actions, .app-body .workflow-detail > .actions, .app-body nav.actions, .app-body section.actions { border-top: 1px solid var(--line); padding-top: var(--space-2); }
     button, input, select, textarea { font: inherit; color: inherit; background: var(--background); border-radius: var(--radius-control); border: 1px solid var(--control-border); padding: var(--space-2) var(--space-3); }
     button { min-height: var(--control-height); padding: var(--space-2) var(--space-4); cursor: pointer; background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 650; }
     button.secondary { background: transparent; color: var(--foreground); border-color: var(--line); font-weight: 550; }
@@ -107,13 +106,13 @@
     button:disabled { cursor: not-allowed; opacity: .48; }
     input[type="checkbox"], input[type="radio"] { width: 17px; height: 17px; margin: 0; padding: 0; accent-color: var(--accent); flex: none; }
     input:not([type="checkbox"]):not([type="radio"]), select, textarea { width: 100%; min-width: 0; min-height: var(--control-height); }
-    textarea { min-height: 112px; resize: vertical; }
+    textarea { min-height: 80px; resize: vertical; }
     button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
     input:disabled, select:disabled, textarea:disabled { color: var(--muted); background: var(--surface); cursor: not-allowed; }
     legend { max-width: 100%; padding: 0 var(--space-1); font-weight: 650; overflow-wrap: anywhere; }
     .required-mark { color: var(--danger); }
     .control-stack { display: grid; gap: var(--space-3); }
-    .choice { display: flex; align-items: flex-start; gap: var(--space-2); min-height: var(--control-height); border: 1px solid var(--line); border-radius: var(--radius-control); padding: var(--space-3); background: var(--background); cursor: pointer; font-weight: 550; }
+    .choice { display: flex; align-items: flex-start; gap: var(--space-2); min-height: var(--control-height); border: 1px solid var(--line); border-radius: var(--radius-control); padding: var(--space-2); background: var(--background); cursor: pointer; font-weight: 550; }
     .choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
     .choice:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
     .choice:has(input:disabled), .rating-choice:has(input:disabled) { cursor: not-allowed; opacity: .65; }
@@ -133,38 +132,57 @@
     .rating-choice input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 3px; }
     [aria-invalid="true"] { border-color: var(--danger) !important; }
     [hidden] { display: none !important; }
+    button.icon-button { display: inline-grid; place-items: center; width: var(--control-height); min-width: var(--control-height); padding: 0; flex: none; }
+    .icon-button svg { width: 18px; height: 18px; pointer-events: none; }
+    button.info-button { color: var(--muted); background: transparent; border-color: transparent; }
+    .tooltip { position: fixed; z-index: 10; max-width: min(300px, calc(100vw - 16px)); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--foreground); color: var(--background); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; box-shadow: 0 3px 12px #0002; }
+    .inline-info { display: inline-flex; align-items: center; gap: var(--space-1); }
+    .run-meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); color: var(--muted); font-size: 13px; }
+    .run-status { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; color: var(--foreground); }
+    .run-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+    .run-status[data-state="completed"]::before, .run-status[data-state="succeeded"]::before { background: var(--accent); }
+    .run-status[data-state="failed"]::before { background: var(--danger); }
+    .run-status[data-state="running"]::before { background: var(--accent); animation: breathe 1.8s ease-in-out infinite; }
+    #summary:empty, #summary[data-suppressed="true"]:not(.error) { display: none; }
+    .activity { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; color: var(--muted); }
+    .activity::before, button[aria-busy="true"]::before { content: ''; flex: none; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
+    button[aria-busy="true"] svg { display: none; }
+    .workflow-search { display: flex; align-items: center; gap: var(--space-2); }
+    .workflow-search input { flex: 1; }
+    .workflow-search-actions { flex-wrap: nowrap; }
+    .workflow-row-copy > .ui-caption { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes breathe { 50% { opacity: .35; } }
     @media (max-width: 520px) {
-      :root { --shell-padding: var(--space-4); --font-title: 24px; }
+      :root { --shell-padding: var(--space-3); }
       .ui-grid { grid-template-columns: 1fr; }
-      .actions { display: grid; grid-template-columns: 1fr; }
-      .actions button { width: 100%; }
-      .workflow-row { grid-template-columns: 1fr; }
-      .workflow-row-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .workflow-row-actions button { width: 100%; }
-      .workflow-detail-heading { display: grid; }
-      .workflow-detail-heading > button { width: 100%; }
-      .app-footer { align-items: stretch; flex-direction: column-reverse; padding: var(--space-4) 0; }
-      .app-footer #connection { align-self: center; }
+      .workflow-detail-item { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     }
-    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+    @media (pointer: coarse) { :root { --control-height: 44px; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
   </style>
 </head>
 <body data-mode="__LOOMEX_MODE__">
 <main>
   <header class="app-header">
-    <div class="app-brand"><span class="app-mark" aria-hidden="true">L</span><div class="app-heading"><h1 id="title">Loomex</h1><p id="view-label">Workflow</p></div></div>
+    <h1 id="title">Workflows</h1>
+    <div class="header-tools">
+      <span id="run-clock" class="run-clock" hidden></span>
+      <span id="connection" class="sr-only">Connecting…</span>
+      <button id="connection-info" class="secondary" type="button">Connection information</button>
+      <button id="refresh" class="secondary" type="button" disabled>Refresh</button>
+    </div>
   </header>
   <section class="app-body" aria-label="Loomex workspace">
-    <p id="summary" class="notice" role="status" aria-live="polite">Waiting for the authoritative tool result.</p>
+    <p id="activity" class="activity" role="status" hidden></p>
+    <p id="summary" class="notice" role="status" aria-live="polite">Loading this view…</p>
     <p id="support-reference" class="hint" hidden></p>
     <section id="error-details" class="ui-stack" aria-label="Action details" hidden></section>
     <section id="context" aria-label="Review details" hidden></section>
     <section id="form" class="field" hidden></section>
   </section>
   <footer class="app-footer">
-    <span id="connection">Connecting…</span>
     <div class="actions">
-      <button id="refresh" class="secondary" type="button" disabled>Refresh</button>
       <button id="secondary" class="secondary" type="button" hidden disabled></button>
       <button id="primary" type="button" hidden disabled></button>
     </div>
@@ -184,7 +202,7 @@
   const primary = document.getElementById("primary");
   const secondary = document.getElementById("secondary");
   const title = document.getElementById("title");
-  const viewLabel = document.getElementById("view-label");
+
   const pending = new Map();
   const mutationKeys = new Map();
   const mutationOperations = new Map();
@@ -199,14 +217,147 @@
   let runFlow = null;
 
   const labels = {
-    browser: "Workflow browser",
-    authoring: "Workflow authoring review",
-    prepare: "Run workflow",
+    browser: "Browse workflows",
+    authoring: "Authoring review",
+    prepare: "Review run",
     monitor: "Run monitor",
-    interaction: "Human interaction"
+    interaction: "Your response"
   };
-  title.textContent = "Loomex";
-  viewLabel.textContent = labels[mode] || "Workflow";
+  title.textContent = labels[mode] || "Workflow";
+
+  // Presentation helpers never determine mutation arguments or execution authority.
+  const activeRequests = new Map();
+  const iconPaths = {
+    info: "M12 17v-5m0-4h.01 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
+    play: "m8 5 11 7-11 7Z", refresh: "M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-1l2 6 M4 12l2 6a7 7 0 0 0 12-1",
+    search: "M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
+    eye: "M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12 M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+    back: "m12 5-7 7 7 7 M5 12h15", next: "m12 5 7 7-7 7 M19 12H4",
+    check: "m5 12 4 4L19 6", close: "m6 6 12 12 M6 18 18 6",
+    stop: "M6 6h12v12H6Z", edit: "m14 5 5 5 M4 20l5-1L21 7l-4-4L5 15Z",
+    shield: "m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z m-4 9 3 3 5-6",
+    clock: "M12 6v6l4 2 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
+    message: "M21 15a3 3 0 0 1-3 3H8l-5 3V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3Z",
+  };
+  function icon(name) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    for (const [key, value] of Object.entries({ viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false" })) svg.setAttribute(key, value);
+    const path = document.createElementNS(svg.namespaceURI, "path");
+    path.setAttribute("d", iconPaths[name] || iconPaths.next);
+    svg.append(path);
+    return svg;
+  }
+  function actionIcon(label) {
+    if (/information|limits|timing/i.test(label)) return "info";
+    if (/retry|refresh|check runner/i.test(label)) return "refresh";
+    if (/back|previous/i.test(label)) return "back";
+    if (/clear|reject/i.test(label)) return "close";
+    if (/search/i.test(label)) return "search";
+    if (/cancel/i.test(label)) return "stop";
+    if (/approve/i.test(label)) return "check";
+    if (/edit/i.test(label)) return "edit";
+    if (/grant/i.test(label)) return "shield";
+    if (/wait/i.test(label)) return "clock";
+    if (/conversation/i.test(label)) return "message";
+    if (/start|prepare run/i.test(label)) return "play";
+    if (/view|review/i.test(label)) return "eye";
+    return "next";
+  }
+  function setAction(button, label) {
+    button.classList.add("icon-button");
+    button.setAttribute("aria-label", label);
+    button.dataset.tooltip = label;
+    button.replaceChildren(icon(actionIcon(label)), element("span", { className: "sr-only" }, label));
+  }
+  function infoButton(label, description) {
+    const button = element("button", { type: "button", className: "secondary info-button" }, label);
+    button.dataset.tooltip = description;
+    return button;
+  }
+  const tooltip = element("div", { id: "ui-tooltip", className: "tooltip", role: "tooltip", hidden: true });
+  document.body.append(tooltip);
+  let tooltipTarget;
+  let tooltipCloseTimer;
+  function hideTooltip() {
+    clearTimeout(tooltipCloseTimer);
+    tooltip.hidden = true;
+    tooltipTarget?.removeAttribute("aria-describedby");
+    tooltipTarget = undefined;
+  }
+  function showTooltip(target) {
+    if (!target?.dataset.tooltip || target.disabled) return;
+    clearTimeout(tooltipCloseTimer);
+    if (tooltipTarget !== target) hideTooltip();
+    tooltipTarget = target;
+    tooltip.textContent = target.id === "connection-info" ? connection.textContent : target.dataset.tooltip;
+    tooltip.hidden = false;
+    target.setAttribute("aria-describedby", tooltip.id);
+    const rect = target.getBoundingClientRect();
+    const box = tooltip.getBoundingClientRect();
+    const width = document.documentElement.clientWidth;
+    const height = document.documentElement.clientHeight;
+    tooltip.style.left = `${Math.max(8, Math.min(rect.right - box.width, width - box.width - 8))}px`;
+    const top = rect.bottom + box.height + 8 <= height ? rect.bottom + 4 : rect.top - box.height - 4;
+    tooltip.style.top = `${Math.max(4, top)}px`;
+  }
+  function deferTooltipClose() {
+    clearTimeout(tooltipCloseTimer);
+    tooltipCloseTimer = setTimeout(() => {
+      if (tooltipTarget !== document.activeElement && !tooltip.matches(":hover") && !tooltipTarget?.matches(":hover")) hideTooltip();
+    }, 120);
+  }
+  document.addEventListener("pointerover", (event) => { const target = event.target.closest?.("[data-tooltip]"); if (target) showTooltip(target); });
+  document.addEventListener("pointerout", deferTooltipClose);
+  document.addEventListener("focusin", (event) => { const target = event.target.closest?.("[data-tooltip]"); if (target) showTooltip(target); else hideTooltip(); });
+  document.addEventListener("focusout", deferTooltipClose);
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") hideTooltip(); });
+  document.addEventListener("click", (event) => {
+    const target = event.target.closest?.(".info-button");
+    if (target) showTooltip(target);
+    else hideTooltip();
+  });
+  window.addEventListener("resize", () => { if (tooltipTarget === document.activeElement) showTooltip(tooltipTarget); else hideTooltip(); });
+  document.addEventListener("scroll", () => { if (tooltipTarget === document.activeElement) showTooltip(tooltipTarget); else hideTooltip(); }, true);
+
+  function updateActivity() {
+    const activity = document.getElementById("activity");
+    if (!activity) return;
+    const tool = [...activeRequests.values()].at(-1);
+    const descriptions = {
+      "ui/initialize": "Connecting…", loomex_run_commit: "Starting your run…",
+      loomex_run_prepare: "Preparing your review…", loomex_run_setup: "Loading run inputs…",
+      loomex_workspace_grant: "Checking workspace access…", loomex_run_wait: "Watching for the next update…",
+      loomex_run_get: "Updating run status…", loomex_interaction_respond: "Sending your answer…",
+      loomex_interaction_approve: "Sending your decision…", loomex_run_cancel: "Requesting cancellation…",
+      loomex_workflows_list: "Loading workflows…", loomex_workflow_get: "Loading workflow details…",
+    };
+    const text = tool ? descriptions[tool] || "Updating…" : "";
+    if (activity.textContent !== text) activity.textContent = text;
+    activity.hidden = !tool;
+    summary.dataset.suppressed = String(Boolean(tool) && !summary.classList.contains("error"));
+  }
+  function updateClock() {
+    const clock = document.getElementById("run-clock");
+    const run = runFlow?.stage === "monitor" ? runFlow.result?.execution : mode === "monitor" ? latest?.execution : undefined;
+    const duration = run && (!terminalRun(run) || run.completedAt) ? formatDuration(run.startedAt, run.completedAt) : undefined;
+    clock.hidden = !duration;
+    if (duration) {
+      const value = clock.querySelector("span");
+      if (value) value.textContent = duration;
+      else clock.append(icon("clock"), element("span", {}, duration));
+      clock.setAttribute("aria-label", `Elapsed time: ${duration}`);
+    }
+  }
+  function syncChrome() {
+    if (tooltipTarget && (!tooltipTarget.isConnected || tooltipTarget.disabled)) hideTooltip();
+    title.textContent = runFlow ? ({ setup: "Run setup", review: "Review run", monitor: runHumanRequest() ? "Your response" : "Run monitor" }[runFlow.stage])
+      : mode === "browser" && browserSelected ? "Workflow details" : labels[mode] || "Workflow";
+    updateClock();
+    updateActivity();
+    if (runFlow?.stage === "monitor" && runFlow.automaticFailures >= 3 && !runFlow.errorMessage) {
+      summary.textContent = "Live updates paused. Refresh to check the run.";
+    }
+  }
 
   function send(method, params, expectReply = true) {
     const message = { jsonrpc: "2.0", method, params };
@@ -220,11 +371,14 @@
       const timeoutMs = method === "tools/call" ? 60_000 : 5_000;
       const timer = setTimeout(() => {
         pending.delete(id);
+        activeRequests.delete(id); updateActivity();
         reject(new Error(method === "tools/call" ? "The runner did not reply in time." : "The host did not reply in time."));
       }, timeoutMs);
+      activeRequests.set(id, method === "tools/call" ? params.name : method);
+      updateActivity();
       pending.set(id, {
-        resolve: (value) => { clearTimeout(timer); resolve(value); },
-        reject: (error) => { clearTimeout(timer); reject(error); },
+        resolve: (value) => { clearTimeout(timer); activeRequests.delete(id); updateActivity(); resolve(value); },
+        reject: (error) => { clearTimeout(timer); activeRequests.delete(id); updateActivity(); reject(error); },
       });
       window.parent.postMessage(message, "*");
     });
@@ -416,16 +570,22 @@
 
   function renderRun(run) {
     const heading = safeText(run.workflowName) || safeText(run.name) || "Workflow run";
-    reviewFields([
-      ["Status", formatStatus(run.status)],
-      ["Stage", safeText(run.stageLabel)],
-      ["Current step", safeText(run.currentNodeName)],
-      ["Elapsed", formatDuration(run.startedAt, run.completedAt)],
-      ["Started", formatDateTime(run.startedAt)],
-      ["Completed", formatDateTime(run.completedAt)],
-      ["Latest update", safeText(run.lastEvent)],
-      ["Action needed", safeText(run.requiredAction)],
-    ], heading);
+    const hero = element("div", { className: "ui-hero" });
+    hero.append(element("h2", {}, heading));
+    const meta = element("div", { className: "run-meta" });
+    meta.append(element("span", { className: "run-status", dataset: { state: String(run.status || "").toLowerCase() } }, formatStatus(run.status) || "Checking status"));
+    const stage = safeText(run.stageLabel);
+    const step = safeText(run.currentNodeName);
+    if (stage) meta.append(element("span", {}, stage));
+    if (step && step !== stage) meta.append(element("span", {}, step));
+    const dates = [["Started", formatDateTime(run.startedAt)], ["Completed", formatDateTime(run.completedAt)]].filter(([, value]) => value);
+    if (dates.length) meta.append(infoButton("Run timing", dates.map(([label, value]) => `${label}: ${value}`).join(". ")));
+    hero.append(meta);
+    context.className = "ui-stack";
+    context.replaceChildren(hero);
+    context.hidden = false;
+    if (safeText(run.lastEvent)) context.append(element("p", { className: "ui-caption" }, safeText(run.lastEvent)));
+    if (safeText(run.requiredAction)) context.append(element("p", { className: "ui-callout" }, safeText(run.requiredAction)));
     const wrapper = context.firstElementChild ? context : null;
     const presentation = runPresentation(run);
     if (wrapper && presentation) {
@@ -482,7 +642,8 @@
     const path = typeof binding.workspacePath === "string" ? binding.workspacePath : "";
     workspace.append(element("p", { className: "ui-value" }, path.split("/").filter(Boolean).at(-1) || "Workspace unavailable"));
     workspace.append(element("p", { className: "workspace-path" }, path));
-    workspace.append(element("p", { className: "ui-caption" }, "Local Loomex runner · This machine"));
+    workspace.querySelector("h3").classList.add("inline-info");
+    workspace.querySelector("h3").append(infoButton("Workspace information", "Runs locally on this Mac. The full path below is the starting directory for this run."));
     grid.append(workspace);
     const providers = element("section", { className: "ui-card", "aria-label": "AI providers" });
     providers.append(element("h3", { className: "ui-label" }, "AI providers"));
@@ -523,7 +684,8 @@
     const access = element("section", { className: "ui-callout" });
     access.append(element("h3", {}, "Runs with your Mac’s permissions"));
     access.append(element("p", {}, "Can read and change files and run commands as your macOS user. The workspace is the starting location, with no sandbox guarantee."));
-    access.append(element("p", {}, "No product time, output, or concurrency limits. You can request cancellation while it runs."));
+    access.querySelector("h3").classList.add("inline-info");
+    access.querySelector("h3").append(infoButton("Execution limits and cancellation", "No product time, output, or concurrency limits. You can request cancellation while it runs."));
     review.append(access);
     const references = element("details", { className: "ui-disclosure" });
     references.append(element("summary", {}, "Execution references and configuration"));
@@ -758,7 +920,7 @@
     form.hidden = false; form.className = "setup-fields"; form.replaceChildren();
     errorDetails.hidden = true; errorDetails.replaceChildren();
     refresh.hidden = true; secondary.hidden = !runFlow.returnToBrowser;
-    if (runFlow.returnToBrowser) { secondary.textContent = "Back to workflows"; secondary.disabled = runFlow.busy; }
+    if (runFlow.returnToBrowser) { setAction(secondary, "Back to workflows"); secondary.disabled = runFlow.busy; }
     const hero = element("div", { className: "ui-hero" });
     hero.append(element("h2", {}, safeText(data?.workflow?.name) || "Set up run"));
     const version = workflowVersionNumber(selected?.version);
@@ -770,7 +932,7 @@
     if (!runFlow.analysis.supported) {
       context.append(element("div", { className: "ui-callout" }, runFlow.analysis.reason));
       form.hidden = true;
-      primary.hidden = false; primary.textContent = "Continue in conversation"; primary.disabled = !connected || runFlow.busy;
+      primary.hidden = false; setAction(primary, "Continue in conversation"); primary.disabled = !connected || runFlow.busy;
       summary.textContent = "This workflow’s inputs need to be collected in the conversation.";
       return;
     }
@@ -794,16 +956,16 @@
     context.append(access);
     primary.hidden = false;
     const operation = runFlow.operations.values().next().value;
-    primary.textContent = operation ? `Retry exact ${operation.label}` : runFlow.canonicalWorkspace ? "Review run" : "Grant workspace access";
+    setAction(primary, operation ? `Retry exact ${operation.label}` : runFlow.canonicalWorkspace ? "Review run" : "Grant workspace access");
     primary.disabled = !connected || runFlow.busy;
     summary.classList.remove("error"); summary.setAttribute("role", "status");
-    if (!operation && !runFlow.errorMessage) summary.textContent = runFlow.canonicalWorkspace ? "Workspace access granted. Review the inputs, then prepare the exact run." : "Enter the required inputs and explicitly grant the workspace before review.";
+    if (!operation && !runFlow.errorMessage) summary.textContent = runFlow.canonicalWorkspace ? "Workspace authorized. Review your inputs to continue." : "Add your inputs and authorize the workspace.";
     if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
   }
 
   function renderRunReview() {
-    form.hidden = true; form.replaceChildren(); refresh.hidden = false; refresh.textContent = "Check runner";
-    secondary.hidden = !runFlow.setup; secondary.textContent = "Edit setup"; secondary.disabled = runFlow.busy || runFlow.operations.size > 0;
+    form.hidden = true; form.replaceChildren(); refresh.hidden = false; setAction(refresh, "Check runner");
+    secondary.hidden = !runFlow.setup; setAction(secondary, "Edit setup"); secondary.disabled = runFlow.busy || runFlow.operations.size > 0;
     preparationView(runFlow.prepared);
     const review = context.firstElementChild;
     const steps = element("ol", { className: "progress-steps", "aria-label": "Run progress" });
@@ -812,15 +974,15 @@
     context.setAttribute("aria-busy", String(runFlow.busy));
     primary.hidden = false;
     const operation = runFlow.operations.values().next().value;
-    primary.textContent = runFlow.preparationStale
+    setAction(primary, runFlow.preparationStale
       ? operation ? "Retry exact preparation" : "Review again"
-      : operation ? "Retry exact start" : "Start run";
+      : operation ? "Retry exact start" : "Start run");
     primary.disabled = !connected || runFlow.busy || (runFlow.preparationStale ? !reprepareArguments() : !preparationReviewable(runFlow.prepared));
     if (!operation && !runFlow.errorMessage) {
       summary.classList.remove("error"); summary.setAttribute("role", "status");
       summary.textContent = runFlow.preparationStale
         ? "This preparation is no longer current. Review a fresh preparation before starting."
-        : "Review the exact prepared run before starting.";
+        : "Confirm the inputs and access below, then start.";
     }
     if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
   }
@@ -1055,8 +1217,8 @@
       const cancelling = operation?.name === "loomex_run_cancel";
       typedForm({ properties: { reason: { type: "string" } } }, cancelling ? { reason: operation.arguments.reason } : {});
       if (cancelling) for (const control of form.querySelectorAll("input, textarea, select")) control.disabled = true;
-      secondary.hidden = false; secondary.textContent = "Back to question"; secondary.disabled = runFlow.busy || runFlow.operations.size > 0;
-      primary.hidden = false; primary.className = "danger"; primary.textContent = operation ? "Retry exact cancellation" : "Cancel run";
+      secondary.hidden = false; setAction(secondary, "Back to question"); secondary.disabled = runFlow.busy || runFlow.operations.size > 0;
+      primary.hidden = false; primary.className = "danger"; setAction(primary, operation ? "Retry exact cancellation" : "Cancel run");
       primary.disabled = !connected || runFlow.busy;
       summary.textContent = "Cancel this run separately from the workflow response.";
       return;
@@ -1070,11 +1232,11 @@
       primary.hidden = false;
       secondary.hidden = false;
       if (responding) {
-        primary.textContent = operation.arguments.decision === "reject" ? "Retry exact rejection" : "Retry exact approval";
+        setAction(primary, operation.arguments.decision === "reject" ? "Retry exact rejection" : "Retry exact approval");
         secondary.hidden = true;
       } else {
-        primary.textContent = "Approve";
-        secondary.textContent = "Reject";
+        setAction(primary, "Approve");
+        setAction(secondary, "Reject");
       }
       primary.disabled = !connected || runFlow.busy || !requestId;
       secondary.disabled = !connected || runFlow.busy || !requestId;
@@ -1083,7 +1245,7 @@
       const formReady = typedForm(schema, initial, request.inputSpec, request);
       if (!responding) restoreRunHumanDraft(request);
       primary.hidden = false;
-      primary.textContent = responding ? "Retry exact response" : "Continue";
+      setAction(primary, responding ? "Retry exact response" : "Continue");
       primary.disabled = !connected || runFlow.busy || !requestId || !formReady;
       secondary.hidden = true;
     }
@@ -1095,21 +1257,21 @@
 
   function renderRunStarted() {
     form.hidden = true; form.replaceChildren(); secondary.hidden = true; primary.hidden = true; primary.className = "";
-    refresh.hidden = false; refresh.textContent = "Refresh run"; refresh.disabled = !connected || runFlow.busy;
+    refresh.hidden = false; setAction(refresh, "Refresh run"); refresh.disabled = !connected || runFlow.busy;
     if (runFlow.baselineRequired) {
       renderRun(runFlow.result.execution || {});
       context.setAttribute("aria-busy", String(runFlow.busy));
       summary.classList.remove("error"); summary.setAttribute("role", "status");
-      summary.textContent = "Run started. Verifying its current human request before accepting a response.";
+      summary.textContent = "Run started. Checking for your next question…";
       if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
       return;
     }
     if (runFlow.cancellationRequested && !terminalRun(runFlow.result.execution || {})) {
       renderRun(runFlow.result.execution || {});
       context.setAttribute("aria-busy", String(runFlow.busy));
-      secondary.hidden = false; secondary.textContent = "Wait for update"; secondary.disabled = !connected || runFlow.busy;
+      secondary.hidden = false; setAction(secondary, "Wait for update"); secondary.disabled = !connected || runFlow.busy;
       summary.classList.remove("error"); summary.setAttribute("role", "status");
-      summary.textContent = "Cancellation requested. Refresh or wait for the runner’s final status.";
+      summary.textContent = "Stopping requested. Waiting for the runner to confirm…";
       if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
       scheduleRunWait();
       return;
@@ -1128,14 +1290,27 @@
     context.setAttribute("aria-busy", String(runFlow.busy));
     summary.classList.remove("error"); summary.setAttribute("role", "status");
     const terminal = terminalRun(runFlow.result.execution || {});
-    summary.textContent = terminal ? `${formatStatus(runFlow.result.execution.status)}. Review the result below.` : "Run started. Its current status is shown below.";
+    summary.textContent = terminal ? `${formatStatus(runFlow.result.execution.status)}. Review the result below.`
+      : /waiting|queued|pending|paused/i.test(runFlow.result.execution.status || "")
+        ? "Waiting for the next workflow update…"
+        : "Running. Updates appear here automatically.";
     if (!terminal) {
       const runId = executionId(runFlow.result);
       const operation = runFlow.operations.values().next().value;
-      secondary.hidden = false; secondary.textContent = "Wait for update"; secondary.disabled = !connected || runFlow.busy || !runId || Boolean(operation);
-      primary.hidden = false; primary.className = "danger"; primary.textContent = operation ? "Retry exact cancellation" : "Cancel run";
+      secondary.hidden = false; setAction(secondary, "Wait for update"); secondary.disabled = !connected || runFlow.busy || !runId || Boolean(operation);
+      primary.hidden = false; primary.className = "danger"; setAction(primary, operation ? "Retry exact cancellation" : "Cancel run");
       primary.disabled = !connected || runFlow.busy || !runId;
       typedForm({ properties: { reason: { type: "string" } } }, {});
+      const cancellationDetails = element("details", { className: "ui-disclosure", open: Boolean(operation) || Boolean(runFlow.cancelDetailsOpen), id: "cancellation-details" });
+      cancellationDetails.append(element("summary", {}, "Cancellation reason (optional)"));
+      cancellationDetails.append(...form.childNodes);
+      form.append(cancellationDetails);
+      cancellationDetails.addEventListener("toggle", () => { if (cancellationDetails.isConnected) runFlow.cancelDetailsOpen = cancellationDetails.open; });
+      const reasonDraft = form.querySelector("input");
+      if (reasonDraft && !operation) {
+        reasonDraft.value = runFlow.cancelReasonDraft || "";
+        reasonDraft.addEventListener("input", () => { runFlow.cancelReasonDraft = reasonDraft.value; });
+      }
       if (operation) {
         const reason = form.querySelector("input");
         if (reason) { reason.value = operation.arguments.reason; reason.disabled = true; }
@@ -1146,6 +1321,10 @@
   }
 
   function renderIntegratedRunFlow() {
+    try { renderIntegratedRunFlowContent(); } finally { syncChrome(); }
+  }
+
+  function renderIntegratedRunFlowContent() {
     if (!runFlow) return;
     renderCount += 1;
     errorDetails.replaceChildren();
@@ -1216,7 +1395,7 @@
       const data = dataOf(result);
       if (!selectedWorkflowVersion(data) || data.workflow.id !== id) throw new Error("The exact workflow version could not be verified for run setup.");
       initializeRunSetup(data, true);
-      summary.textContent = "Enter the required inputs and explicitly grant the workspace before review.";
+      summary.textContent = "Add your inputs and authorize the workspace.";
     } catch (error) { setError(error); }
     finally { browserBusy = false; runFlow ? renderIntegratedRunFlow() : renderBrowser(); }
   }
@@ -1568,7 +1747,8 @@
       else if (name in node && name !== "list") node[name] = value;
       else node.setAttribute(name, String(value));
     }
-    if (text) node.textContent = text;
+    if (tag === "button" && text) setAction(node, text);
+    else if (text) node.textContent = text;
     return node;
   }
 
@@ -1730,8 +1910,8 @@
     if (inputType === "text" || inputType === "long_text" || inputType === "date") {
       const labelId = `question-${questionIndex}-control-label`;
       const hintId = inputType === "date" ? `question-${questionIndex}-hint` : undefined;
-      const label = element("label", { id: labelId, className: "field-label", htmlFor: `question-${questionIndex}-value` },
-        inputType === "date" ? "Date" : "Your answer");
+      const label = element("label", { id: labelId, className: "field-label", htmlFor: `question-${questionIndex}-value` });
+      label.append(element("span", { className: "sr-only" }, inputType === "date" ? "Date" : "Your answer"));
       const control = element(inputType === "long_text" ? "textarea" : "input", {
         id: `question-${questionIndex}-value`,
         "aria-labelledby": `${legendId} ${labelId}`,
@@ -2049,7 +2229,7 @@
       browserDetailResponse = null; commit(data);
       }
       authoritativeStateStale = false;
-      summary.textContent = browserSelected ? "Review this workflow before preparing a run." : "Choose a workflow to review or prepare.";
+      summary.textContent = browserSelected ? "" : "";
     } catch (error) { if (epoch === browserEpoch) { authoritativeStateStale = true; setError(error); } }
     finally { if (epoch === browserEpoch) { browserBusy = false; renderBrowser(); } }
   }
@@ -2262,6 +2442,10 @@
   }
 
   function renderBrowser() {
+    try { renderBrowserContent(); } finally { syncChrome(); }
+  }
+
+  function renderBrowserContent() {
     if (runFlow) { renderIntegratedRunFlow(); return; }
     context.hidden = false; context.className = "ui-stack"; context.setAttribute("aria-label", "Workflow browser");
     context.setAttribute("aria-busy", String(browserBusy)); context.replaceChildren();
@@ -2272,19 +2456,19 @@
     context.append(hero);
     const paged = pagedResponse(browserDetailResponse?.data || browserPage);
     if (paged && (!browserSelected || browserDetailResponse)) {
-      renderWorkflowPagedResponse(paged, browserDetailResponse ? { onBack: () => { browserDetailResponse = null; browserSelected = null; renderBrowser(); summary.textContent = "Choose a workflow to review or prepare."; } } : {});
+      renderWorkflowPagedResponse(paged, browserDetailResponse ? { onBack: () => { browserDetailResponse = null; browserSelected = null; renderBrowser(); summary.textContent = ""; } } : {});
       return;
     }
     if (browserSelected) {
       const workflow = browserSelected.workflow;
       renderWorkflowDetail(browserSelected, {
-        onBack: () => { browserSelected = null; renderBrowser(); summary.textContent = "Choose a workflow to review or prepare."; },
+        onBack: () => { browserSelected = null; renderBrowser(); summary.textContent = ""; },
         onPrepare: () => requestWorkflowPreparation(workflow.id),
       });
       return;
     }
-    const search = element("form", { className: "ui-stack", role: "search" });
-    const label = element("label", { htmlFor: "workflow-search" }, "Search workflows");
+    const search = element("form", { className: "workflow-search", role: "search" });
+    const label = element("label", { htmlFor: "workflow-search", className: "sr-only" }, "Search workflows");
     const input = element("input", { id: "workflow-search", type: "search", value: browserArgs.query || "", placeholder: "Search by name", disabled: browserBusy });
     const submit = element("button", { type: "submit", disabled: !connected || browserBusy }, "Search");
     const controls = element("div", { className: "workflow-search-actions" });
@@ -2323,6 +2507,10 @@
   }
 
   function render(result) {
+    try { renderContent(result); } finally { syncChrome(); }
+  }
+
+  function renderContent(result) {
     if (runFlow?.stage === "monitor") captureRunHumanDraft();
     renderCount += 1;
     if (mode === "browser" && !runFlow) {
@@ -2377,7 +2565,7 @@
 
     if (mode === "browser") {
       if (!failed) { browserPage = output; browserSelected = null; browserDetailResponse = null; }
-      summary.textContent = failed ? "Workflows could not be loaded. Try Refresh again." : "Choose a workflow to review or prepare.";
+      summary.textContent = failed ? "Workflows could not be loaded. Try Refresh again." : "";
       renderBrowser();
     } else if (mode === "prepare") {
       if (!failed && selectedWorkflowVersion(output) && !output.preparationId) {
@@ -2392,8 +2580,8 @@
         if (!failed) summary.textContent = "Review the details below before starting.";
         preparationView(output);
         if (!preparationReviewable(output)) summary.textContent = "The execution details could not be verified here. Continue in the conversation to review this preparation before starting.";
-        primary.textContent = preparedCommitTool() === "loomex_run_commit" ? "Start run" : "Start authoring";
-        refresh.hidden = false; refresh.textContent = "Check runner";
+        setAction(primary, preparedCommitTool() === "loomex_run_commit" ? "Start run" : "Start authoring");
+        refresh.hidden = false; setAction(refresh, "Check runner");
         primary.hidden = false;
         primary.disabled = !connected || !preparationReviewable(output) || !findId(output, "preparationId") || !findId(output, "bindingDigest") || !findId(output, "confirmationKey");
         if (!failed && preparedCommitTool() === "loomex_run_commit" && preparationReviewable(output)) {
@@ -2408,7 +2596,7 @@
           ["Result", "Ready to view in the conversation"],
           ["Size", formatBytes(response.sizeBytes)],
         ], "Full results available");
-        primary.textContent = "View results";
+        setAction(primary, "View results");
         primary.hidden = false;
         primary.disabled = !connected;
         return;
@@ -2432,15 +2620,15 @@
       } else if (requestType === "approval" || output.decisionRequired === true) {
         appendRequestCopy(request, request.inputSpec);
         form.hidden = false;
-        secondary.textContent = "Reject";
+        setAction(secondary, "Reject");
         secondary.hidden = false;
         secondary.disabled = !connected || !requestId;
-        primary.textContent = "Approve";
+        setAction(primary, "Approve");
         primary.hidden = false;
         primary.disabled = !connected || !requestId;
       } else {
         const formReady = typedForm(schema, request.answer, request.inputSpec, request);
-        primary.textContent = "Continue";
+        setAction(primary, "Continue");
         primary.hidden = false;
         primary.disabled = !connected || !requestId || !formReady;
       }
@@ -2451,13 +2639,13 @@
       if (sessionId && (schema || request.inputSpec)) {
         renderHumanPresentation(request, request.inputSpec);
         const formReady = typedForm(schema, request.answer || {}, request.inputSpec, request);
-        primary.textContent = "Continue";
+        setAction(primary, "Continue");
         primary.hidden = false;
         primary.disabled = !connected || !formReady;
       } else if (!sessionId && (pagedResponse(output) || (output.workflow && typeof output.workflow === "object"))) {
         summary.textContent = pagedResponse(output)
           ? "The complete workflow response is available in the conversation."
-          : "Review this workflow before preparing a run.";
+          : "";
         renderAuthoringWorkflow(output);
       }
     }
@@ -2500,7 +2688,7 @@
       ? "The server still reports this request as pending. Your original response remains locked; retry sends those exact answers and the same operation ID."
       : "The submission outcome is uncertain. Your original response is locked. Refresh to reconcile, or retry the exact same response and operation ID.";
     secondary.disabled = true;
-    primary.textContent = "Retry exact response";
+    setAction(primary, "Retry exact response");
     primary.disabled = !connected;
     refresh.disabled = !connected;
     operation.uncertain = true;
@@ -2511,11 +2699,11 @@
     if (!operation.uncertain) return;
     for (const control of form.querySelectorAll("input, select, textarea")) control.disabled = false;
     delete form.dataset.uncertain;
-    if (operation.name === "loomex_interaction_respond" || operation.name === "loomex_builder_respond") primary.textContent = "Continue";
-    else if (operation.name === "loomex_run_cancel") primary.textContent = "Cancel run";
+    if (operation.name === "loomex_interaction_respond" || operation.name === "loomex_builder_respond") setAction(primary, "Continue");
+    else if (operation.name === "loomex_run_cancel") setAction(primary, "Cancel run");
     else if (operation.name === "loomex_interaction_decide") {
-      primary.textContent = "Approve";
-      secondary.textContent = "Reject";
+      setAction(primary, "Approve");
+      setAction(secondary, "Reject");
       secondary.disabled = !connected;
     }
   }
@@ -2703,8 +2891,8 @@
         browserDetailResponse = null;
         renderCount += 1;
         summary.classList.remove("error"); summary.setAttribute("role", "status");
-        summary.textContent = "Choose a workflow to review or prepare.";
-        refresh.hidden = false; refresh.textContent = "Refresh";
+        summary.textContent = "";
+        refresh.hidden = false; setAction(refresh, "Refresh");
         renderBrowser();
         return;
       }
@@ -2846,9 +3034,14 @@
     }
   }, { passive: true });
 
+  setAction(refresh, "Refresh");
+  setAction(document.getElementById("connection-info"), "Connection information");
+  document.getElementById("connection-info").classList.add("info-button");
+  setInterval(() => { if (document.visibilityState === "visible") updateClock(); }, 1000);
+
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.13" },
+    appInfo: { name: "loomex", version: "0.2.14" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));
