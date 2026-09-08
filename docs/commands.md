@@ -1,6 +1,6 @@
 # Loomex command skills
 
-Loomex ships focused skill entry points alongside natural-language access. Select a skill from the host skill picker or mention it explicitly (`$loomex-run` in Codex CLI). These are model-guided workflows over the existing MCP tools, not native slash commands, a shell parser, or a direct-execution API. Host pickers may show the Loomex plugin namespace.
+Loomex ships focused skill entry points alongside natural-language access. Select a skill from the host skill picker or mention it explicitly (`$loomex:loomex-run` in this installed Codex CLI). These are model-guided workflows over the existing MCP tools, not native slash commands, a shell parser, or a direct-execution API. The installed Codex catalog prefixes these skills with `loomex:`; select that entry from the picker for an explicit invocation.
 
 ## Available commands
 
@@ -25,12 +25,12 @@ Loomex ships focused skill entry points alongside natural-language access. Selec
 ## Examples
 
 ```text
-$loomex-browse idea
-$loomex-run Idea to Implementation in /Users/me/Projects/example
-$loomex-status <run-id>
-$loomex-follow <run-id>
-$loomex-answer <run-id>
-$loomex-results <run-id>
+$loomex:loomex-browse idea
+$loomex:loomex-run Idea to Implementation in /Users/me/Projects/example
+$loomex:loomex-status <run-id>
+$loomex:loomex-follow <run-id>
+$loomex:loomex-answer <run-id>
+$loomex:loomex-results <run-id>
 ```
 
 Text after the skill expresses your intent; it is not parsed as shell arguments. Missing workflow, version, workspace or required inputs are collected before execution. Ambiguous names produce a selection. Run IDs refer to existing executions and never cause a new run. `status` reads once; `follow` monitors in the active conversation and pauses for your questions.
