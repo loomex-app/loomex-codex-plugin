@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delete Loomex Run"
+  short_description: "Delete a selected run and owned retained data"
+  default_prompt: "Use $loomex-delete-run to delete the terminal run I explicitly select."

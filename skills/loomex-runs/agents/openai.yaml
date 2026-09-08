@@ -1,0 +1,4 @@
+interface:
+  display_name: "List Loomex Runs"
+  short_description: "Find existing workflow executions"
+  default_prompt: "Use $loomex-runs to list my existing runs."

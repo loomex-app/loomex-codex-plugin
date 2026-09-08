@@ -8,6 +8,12 @@ See [architecture](docs/architecture.md) for component ownership and trust
 boundaries, and [development](docs/development.md) for contract synchronization,
 testing, and packaging rules.
 
+## Command skills
+
+Use focused skills to browse, author, run, follow, answer, and retrieve results.
+See [the command guide](docs/commands.md) for all 15 entry points and examples.
+Natural-language access remains available.
+
 ## Development
 
 Requires the pinned Node.js 24 runtime used by release packaging.

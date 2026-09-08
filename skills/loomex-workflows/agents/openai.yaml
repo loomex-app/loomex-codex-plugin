@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loomex Workflow Help"
+  short_description: "Choose and coordinate Loomex operations"
+  default_prompt: "Use $loomex-workflows to help me choose the right Loomex operation."

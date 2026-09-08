@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publish Loomex Workflow"
+  short_description: "Validate and publish workflow versions"
+  default_prompt: "Use $loomex-publish to validate and publish the workflow I select."

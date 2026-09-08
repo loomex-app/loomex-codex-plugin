@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cancel Loomex Run"
+  short_description: "Cancel the selected workflow execution"
+  default_prompt: "Use $loomex-cancel to cancel the run I explicitly select."

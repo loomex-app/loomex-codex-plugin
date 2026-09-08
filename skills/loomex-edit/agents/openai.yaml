@@ -1,0 +1,4 @@
+interface:
+  display_name: "Edit Loomex Workflow"
+  short_description: "Review and edit an existing workflow"
+  default_prompt: "Use $loomex-edit to edit the workflow I select."

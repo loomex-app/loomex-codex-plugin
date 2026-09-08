@@ -1,0 +1,11 @@
+# Authoring sessions
+
+Read `loomex_builder_catalog` before constructing or editing definitions. Preserve requested provider, model and reasoning configuration; use supported catalog schemas rather than invented fields. New secret-reference mappings are unsupported.
+
+For conversational creation, collect the idea and workspace, then use `loomex_builder_prepare`. For conversational edits, first read the selected workflow with `loomex_workflow_get`, collect the requested changes and workspace, then use `loomex_editor_prepare`. List/grant only the user's chosen canonical workspace as in [execution](execution.md). Review the exact returned provider/workspace/host_user/v1 binding and commit only after its acceptance with the corresponding `loomex_builder_commit` or `loomex_editor_commit`. Never substitute a normal workflow run for an authoring session.
+
+Use `loomex_builder_get` with the returned sessionId for both builder and editor state. Follow bounded waits and event pages through the returned sequence, pausing for pending questions, completion or actionable errors. Preserve any edit-session IDs returned by the tools. Ask the user the complete typed question; submit the explicit response with `loomex_builder_respond` or `loomex_editor_respond` for that session. Read current state before retrying an ambiguous answer. Do not route builder questions through generic run interaction tools when the session contract requires its own response tool.
+
+Validate the proposed definition with `loomex_builder_validate` or `loomex_workflow_validate`. Finalize completed builders with `loomex_builder_finalize`; report the actual returned draft/workflow IDs. For editors, preview `loomex_editor_finalize` with confirm false; apply confirm true only after acceptance of that exact preview. A changed preview needs new review. Finalization does not authorize publishing, activation or executing the resulting workflow.
+
+For an explicitly requested direct definition change, `loomex_workflow_create` creates an empty record and `loomex_workflow_update` applies the draft. Read current version first and provide expectedVersion where available; resolve conflicts against fresh state instead of overwriting concurrent edits. Validate before publishing. Do not create an empty workflow record merely to begin conversational builder authoring.

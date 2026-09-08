@@ -1,0 +1,9 @@
+# Prepare and start
+
+For a new run, call `loomex_run_setup` with the exact workflow ID and requested version. It reads the schema and opens the input/workspace form; do not open workflow details as a prerequisite. In headless use, collect missing required inputs and the chosen workspace in conversation. Preserve supplied values; defaults are not consent. If settings.workspaceInputField is present, bind that input to the runner-confirmed canonical workspace path without granting authority from the workflow's own path.
+
+List grants with `loomex_workspaces_list`; grant only the user's chosen workspace with `loomex_workspace_grant`. Use the runner-confirmed canonical path. Resolve the immutable version ID from the chosen workflow version. Prepare with `loomex_run_prepare` only after required inputs, workspace and any requested provider configuration are known. Do not silently substitute an empty input object or a different model.
+
+Review the exact workflow/version, organization, installation, canonical workspace, provider configuration and host_user/v1 execution policy. This policy uses the signed-in host user's permissions; it is not sandbox containment. There are no product duration, concurrency, cumulative output or artifact quotas. Commit with `loomex_run_commit` only after the user accepts the exact preparation binding; return its preparation ID, digest and confirmation key unchanged. A Start click in the UI performs that commit; do not duplicate it in chat.
+
+Changed facts require fresh preparation and review. Stale binding rejection is not permission to reuse an old confirmation. Preserve a preparation after a retryable catalog outage. After a verified accepted start, follow its exact run using [monitoring](monitoring.md). A UI handoff must not start another run. If the user requested preparation only, stop at review; if they explicitly requested starting without monitoring, report the run identity after acceptance and stop.

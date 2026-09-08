@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Loomex Workflow"
+  short_description: "Build a workflow from your idea"
+  default_prompt: "Use $loomex-create to create a workflow from my idea."

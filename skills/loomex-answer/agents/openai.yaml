@@ -1,0 +1,4 @@
+interface:
+  display_name: "Answer Loomex Questions"
+  short_description: "Answer a pending question or approval"
+  default_prompt: "Use $loomex-answer to show the pending questions for the run I select."

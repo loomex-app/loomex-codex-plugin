@@ -1,0 +1,4 @@
+interface:
+  display_name: "Connect Loomex"
+  short_description: "Check Loomex readiness and sign-in"
+  default_prompt: "Use $loomex-connect to check my Loomex connection."
