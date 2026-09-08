@@ -273,7 +273,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.2.12 tool catalog", async () => {
+test("SDK stdio discovery exposes only the focused 0.2.13 tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -674,6 +674,32 @@ test("runner error messages are replaced with safe credential-free text", async 
   assert.doesNotMatch(serialized, /never-print-this-token/);
   assert.match(serialized, /temporarily unavailable/);
 });
+
+for (const [code, retryable, expected] of [
+  ["EXECUTION_BINDING_CONFLICT", false, /Review a new preparation/],
+  ["PREPARATION_NOT_FOUND", false, /no longer available/],
+  ["MODEL_CATALOG_UNAVAILABLE", true, /AI model catalog is temporarily unavailable/],
+] as const) {
+  test(`run start ${code} has safe actionable text and retains its machine contract`, async () => {
+    const runner = new FakeRunner((request, socket) => {
+      runner.error(socket, request, code, "private-backend-diagnostic", retryable);
+    });
+    const client = await connect(runner);
+    const result = await client.callTool({ name: "loomex_run_commit", arguments: {
+      preparationId: "733ccce0-6fc0-4fe2-93fb-5c2114878103",
+      bindingDigest: "a".repeat(64),
+      confirmationKey: "d45fcb14-0d41-4f1f-98c1-54c6eeae268c",
+      idempotencyKey: "5b5f356a-208f-4af8-83ec-6e3f3637541a",
+    } });
+    const error = (result.structuredContent as { error: Record<string, unknown> }).error;
+    assert.equal(result.isError, true);
+    assert.equal(error.code, code);
+    assert.equal(error.retryable, retryable);
+    assert.match(String(error.message), expected);
+    assert.doesNotMatch(JSON.stringify(result), /private-backend-diagnostic/);
+    assert.equal(runner.requests.length, 1);
+  });
+}
 
 test("safe run validation issues remain actionable across local control", async () => {
   const runner = new FakeRunner((request, socket) => {

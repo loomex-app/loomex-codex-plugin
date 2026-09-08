@@ -803,7 +803,7 @@
 
   function renderRunReview() {
     form.hidden = true; form.replaceChildren(); refresh.hidden = false; refresh.textContent = "Check runner";
-    secondary.hidden = false; secondary.textContent = "Edit setup"; secondary.disabled = runFlow.busy || runFlow.operations.size > 0;
+    secondary.hidden = !runFlow.setup; secondary.textContent = "Edit setup"; secondary.disabled = runFlow.busy || runFlow.operations.size > 0;
     preparationView(runFlow.prepared);
     const review = context.firstElementChild;
     const steps = element("ol", { className: "progress-steps", "aria-label": "Run progress" });
@@ -812,10 +812,56 @@
     context.setAttribute("aria-busy", String(runFlow.busy));
     primary.hidden = false;
     const operation = runFlow.operations.values().next().value;
-    primary.textContent = operation ? "Retry exact start" : "Start run";
-    primary.disabled = !connected || runFlow.busy || !preparationReviewable(runFlow.prepared);
-    if (!operation && !runFlow.errorMessage) { summary.classList.remove("error"); summary.setAttribute("role", "status"); summary.textContent = "Review the exact prepared run before starting."; }
+    primary.textContent = runFlow.preparationStale
+      ? operation ? "Retry exact preparation" : "Review again"
+      : operation ? "Retry exact start" : "Start run";
+    primary.disabled = !connected || runFlow.busy || (runFlow.preparationStale ? !reprepareArguments() : !preparationReviewable(runFlow.prepared));
+    if (!operation && !runFlow.errorMessage) {
+      summary.classList.remove("error"); summary.setAttribute("role", "status");
+      summary.textContent = runFlow.preparationStale
+        ? "This preparation is no longer current. Review a fresh preparation before starting."
+        : "Review the exact prepared run before starting.";
+    }
     if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
+  }
+
+  function initializePreparedRunReview(data) {
+    const binding = data?.binding && typeof data.binding === "object" ? data.binding : {};
+    runFlow = {
+      stage: "review",
+      prepared: immutableCopy(data),
+      selected: {
+        workflowId: safeText(binding.workflowId, 64),
+        versionId: safeText(binding.versionId, 64),
+        organizationId: safeText(binding.organizationId, 64),
+      },
+      canonicalWorkspace: safeText(binding.workspacePath, 4096),
+      installationId: safeText(binding.installationId, 64),
+      operations: new Map(),
+      busy: false,
+      returnToBrowser: false,
+    };
+  }
+
+  function reprepareArguments() {
+    const binding = runFlow?.prepared?.binding;
+    const selected = runFlow?.selected;
+    if (!binding || !selected?.workflowId || !selected?.versionId || !selected?.organizationId ||
+      binding.workflowId !== selected.workflowId || binding.versionId !== selected.versionId ||
+      binding.organizationId !== selected.organizationId || binding.installationId !== runFlow.installationId ||
+      binding.workspacePath !== runFlow.canonicalWorkspace || binding.executionPolicy !== "host_user/v1" ||
+      !binding.inputs || typeof binding.inputs !== "object" || Array.isArray(binding.inputs) ||
+      !runFlow.canonicalWorkspace?.startsWith("/")) return undefined;
+    return {
+      workflowId: selected.workflowId,
+      versionId: selected.versionId,
+      ...(Object.keys(binding.inputs).length ? { inputs: immutableCopy(binding.inputs) } : {}),
+      workspacePath: runFlow.canonicalWorkspace,
+    };
+  }
+
+  function stalePreparationError(code) {
+    return ["EXECUTION_BINDING_CONFLICT", "PRECONDITION_FAILED", "PREPARATION_NOT_FOUND"].includes(code);
   }
 
   function runHumanRequest(data = runFlow?.result) {
@@ -1128,9 +1174,21 @@
     try {
       const result = await callTool(operation.name, immutableCopy(operation.arguments), false);
       if (result?.isError || result?.structuredContent?.ok === false) {
-        const ambiguous = ["NETWORK_AMBIGUOUS", "IDEMPOTENCY_REQUEST_IN_PROGRESS"].includes(errorCodeOf(result));
+        const code = errorCodeOf(result);
+        const ambiguous = ["NETWORK_AMBIGUOUS", "IDEMPOTENCY_REQUEST_IN_PROGRESS"].includes(code);
         if (!ambiguous) runFlow.operations.delete(slot);
-        const retry = ambiguous ? " Retry sends the exact same request and operation ID." : " Correct the setup or try again.";
+        if (!ambiguous && operation.name === "loomex_run_commit" && stalePreparationError(code)) {
+          runFlow.preparationStale = true;
+          runFlowError("The workflow or its execution settings changed after preparation. Review a new preparation before starting.", structuredError(result));
+          return;
+        }
+        const retry = ambiguous
+          ? " Retry sends the exact same request and operation ID."
+          : code === "MODEL_CATALOG_UNAVAILABLE" && operation.name === "loomex_run_commit"
+            ? " This reviewed preparation remains ready to start."
+            : operation.name === "loomex_run_prepare" && runFlow.preparationStale
+              ? " Review again to request another fresh preparation."
+              : " Correct the setup or try again.";
         runFlowError(`${mutationFailureMessage(result, `The ${label} could not be completed.`)}${retry}`, structuredError(result));
         return;
       }
@@ -1203,6 +1261,13 @@
       return;
     }
     if (runFlow.stage === "review") {
+      if (runFlow.preparationStale) {
+        const args = reprepareArguments();
+        if (!args) throw new Error("The sealed preparation cannot be refreshed safely. Return to setup and prepare the run again.");
+        const retained = runFlow.operations.values().next().value;
+        await runFlowMutation("loomex_run_prepare", retained?.slot || `reprepare:${runFlow.prepared.preparationId}`, "preparation", args, acceptRunPreparation);
+        return;
+      }
       const prepared = runFlow.prepared;
       if (!preparationReviewable(prepared)) throw new Error("Review the complete execution details in the conversation before starting.");
       const slot = `loomex_run_commit:${prepared.preparationId}`;
@@ -1271,7 +1336,11 @@
     const presentation = result?._meta?.["loomex/preparationReview"];
     const binding = data?.binding;
     const expectedInputs = request?.inputs || {};
-    const exact = binding && binding.workflowId === runFlow.selected.workflowId && binding.versionId === runFlow.selected.versionId &&
+    const retired = runFlow.preparationStale ? runFlow.prepared : undefined;
+    const identityValid = workflowIdValid(data?.preparationId) && workflowIdValid(data?.confirmationKey) &&
+      typeof data?.bindingDigest === "string" && /^[a-f0-9]{64}$/i.test(data.bindingDigest);
+    const identityFresh = !retired || (data.preparationId !== retired.preparationId && data.confirmationKey !== retired.confirmationKey);
+    const exact = identityValid && identityFresh && binding && binding.workflowId === runFlow.selected.workflowId && binding.versionId === runFlow.selected.versionId &&
       binding.organizationId === runFlow.selected.organizationId && binding.installationId === runFlow.installationId &&
       binding.workspacePath === runFlow.canonicalWorkspace && binding.executionPolicy === "host_user/v1" &&
       binding.inputs && exactJsonEqual(binding.inputs, expectedInputs) &&
@@ -1280,6 +1349,7 @@
     preparationPresentation = presentation;
     latest = data;
     runFlow.prepared = immutableCopy(data);
+    runFlow.preparationStale = false;
     runFlow.stage = "review";
   }
 
@@ -2327,7 +2397,7 @@
         primary.hidden = false;
         primary.disabled = !connected || !preparationReviewable(output) || !findId(output, "preparationId") || !findId(output, "bindingDigest") || !findId(output, "confirmationKey");
         if (!failed && preparedCommitTool() === "loomex_run_commit" && preparationReviewable(output)) {
-          runFlow = { stage: "review", prepared: immutableCopy(output), operations: new Map(), busy: false, returnToBrowser: false };
+          initializePreparedRunReview(output);
         }
       }
     } else if (mode === "monitor") {
@@ -2619,7 +2689,7 @@
 
   secondary.addEventListener("click", () => withPending(secondary, async () => {
     try {
-      if (runFlow?.stage === "review" && runFlow.operations.size === 0) {
+      if (runFlow?.stage === "review" && runFlow.setup && runFlow.operations.size === 0) {
         runFlow.stage = "setup";
         runFlow.prepared = null;
         runFlow.errorMessage = "";
@@ -2778,7 +2848,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.2.12" },
+    appInfo: { name: "loomex", version: "0.2.13" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

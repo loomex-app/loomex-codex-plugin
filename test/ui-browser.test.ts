@@ -1295,6 +1295,135 @@ test("prepared run uses bound names, hides UUIDs by default, and preserves exact
   }
 });
 
+test("stale preparations require a fresh review without reusing confirmation or changing sealed inputs", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for stale preparation recovery");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const workflowId = "c816dafc-ed1d-4d82-bb79-954f7659cb33";
+  const versionId = "5a87c6ce-6e34-4f39-817a-f5362701892a";
+  const organizationId = "67a6e174-b7ae-4f9a-9a68-f0eed80f95f2";
+  const installationId = "62e9d3fa-097b-46fb-9f87-34b4d8c1b40b";
+  const binding = { workflowId, versionId, organizationId, installationId, workspacePath: "/Users/example/exact-project",
+    inputs: { idea: "Preserve this exact idea", directoryPath: "/Users/example/exact-project" }, executionPolicy: "host_user/v1", providerConfiguration: {} };
+  const prepared = { preparationId: "0d55a15b-64c3-4d06-bcc2-591e4d4c185b", bindingDigest: "b".repeat(64),
+    confirmationKey: "e67be35d-7803-4462-855c-11efcc463c78", binding };
+  const presentation = { schemaVersion: "loomex/preparation-review/v1", preparationId: prepared.preparationId, bindingDigest: prepared.bindingDigest,
+    workflowId, versionId, organizationId, workflowName: "Stale recovery", workflowVersion: 7, organizationName: "Loomex Studio", providers: [] };
+  const app = await mountApp(page, "prepare", prepared, false, false, presentation);
+
+  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: {
+    code: "NETWORK_AMBIGUOUS", message: "The start outcome is unknown",
+  } } }]; });
+  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await app.getByRole("button", { name: "Retry exact start", exact: true }).waitFor();
+  const ambiguousCommit = (await page.evaluate(() => window.__loomexCalls))[0];
+  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: {
+    code: "EXECUTION_BINDING_CONFLICT", message: "The workflow or its execution settings changed after preparation.",
+  } } }]; });
+  await app.getByRole("button", { name: "Retry exact start", exact: true }).click();
+  await app.getByRole("button", { name: "Review again", exact: true }).waitFor();
+  const staleCommit = (await page.evaluate(() => window.__loomexCalls))[1];
+  assert.deepEqual(staleCommit.arguments, ambiguousCommit.arguments, "an ambiguous start retains its exact confirmation and idempotency key");
+  assert.equal(await app.getByRole("button", { name: "Start run" }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Edit setup" }).count(), 0, "a direct preparation must not expose a broken setup route");
+
+  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: {
+    code: "BACKEND_UNAVAILABLE", message: "Loomex is temporarily unavailable.",
+  } } }]; });
+  await app.getByRole("button", { name: "Review again", exact: true }).click();
+  await app.getByRole("button", { name: "Review again", exact: true }).waitFor();
+  const failedPrepare = (await page.evaluate(() => window.__loomexCalls))[2];
+  assert.equal(failedPrepare.name, "loomex_run_prepare");
+  assert.deepEqual(failedPrepare.arguments.inputs, binding.inputs);
+  assert.equal(failedPrepare.arguments.workflowId, workflowId);
+  assert.equal(failedPrepare.arguments.versionId, versionId);
+  assert.equal(failedPrepare.arguments.workspacePath, binding.workspacePath);
+  assert.equal("confirmationKey" in failedPrepare.arguments, false);
+
+  const malformed = { ...prepared, preparationId: "", bindingDigest: "", confirmationKey: "" };
+  const malformedPresentation = { ...presentation, preparationId: "", bindingDigest: "" };
+  await page.evaluate(({ malformed, malformedPresentation }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: malformed },
+    _meta: { "loomex/preparationReview": malformedPresentation } }]; }, { malformed, malformedPresentation });
+  await app.getByRole("button", { name: "Review again", exact: true }).click();
+  await app.getByRole("button", { name: "Retry exact preparation", exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Start run" }).count(), 0);
+
+  await page.evaluate(({ prepared, presentation }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: prepared },
+    _meta: { "loomex/preparationReview": presentation } }]; }, { prepared, presentation });
+  await app.getByRole("button", { name: "Retry exact preparation", exact: true }).click();
+  await app.getByRole("button", { name: "Retry exact preparation", exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Start run" }).count(), 0, "the retired preparation cannot be replayed as fresh");
+
+  const fresh = { ...prepared, preparationId: "96cb9398-50b8-474b-8ab4-f8053007e52d", bindingDigest: "f".repeat(64),
+    confirmationKey: "4af9c17f-8b87-4a36-ae72-039cdd9643aa" };
+  const freshPresentation = { ...presentation, preparationId: fresh.preparationId, bindingDigest: fresh.bindingDigest };
+  const reusedConfirmation = { ...fresh, confirmationKey: prepared.confirmationKey };
+  await page.evaluate(({ reusedConfirmation, freshPresentation }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: reusedConfirmation },
+    _meta: { "loomex/preparationReview": freshPresentation } }]; }, { reusedConfirmation, freshPresentation });
+  await app.getByRole("button", { name: "Retry exact preparation", exact: true }).click();
+  await app.getByRole("button", { name: "Retry exact preparation", exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Start run" }).count(), 0, "a fresh preparation ID cannot reuse the retired confirmation");
+
+  await page.evaluate(({ fresh, freshPresentation }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: fresh },
+    _meta: { "loomex/preparationReview": freshPresentation } }]; }, { fresh, freshPresentation });
+  await app.getByRole("button", { name: "Retry exact preparation", exact: true }).click();
+  await app.getByRole("button", { name: "Start run", exact: true }).waitFor();
+  const prepareCalls = (await page.evaluate(() => window.__loomexCalls)).filter((call: any) => call.name === "loomex_run_prepare");
+  const freshPrepare = prepareCalls.at(-1);
+  assert.deepEqual({ ...freshPrepare.arguments, idempotencyKey: undefined }, { ...failedPrepare.arguments, idempotencyKey: undefined });
+  assert.notEqual(freshPrepare.arguments.idempotencyKey, failedPrepare.arguments.idempotencyKey, "a definitive reprepare failure gets a fresh operation ID");
+  assert.deepEqual(prepareCalls.slice(1).map((call: any) => call.arguments), [freshPrepare.arguments, freshPrepare.arguments, freshPrepare.arguments, freshPrepare.arguments],
+    "invalid or replayed preparation responses retain the exact reprepare operation");
+  assert.doesNotMatch(await app.locator("body").innerText(), new RegExp(`${prepared.confirmationKey}|${fresh.confirmationKey}`));
+
+  await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: {
+    code: "MODEL_CATALOG_UNAVAILABLE", message: "The AI model catalog is temporarily unavailable.",
+  } } }]; });
+  await app.getByRole("button", { name: "Start run", exact: true }).click();
+  await app.getByText("This reviewed preparation remains ready to start.", { exact: false }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Start run", exact: true }).isEnabled(), true);
+  assert.equal(await app.getByRole("button", { name: "Review again" }).count(), 0);
+
+  const integratedPage = await browser.newPage();
+  const setup = { workflow: { id: workflowId, organizationId, name: "Integrated stale recovery" }, inputSchema: { type: "object", properties: {}, required: [] },
+    selectedVersion: { id: versionId, workflowId, versionNumber: 7, definition: { settings: { inputSchema: { type: "object", properties: {}, required: [] } }, nodes: [] } } };
+  const integrated = await mountApp(integratedPage, "prepare", setup);
+  await integrated.getByLabel("Workspace directory *", { exact: true }).fill(binding.workspacePath);
+  await integratedPage.evaluate(({ binding }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+    workspace: { path: binding.workspacePath, organizationId: binding.organizationId, installationId: binding.installationId }, executionPolicy: "host_user/v1",
+  } } }]; }, { binding });
+  await integrated.getByRole("button", { name: "Grant workspace access", exact: true }).click();
+  await integrated.getByRole("button", { name: "Review run", exact: true }).waitFor();
+  const integratedPrepared = { ...prepared, binding: { ...binding, inputs: {} } };
+  const integratedPresentation = { ...presentation, preparationId: integratedPrepared.preparationId, bindingDigest: integratedPrepared.bindingDigest,
+    workflowName: "Integrated stale recovery" };
+  await integratedPage.evaluate(({ integratedPrepared, integratedPresentation }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: integratedPrepared },
+    _meta: { "loomex/preparationReview": integratedPresentation } }]; }, { integratedPrepared, integratedPresentation });
+  await integrated.getByRole("button", { name: "Review run", exact: true }).click();
+  await integrated.getByRole("button", { name: "Start run", exact: true }).waitFor();
+  await integratedPage.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: {
+    code: "PRECONDITION_FAILED", message: "Loomex state changed and the operation must be prepared again.",
+  } } }]; });
+  await integrated.getByRole("button", { name: "Start run", exact: true }).click();
+  await integrated.getByRole("button", { name: "Review again", exact: true }).waitFor();
+  assert.equal(await integrated.getByRole("button", { name: "Start run" }).count(), 0);
+  assert.equal(await integrated.getByRole("button", { name: "Edit setup", exact: true }).isEnabled(), true);
+  const integratedFresh = { ...integratedPrepared, preparationId: "5fc4d9fd-155a-420b-93c3-3cfc3348e427", bindingDigest: "8".repeat(64),
+    confirmationKey: "fab94eaf-e5c4-4fc3-836d-655436605907" };
+  const integratedFreshPresentation = { ...integratedPresentation, preparationId: integratedFresh.preparationId, bindingDigest: integratedFresh.bindingDigest };
+  await integratedPage.evaluate(({ integratedFresh, integratedFreshPresentation }: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data: integratedFresh },
+    _meta: { "loomex/preparationReview": integratedFreshPresentation } }]; }, { integratedFresh, integratedFreshPresentation });
+  await integrated.getByRole("button", { name: "Review again", exact: true }).click();
+  await integrated.getByRole("button", { name: "Start run", exact: true }).waitFor();
+  await waitForToolCount(integratedPage, "loomex_run_prepare", 2);
+  const integratedReprepare = (await integratedPage.evaluate(() => window.__loomexCalls).then((calls: any[]) => calls.filter((call) => call.name === "loomex_run_prepare"))).at(-1);
+  assert.equal("inputs" in integratedReprepare.arguments, false);
+  assert.equal(integratedReprepare.arguments.versionId, versionId);
+  assert.equal(integratedReprepare.arguments.workspacePath, binding.workspacePath);
+});
+
 test("integrated run setup validates inputs, grants one canonical workspace, prepares the selected version, and starts once", async (t) => {
   const available = await browserTools();
   if (!available) assert.fail("Chromium required for integrated run setup");
