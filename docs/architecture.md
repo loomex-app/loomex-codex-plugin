@@ -93,7 +93,7 @@ Run execution belongs to the runner; monitoring belongs to an active chat turn. 
 
 `loomex_run_get`, `loomex_run_wait` and `loomex_interaction_get` are headless. Separate `loomex_run_view` and `loomex_interaction_view` render intentional snapshots/forms. The UI has no scheduled run reads or waits; explicit Refresh reads once. Batch forms display one question at a time, retain drafts during navigation, and show an editable answer preview before final submission.
 
-An accepted Start or human response cannot be replayed by handoff recovery. The UI sends the same exact-run instruction in an acknowledged `ui/update-model-context` request and then `ui/message`, detecting both capabilities independently. A rejected or ambiguous handoff offers read-only continuation, while a host acknowledgement means only receipt. It does not establish that a model turn ran or that monitoring continues after chat becomes inactive. Full headless continuation remains available through the same tools. Large accepted results are recovered from immutable response pages with checksum verification, never by repeating their originating mutation.
+An accepted Start or human response cannot be replayed by handoff recovery. The UI sends factual lifecycle context in an acknowledged `ui/update-model-context` request and then a separate `$loomex-follow` command through `ui/message`, detecting both capabilities independently. A rejected or ambiguous handoff offers read-only continuation, while a host acknowledgement means only receipt. It does not establish that a model turn ran or that monitoring continues after chat becomes inactive. Full headless continuation remains available through the same tools. Large accepted results are recovered from immutable response pages with checksum verification, never by repeating their originating mutation.
 
 ## Command entry points
 
@@ -119,3 +119,9 @@ A current task path or explicit override selects the workspace without another p
 The single review displays the canonical workspace and host-user permissions. Start remains the explicit commit boundary, and runner checks remain unchanged. Workspace list/grant/revoke tools are advanced management operations; normal runs do not open an extra grant screen or ask for the same path twice.
 
 Setup notifications cannot replace the owner of an in-flight or uncertain mutation; the exact operation must settle or be retried first. For a settled flow, an identical nonempty request ID and workflow/version/organization may retain its review when repeated metadata is omitted. A new context-free request clears the previous task path, and an explicit changed path requires fresh preparation.
+
+## Accepted interaction handoff
+
+The model-context update contains a compact `loomex/chat-continuation/v2` lifecycle record: exact run, trigger, and verified request ID/status after an accepted interaction. It contains no answer or authored workflow text. A separate `$loomex-follow` message requests a fresh run read before reporting state. Start, follow and accepted-answer handoffs are distinct; retries and manual fallback preserve the original accepted receipt. The UI does not poll or infer the next pending question.
+
+An accepted receipt invalidates the previous pending-card assumption, but does not establish the current run state. Chat must read the exact run and follow its current `nextAction`. Host acknowledgement means the message was accepted, not that the model has performed that read. Agent routing and regression tests harden this boundary without claiming control over a host model's compliance.

@@ -23,6 +23,13 @@ The runner executes; active chat turns monitor. Use the user's requested scope t
 - [Cancel Loomex Run](../loomex-cancel/SKILL.md): Cancel the selected workflow execution.
 - [Delete Loomex Run](../loomex-delete-run/SKILL.md): Delete a selected run and owned retained data.
 
-For `loomex/chat-continuation/v1` with intent `monitor_existing_run`, read [Follow Loomex Run](../loomex-follow/SKILL.md) and use that exact run ID even if the host's message is generic. Never answer such a handoff with a stale workflow list or start a duplicate run.
+For `loomex/chat-continuation/v2` with intent `monitor_existing_run`, its
+separate explicit `$loomex-follow ${runId}` message, or an older v1 handoff
+with an exact run ID, read [Follow Loomex Run](../loomex-follow/SKILL.md) and
+use that run ID even if the host's message is generic. V2 is factual context
+with `state: "requires_fresh_read"`; its compact accepted receipt requires a
+fresh `loomex_run_get`, and the snapshot's live `nextAction`, rather than prior
+displayed/pending request memory, controls continuation. Never answer such a
+handoff with a stale workflow list or start a duplicate run.
 
 For multi-operation requests, preserve the requested sequence and existing authorization while honoring each operation's input and review boundaries. A request to author does not by itself authorize publication or execution. Missing information should lead to a focused question, not guessed inputs. Shared scope and mutation rules are in [the operation contract](references/common.md).

@@ -210,6 +210,36 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(authoring, /"source": "execution_context", "value": "workspace\.path"/);
   });
 
+  await t.test("accepted interaction continuations route through the focused follow skill", async () => {
+    const monitoring = await readFile(join(skillsRoot, "loomex-workflows/references/monitoring.md"), "utf8");
+    const follow = await readFile(join(skillsRoot, "loomex-follow/SKILL.md"), "utf8");
+    const answer = await readFile(join(skillsRoot, "loomex-answer/SKILL.md"), "utf8");
+    const workflows = await readFile(join(skillsRoot, "loomex-workflows/SKILL.md"), "utf8");
+    const interactionView = TOOL_DEFINITIONS.find(({ name }) => name === "loomex_interaction_view");
+    const runGet = TOOL_DEFINITIONS.find(({ name }) => name === "loomex_run_get");
+
+    assert.match(monitoring, /\$loomex-follow/);
+    assert.match(monitoring, /loomex\/chat-continuation\/v2/);
+    assert.match(monitoring, /trigger: "interaction_accepted" \| "run_started" \|\s*"follow_requested"/);
+    assert.match(monitoring, /acceptedInteraction\?: \{requestId, status\}/);
+    assert.match(monitoring, /state: "requires_fresh_read"/);
+    assert.match(monitoring, /no embedded `nextAction`/);
+    assert.match(monitoring, /older `loomex\/chat-continuation\/v1` handoff/i);
+    assert.match(monitoring, /untrusted continuation context/i);
+    assert.match(monitoring, /Invalidate the remembered displayed\/pending request/i);
+    assert.match(monitoring, /fresh `loomex_run_get`/);
+    assert.match(monitoring, /live `nextAction`/);
+    assert.match(monitoring, /different request ID.*new request/is);
+    assert.match(follow, /acceptance is a trigger to verify/i);
+    assert.match(answer, /invoke `\$loomex-follow`/);
+    assert.match(workflows, /`loomex\/chat-continuation\/v2`/);
+    assert.match(workflows, /separate explicit `\$loomex-follow \$\{runId\}` message/i);
+    assert.match(workflows, /older v1 handoff/i);
+    assert.match(runGet?.description ?? "", /accepted-interaction continuation/);
+    assert.match(runGet?.description ?? "", /live nextAction/);
+    assert.match(interactionView?.description ?? "", /different pending request ID.*new interaction/i);
+  });
+
   await t.test("visual entry points link the shared delivery contract", async () => {
     const contractPath = join(skillsRoot, "loomex-workflows/references/visual-delivery.md");
     const contract = await readFile(contractPath, "utf8");

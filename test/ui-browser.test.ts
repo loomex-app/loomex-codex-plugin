@@ -236,6 +236,28 @@ async function waitForToolCount(page: any, name: string, count: number): Promise
   { expectedName: name, expectedCount: count }, { timeout: 5_000 });
 }
 
+async function waitForHandoff(page: any, count = 1): Promise<void> {
+  try {
+    await page.waitForFunction((expected: number) =>
+      window.__loomexMessages.length === expected && window.__loomexModelContexts.length === expected,
+    count, { timeout: 5_000 });
+  } catch (error) {
+    const diagnostics = await page.evaluate(() => ({
+      messages: window.__loomexMessages,
+      modelContexts: window.__loomexModelContexts,
+    }));
+    throw new Error(`Expected ${count} paired chat handoffs: ${JSON.stringify(diagnostics)}`, { cause: error });
+  }
+}
+
+async function handoffAt(page: any, index = -1): Promise<{ context: any; message: any }> {
+  return page.evaluate((offset: number) => {
+    const contexts = window.__loomexModelContexts;
+    const messages = window.__loomexMessages;
+    return { context: contexts.at(offset), message: messages.at(offset) };
+  }, index);
+}
+
 async function waitForSettledAppSize(page: any, afterNotificationCount?: number): Promise<void> {
   await page.waitForFunction((after: number | undefined) => {
     const frame = document.getElementById("app");
@@ -524,8 +546,20 @@ test("refresh reconciles only the exact resolved response and hands its bound ru
   assert.deepEqual(calls[1].arguments, { requestId });
   assert.deepEqual(calls[2].arguments, { requestId });
   assert.equal(calls.filter((call: any) => call.name === "loomex_interaction_respond").length, 1, "read reconciliation cannot replay the response mutation");
-  assert.equal((await page.evaluate(() => window.__loomexModelContexts)).length, 1);
-  assert.equal((await page.evaluate(() => window.__loomexMessages)).length, 1);
+  await waitForHandoff(page);
+  const { context, message } = await handoffAt(page);
+  assert.deepEqual(JSON.parse(context.content[0].text), {
+    schema: "loomex/chat-continuation/v2",
+    intent: "monitor_existing_run",
+    runId,
+    trigger: "interaction_accepted",
+    acceptedInteraction: { requestId, status: "resolved" },
+    state: "requires_fresh_read",
+  });
+  assert.match(message.content[0].text, new RegExp(`^\\$loomex-follow ${runId}\\n`));
+  assert.match(message.content[0].text, new RegExp(`accepted my response to request ${requestId} \\([^)]+\\)`, "i"));
+  assert.doesNotMatch(message.content[0].text, /Submitted once|What should happen\?/);
+  assert.notEqual(context.content[0].text, message.content[0].text);
 });
 
 test("ambiguous approval keeps rejection locked and retries the exact approval operation", async (t) => {
@@ -539,12 +573,14 @@ test("ambiguous approval keeps rejection locked and retries the exact approval o
   t.after(() => browser.close());
   const page = await browser.newPage();
   const requestId = "8e313122-4210-4d2a-a163-bd86a30016af";
+  const runId = "f7a9f767-0a1a-45e2-93de-5ddfddf3098b";
   const app = await mountApp(page, "interaction", {
     humanRequest: {
       id: requestId,
       status: "pending",
       type: "approval",
       title: "Approve the release?",
+      execution: { id: runId },
     },
   }, true);
 
@@ -562,13 +598,33 @@ test("ambiguous approval keeps rejection locked and retries the exact approval o
   assert.equal(await page.evaluate(() => window.__loomexCalls.length), 1);
   assert.equal(await reject.isDisabled(), true);
 
+  await page.evaluate(({ requestId, runId }: any) => {
+    window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+      requestId, requestStatus: "approved", executionId: runId, error: null,
+    } } }];
+  }, { requestId, runId });
   await app.getByRole("button", { name: "Retry exact response" }).click();
   await waitForCallCount(page, 2);
+  await app.getByText("Sent to chat", { exact: true }).first().waitFor();
   const calls = await page.evaluate(() => window.__loomexCalls);
   assert.deepEqual(calls.map((call: any) => call.name), ["loomex_interaction_decide", "loomex_interaction_decide"]);
   assert.deepEqual(calls[0].arguments, calls[1].arguments);
   assert.equal(calls[0].arguments.requestId, requestId);
   assert.equal(calls[0].arguments.decision, "approve");
+  await waitForHandoff(page);
+  const { context, message } = await handoffAt(page);
+  assert.deepEqual(JSON.parse(context.content[0].text), {
+    schema: "loomex/chat-continuation/v2",
+    intent: "monitor_existing_run",
+    runId,
+    trigger: "interaction_accepted",
+    acceptedInteraction: { requestId, status: "approved" },
+    state: "requires_fresh_read",
+  });
+  assert.match(message.content[0].text, new RegExp(`^\\$loomex-follow ${runId}\\n`));
+  assert.match(message.content[0].text, new RegExp(`accepted my response to request ${requestId} \\([^)]+\\)`, "i"));
+  assert.doesNotMatch(message.content[0].text, /Approve the release\?/);
+  assert.notEqual(context.content[0].text, message.content[0].text);
 });
 
 test("authoring supports aliases and simple schemas while rejecting invalid question specs", async (t) => {
@@ -916,8 +972,20 @@ test("run monitor answers a typed batch and approval against one authoritative r
     { questionId: "confirmed", value: false },
   ] });
   assert.equal(firstCalls[0].arguments.requestId, firstRequestId);
-  assert.equal((await page.evaluate(() => window.__loomexMessages)).length, 1);
-  assert.match((await page.evaluate(() => window.__loomexMessages[0].content[0].text)), new RegExp(runId));
+  await waitForHandoff(page);
+  const firstHandoff = await handoffAt(page);
+  assert.deepEqual(JSON.parse(firstHandoff.context.content[0].text), {
+    schema: "loomex/chat-continuation/v2",
+    intent: "monitor_existing_run",
+    runId,
+    trigger: "interaction_accepted",
+    acceptedInteraction: { requestId: firstRequestId, status: "resolved" },
+    state: "requires_fresh_read",
+  });
+  assert.match(firstHandoff.message.content[0].text, new RegExp(`^\\$loomex-follow ${runId}\\n`));
+  assert.match(firstHandoff.message.content[0].text, new RegExp(`accepted my response to request ${firstRequestId} \\([^)]+\\)`, "i"));
+  assert.doesNotMatch(firstHandoff.message.content[0].text, /A local planning board|What should we build\?|Shape the idea/);
+  assert.notEqual(firstHandoff.context.content[0].text, firstHandoff.message.content[0].text);
   await app.getByRole("button", { name: "Refresh run", exact: true }).click();
   await app.getByRole("button", { name: "Approve", exact: true }).waitFor();
 
@@ -936,8 +1004,20 @@ test("run monitor answers a typed batch and approval against one authoritative r
   assert.equal(calls[2].arguments.decision, "approve");
   assert.equal(await app.getByRole("button", { name: "Continue" }).count(), 0);
   assert.equal(await app.getByRole("button", { name: "Approve" }).count(), 0);
-  assert.equal((await page.evaluate(() => window.__loomexMessages)).length, 2, "each accepted run response gets one chat continuation");
-  assert.equal((await page.evaluate(() => window.__loomexModelContexts)).length, 2);
+  await waitForHandoff(page, 2);
+  const approvalHandoff = await handoffAt(page, 1);
+  assert.deepEqual(JSON.parse(approvalHandoff.context.content[0].text), {
+    schema: "loomex/chat-continuation/v2",
+    intent: "monitor_existing_run",
+    runId,
+    trigger: "interaction_accepted",
+    acceptedInteraction: { requestId: approvalId, status: "approved" },
+    state: "requires_fresh_read",
+  });
+  assert.match(approvalHandoff.message.content[0].text, new RegExp(`^\\$loomex-follow ${runId}\\n`));
+  assert.match(approvalHandoff.message.content[0].text, new RegExp(`accepted my response to request ${approvalId} \\([^)]+\\)`, "i"));
+  assert.doesNotMatch(approvalHandoff.message.content[0].text, /Approve implementation\?|Approve the reviewed plan/);
+  assert.notEqual(approvalHandoff.context.content[0].text, approvalHandoff.message.content[0].text);
 });
 
 test("run monitor preserves an exact ambiguous response and hands off without an implicit read", async (t) => {
@@ -959,6 +1039,8 @@ test("run monitor preserves an exact ambiguous response and hands off without an
   await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false, error: { code: "NETWORK_AMBIGUOUS", message: "The response outcome is unknown" } } }]; });
   await reviewAndSubmit(app);
   await app.getByRole("button", { name: "Retry exact response", exact: true }).waitFor({ timeout: 5_000 });
+  await waitForCallCount(page, 1);
+  await waitForEnabledPrimary(page, "Retry exact response");
   const sealed = (await page.evaluate(() => window.__loomexCalls))[0];
   assert.equal(await answer.isDisabled(), true);
 
@@ -1109,6 +1191,20 @@ test("accepted commit and cancellation receipts survive malformed optional reque
   await app.getByRole("button", { name: "Start run", exact: true }).click();
   await app.getByText("Sent to chat", { exact: true }).first().waitFor();
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), ["loomex_run_commit"]);
+  await waitForHandoff(page);
+  const { context: startedContext, message: startedMessage } = await handoffAt(page);
+  assert.deepEqual(JSON.parse(startedContext.content[0].text), {
+    schema: "loomex/chat-continuation/v2",
+    intent: "monitor_existing_run",
+    runId,
+    trigger: "run_started",
+    state: "requires_fresh_read",
+  });
+  assert.match(startedMessage.content[0].text, new RegExp(`^\\$loomex-follow ${runId}\\n`));
+  assert.match(startedMessage.content[0].text, /Loomex accepted the start of this run/);
+  assert.match(startedMessage.content[0].text, /Call loomex_run_get for this exact runId before replying about its state/);
+  assert.doesNotMatch(startedMessage.content[0].text, /Wrong run question|Verified baseline question/);
+  assert.notEqual(startedContext.content[0].text, startedMessage.content[0].text);
   await app.getByRole("button", { name: "Refresh run", exact: true }).click();
   await app.getByRole("textbox", { name: "Verified baseline question Your answer" }).waitFor();
   assert.equal(await app.getByText("Wrong run question", { exact: true }).count(), 0);
@@ -1209,20 +1305,25 @@ test("active monitor never polls automatically and Follow in chat uses acknowled
   await app.getByRole("button", { name: "Follow in chat", exact: true }).click();
   await app.getByText("Sent to chat", { exact: true }).first().waitFor();
   assert.deepEqual(await page.evaluate(() => window.__loomexCalls), []);
-  const [modelContext] = await page.evaluate(() => window.__loomexModelContexts);
-  const [message] = await page.evaluate(() => window.__loomexMessages);
-  assert.equal(modelContext.content[0].text, message.content[0].text);
-  assert.match(message.content[0].text, /Schema: loomex\/chat-continuation\/v1/);
-  assert.match(message.content[0].text, /Intent: monitor_existing_run/);
-  assert.match(message.content[0].text, new RegExp(runId));
-  assert.match(message.content[0].text, /First call loomex_run_get/);
-  assert.match(message.content[0].text, /authoritative nextAction/);
-  assert.match(message.content[0].text, /loomex_run_wait calls with timeoutSeconds 30/);
-  assert.equal((message.content[0].text.match(/loomex_interaction_view/g) || []).length, 1);
-  assert.doesNotMatch(message.content[0].text, /loomex_interaction_get/);
-  assert.match(message.content[0].text, /do not fetch it again or answer or replay an answer/);
-  assert.match(message.content[0].text, /Never start or commit another run/);
-  assert.doesNotMatch(message.content[0].text, /confirmationKey|credential/i);
+  await waitForHandoff(page);
+  const { context: modelContext, message } = await handoffAt(page);
+  assert.deepEqual(JSON.parse(modelContext.content[0].text), {
+    schema: "loomex/chat-continuation/v2",
+    intent: "monitor_existing_run",
+    runId,
+    trigger: "follow_requested",
+    state: "requires_fresh_read",
+  });
+  assert.equal(typeof modelContext.content[0].text, "string");
+  const messageText = message.content[0].text;
+  assert.match(messageText, new RegExp(`^\\$loomex-follow ${runId}\\n`));
+  assert.match(messageText, /Call loomex_run_get for this exact runId before replying about its state/);
+  assert.match(messageText, /loomex_run_wait with timeoutSeconds 30/);
+  assert.match(messageText, /loomex_interaction_view/);
+  assert.doesNotMatch(messageText, /loomex_interaction_get/);
+  assert.match(messageText, /Never start another run or replay a submitted answer/);
+  assert.doesNotMatch(messageText, /confirmationKey|credential/i);
+  assert.notEqual(modelContext.content[0].text, messageText, "factual context metadata and the chat command must be distinct payloads");
 });
 
 test("accepted run response retries only a failed chat handoff", async (t) => {
@@ -1253,8 +1354,24 @@ test("accepted run response retries only a failed chat handoff", async (t) => {
   await app.getByRole("button", { name: "Retry chat handoff", exact: true }).click();
   await app.getByText("Sent to chat", { exact: true }).first().waitFor();
   assert.equal((await page.evaluate(() => window.__loomexCalls)).length, 1, "handoff retry cannot repeat the accepted response");
-  assert.equal((await page.evaluate(() => window.__loomexModelContexts)).length, 2);
-  assert.equal((await page.evaluate(() => window.__loomexMessages)).length, 2);
+  await waitForHandoff(page, 2);
+  const firstHandoff = await handoffAt(page, 0);
+  const retryHandoff = await handoffAt(page, 1);
+  const firstContext = JSON.parse(firstHandoff.context.content[0].text);
+  const retryContext = JSON.parse(retryHandoff.context.content[0].text);
+  assert.deepEqual(firstContext, {
+    schema: "loomex/chat-continuation/v2",
+    intent: "monitor_existing_run",
+    runId,
+    trigger: "interaction_accepted",
+    acceptedInteraction: { requestId, status: "resolved" },
+    state: "requires_fresh_read",
+  });
+  assert.deepEqual(retryContext, firstContext, "failed handoff retry must retain the original accepted receipt and context");
+  assert.equal(retryHandoff.message.content[0].text, firstHandoff.message.content[0].text, "failed handoff retry must retain the original chat command");
+  assert.match(retryHandoff.message.content[0].text, new RegExp(`^\\$loomex-follow ${runId}\\n`));
+  assert.match(retryHandoff.message.content[0].text, new RegExp(`accepted my response to request ${requestId} \\([^)]+\\)`, "i"));
+  assert.doesNotMatch(retryHandoff.message.content[0].text, /Release brief|Name the deliverable/);
 });
 
 test("standalone response requires an exact accepted receipt before chat handoff", async (t) => {
@@ -1300,8 +1417,40 @@ test("standalone response requires an exact accepted receipt before chat handoff
   assert.deepEqual(calls.map((call: any) => call.name), Array(4).fill("loomex_interaction_respond"));
   assert.ok(calls.every((call: any) => JSON.stringify(call.arguments) === JSON.stringify(calls[0].arguments)), "every retry must keep the reviewed answer and operation ID");
   assert.deepEqual(calls[0].arguments.answer, { value: "Loomex 0.3" });
-  assert.equal((await page.evaluate(() => window.__loomexModelContexts)).length, 1);
-  assert.equal((await page.evaluate(() => window.__loomexMessages)).length, 1);
+  await waitForHandoff(page);
+  const { context, message } = await handoffAt(page);
+  assert.deepEqual(JSON.parse(context.content[0].text), {
+    schema: "loomex/chat-continuation/v2",
+    intent: "monitor_existing_run",
+    runId,
+    trigger: "interaction_accepted",
+    acceptedInteraction: { requestId, status: "resolved" },
+    state: "requires_fresh_read",
+  });
+  assert.match(message.content[0].text, new RegExp(`^\\$loomex-follow ${runId}\\n`));
+  assert.match(message.content[0].text, new RegExp(`accepted my response to request ${requestId} \\([^)]+\\)`, "i"));
+  assert.match(message.content[0].text, /Call loomex_run_get for this exact runId before replying about its state/);
+  assert.doesNotMatch(message.content[0].text, /Loomex 0\.3|Name the release/);
+  assert.doesNotMatch(context.content[0].text, /Loomex 0\.3|Name the release/);
+  assert.notEqual(context.content[0].text, message.content[0].text);
+
+  const manualPage = await browser.newPage();
+  const manual = await mountApp(manualPage, "interaction", { humanRequest: request }, false, false, null, false, {}, null);
+  await manualPage.evaluate(({ requestId, runId }: any) => {
+    window.__workflowResponses = [{ structuredContent: { ok: true, data: {
+      requestId, requestStatus: "resolved", executionId: runId, error: null,
+    } } }];
+  }, { requestId, runId });
+  await manual.getByRole("textbox", { name: "Name the release Your answer" }).fill("Manual release");
+  await reviewAndSubmit(manual);
+  await manual.getByLabel("Read-only resume command").waitFor();
+  const manualCommand = await manual.getByLabel("Read-only resume command").textContent();
+  assert.match(manualCommand || "", new RegExp(`^\\$loomex-follow ${runId}`));
+  assert.match(manualCommand || "", new RegExp(`accepted my response to request ${requestId} \\([^)]+\\)`, "i"));
+  assert.doesNotMatch(manualCommand || "", /Manual release|Name the release/);
+  assert.equal(await manualPage.evaluate(() => window.__loomexMessages.length), 0);
+  assert.equal(await manualPage.evaluate(() => window.__loomexModelContexts.length), 0);
+  await manualPage.close();
 });
 
 test("missing or non-text host chat capabilities show the exact manual monitor command", async (t) => {
@@ -1322,8 +1471,8 @@ test("missing or non-text host chat capabilities show the exact manual monitor c
     await app.getByRole("button", { name: "Follow in chat", exact: true }).click();
     await app.getByText("This host cannot send the run to chat automatically.", { exact: false }).first().waitFor();
     const command = await app.getByLabel("Read-only resume command").textContent();
-    assert.match(command || "", new RegExp(`existing Loomex run ${runId}`));
-    assert.match(command || "", /Never start or commit another run/);
+    assert.match(command || "", new RegExp(`^\\$loomex-follow ${runId}`));
+    assert.match(command || "", /Never start another run/);
     assert.match(command || "", /timeoutSeconds 30/);
     assert.deepEqual(await page.evaluate(() => window.__loomexModelContexts), []);
     assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);

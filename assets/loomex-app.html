@@ -1343,19 +1343,26 @@
     context.append(actions);
   }
 
-  function chatContinuationText(runId) {
-    const instruction = chatResumeCommand(runId);
-    return [
-      "Loomex chat continuation",
-      "Schema: loomex/chat-continuation/v1",
-      "Intent: monitor_existing_run",
-      `Run ID: ${runId}`,
-      `Instruction: ${instruction}`,
-    ].join("\n");
+  function chatContinuation(runId, event = {}) {
+    const accepted = event.acceptedInteraction;
+    if (event.trigger === "interaction_accepted" && (!workflowIdValid(accepted?.requestId) ||
+      !["resolved", "completed", "answered", "approved", "rejected"].includes(accepted?.status))) {
+      throw new Error("The accepted interaction could not be verified for chat continuation.");
+    }
+    return immutableCopy({
+      schema: "loomex/chat-continuation/v2", intent: "monitor_existing_run", runId,
+      trigger: event.trigger === "interaction_accepted" ? "interaction_accepted" : event.trigger === "run_started" ? "run_started" : "follow_requested",
+      ...(event.trigger === "interaction_accepted" ? { acceptedInteraction: { requestId: accepted.requestId, status: accepted.status } } : {}),
+      state: "requires_fresh_read",
+    });
   }
 
-  function chatResumeCommand(runId) {
-    return `Continue monitoring the existing Loomex run ${runId}. First call loomex_run_get with that exact runId, then follow its authoritative nextAction. While active, use bounded loomex_run_wait calls with timeoutSeconds 30 and read every returned event page before the next wait. If a pending request appears, call loomex_interaction_view exactly once with its exact requestId, show that question, and pause for the user; do not fetch it again or answer or replay an answer. When the run is terminal, present its final result. Never start or commit another run.`;
+  function chatResumeCommand(runId, continuation = {}) {
+    const receipt = continuation.acceptedInteraction;
+    const transition = receipt
+      ? `Loomex accepted my response to request ${receipt.requestId} (${receipt.status}). The previously displayed form is finished; do not ask me to submit it again.`
+      : continuation.trigger === "run_started" ? "Loomex accepted the start of this run." : "Continue following this existing run.";
+    return `$loomex-follow ${runId}\n${transition}\nCall loomex_run_get for this exact runId before replying about its state. Follow the fresh nextAction, using loomex_run_wait with timeoutSeconds 30 while active and draining event pages. Show the next pending interaction once with loomex_interaction_view, or retrieve the terminal result. Never start another run or replay a submitted answer.`;
   }
 
   function chatCapability(name) {
@@ -1381,7 +1388,7 @@
     if (["manual", "failed"].includes(chatHandoff.status)) {
       const instructions = element("details", { className: "ui-disclosure", open: true });
       instructions.append(element("summary", {}, "Manual monitoring instructions"));
-      const command = element("p", { className: "workspace-path" }, chatResumeCommand(chatHandoff.runId));
+      const command = element("p", { className: "workspace-path" }, chatResumeCommand(chatHandoff.runId, chatHandoff.continuation));
       command.setAttribute("aria-label", "Read-only resume command");
       instructions.append(command);
       callout.append(instructions);
@@ -1403,10 +1410,11 @@
     }
   }
 
-  async function handoffRunToChat(runId) {
+  async function handoffRunToChat(runId, event = {}) {
     const safeRunId = workflowIdValid(runId) ? runId : undefined;
     if (!safeRunId) return;
-    chatHandoff = { runId: safeRunId, status: "sending" };
+    const continuation = chatContinuation(safeRunId, event);
+    chatHandoff = { runId: safeRunId, status: "sending", continuation };
     if (runFlow) renderIntegratedRunFlow();
     else renderChatHandoffState();
     if (!chatCapability("updateModelContext") || !chatCapability("message")) {
@@ -1414,9 +1422,9 @@
       if (runFlow) renderIntegratedRunFlow(); else renderChatHandoffState();
       return;
     }
-    const text = chatContinuationText(safeRunId);
+    const text = chatResumeCommand(safeRunId, continuation);
     try {
-      const contextResult = await send("ui/update-model-context", { content: [{ type: "text", text }] });
+      const contextResult = await send("ui/update-model-context", { content: [{ type: "text", text: JSON.stringify(continuation) }] });
       if (contextResult?.isError === true) throw new Error("The host rejected the model context update.");
       const messageResult = await send("ui/message", { role: "user", content: [{ type: "text", text }] });
       if (messageResult?.isError === true) throw new Error("The host rejected the chat message.");
@@ -1437,7 +1445,9 @@
       return;
     }
     const runId = returnedRunId || requestRunId;
-    if (runId) await handoffRunToChat(runId);
+    if (runId) await handoffRunToChat(runId, { trigger: "interaction_accepted", acceptedInteraction: {
+      requestId: resultData.requestId, status: String(resultData.requestStatus).toLowerCase(),
+    } });
   }
 
   function renderRunHumanRequest(request) {
@@ -1812,7 +1822,7 @@
     if (!runId || data.preparationId !== request.preparationId || data.executionPolicy !== "host_user/v1") throw new Error("The runner did not return a run bound to the exact preparation and execution policy.");
     initializeRunMonitor(data, runFlow, { acceptedCommit: true });
     runFlow.baselineRequired = false;
-    return () => handoffRunToChat(runId);
+    return () => handoffRunToChat(runId, { trigger: "run_started" });
   }
 
   async function acceptRunStatus(result, request) {
@@ -1842,7 +1852,7 @@
     runFlow.humanDrafts.delete(request.requestId);
     runFlow.currentRequestId = request.requestId;
     latest = runFlow.result;
-    return () => handoffRunToChat(data.executionId || executionId(data) || executionId(runFlow.result));
+    return () => handoffRunToChat(data.executionId, { trigger: "interaction_accepted", acceptedInteraction: { requestId: data.requestId, status } });
   }
 
   async function readRunSnapshot(toolName = "loomex_run_get") {
@@ -3284,7 +3294,7 @@
     if (originalRunId && returnedRunId && originalRunId !== returnedRunId) return undefined;
     const runId = returnedRunId || originalRunId;
     if (runId && !workflowIdValid(runId)) return undefined;
-    return { runId };
+    return { runId, acceptedInteraction: { requestId: request.id, status } };
   }
 
   function operationReconciled(operation, data, authoritativeData) {
@@ -3313,7 +3323,7 @@
       summary.textContent = mode === "interaction"
         ? "Response received. The uncertain submission was reconciled and no retry is needed."
         : "Server state reconciled. This request no longer needs the pending retry.";
-      if (interactionResolution?.runId) await handoffRunToChat(interactionResolution.runId);
+      if (interactionResolution?.runId) await handoffRunToChat(interactionResolution.runId, { trigger: "interaction_accepted", acceptedInteraction: interactionResolution.acceptedInteraction });
       return;
     }
     latestMethod = methodOf(result) || latestMethod;
@@ -3549,7 +3559,7 @@
   primary.addEventListener("click", () => withPending(primary, async () => {
     try {
       if (chatHandoff?.status === "failed") {
-        await handoffRunToChat(chatHandoff.runId);
+        await handoffRunToChat(chatHandoff.runId, chatHandoff.continuation);
         return;
       }
       if (runFlow) { await handleRunFlowPrimary(); return; }
@@ -3649,7 +3659,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.8.0" },
+    appInfo: { name: "loomex", version: "0.9.0" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

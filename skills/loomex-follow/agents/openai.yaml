@@ -1,4 +1,4 @@
 interface:
   display_name: "Follow Loomex Run"
-  short_description: "Follow a run and surface its next question"
-  default_prompt: "Use $loomex-follow to follow the existing run I select."
+  short_description: "Follow a run or accepted-answer continuation"
+  default_prompt: "Use $loomex-follow to re-check the exact existing run and follow its live next action."
