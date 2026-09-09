@@ -10,6 +10,7 @@ declare const window: any;
 declare const document: any;
 
 type BrowserTools = {
+  expect(locator: any): { toHaveValue(value: string): Promise<void> };
   chromium: {
     executablePath(): string;
     launch(options: Record<string, unknown>): Promise<any>;
@@ -2160,8 +2161,12 @@ test("integrated run setup validates inputs, grants one canonical workspace, pre
     } } },
     { structuredContent: { ok: true, data: substitutedPreparation }, _meta: { "loomex/preparationReview": presentation } },
   ]; }, { prepared, presentation, substitutedPreparation });
+  // Deliver the retry asynchronously so the assertion observes the rendered response,
+  // rather than relying on a fast host returning before click() settles.
+  await page.evaluate(() => { window.__workflowDelayMs = 175; });
   await app.getByRole("button", { name: "Retry exact workspace check", exact: true }).click();
-  assert.equal(await app.getByLabel("Project directory *", { exact: true }).inputValue(), "/Users/example/project");
+  await available.tools.expect(app.getByLabel("Project directory *", { exact: true })).toHaveValue("/Users/example/project");
+  await page.evaluate(() => { window.__workflowDelayMs = 0; });
   const grant = (await page.evaluate(() => window.__loomexCalls))[1];
   assert.equal(grant.name, "loomex_workspace_grant");
   assert.equal(grant.arguments.workspacePath, "/Users/example/../example/project");
