@@ -1,3 +1,4 @@
+import { renderUiHtml } from "../src/ui-template.js";
 import * as assert from "node:assert/strict";
 import { access, mkdir, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -56,8 +57,7 @@ async function mountApp(
   resultMeta: Record<string, unknown> = {},
   hostCapabilities: Record<string, unknown> | null = { message: { text: {} }, updateModelContext: { text: {} } },
 ) {
-  const template = await readFile("assets/loomex-app.html", "utf8");
-  const html = template.replace("__LOOMEX_MODE__", mode);
+  const html = renderUiHtml(mode);
   const harnessUrl = `http://127.0.0.1/loomex-${mode}-${Date.now()}`;
   await page.route(harnessUrl, (route: any) => route.fulfill({
     contentType: "text/html",
@@ -1445,7 +1445,7 @@ test("prepared run shows one readable permission review and preserves exact comm
   for (const id of [prepared.binding.workflowId, prepared.binding.versionId, prepared.binding.organizationId, prepared.binding.installationId]) assert.ok(!visible.includes(id));
   assert.equal((visible.match(/Idea to Implementation/g) || []).length, 1);
   assert.equal((visible.match(/Loomex Studio/g) || []).length, 1);
-  assert.equal((visible.match(/Version 1/g) || []).length, 1);
+  assert.equal((visible.match(/Version 1/gi) || []).length, 1);
   assert.equal((visible.match(/This Mac/g) || []).length, 1);
   assert.match(visible, /Permissions/);
   assert.match(visible, /read and change files and run commands/);
@@ -1531,7 +1531,10 @@ test("stale preparations require a fresh review without reusing confirmation or 
     code: "EXECUTION_BINDING_CONFLICT", message: "The workflow or its execution settings changed after preparation.",
   } } }]; });
   await app.getByRole("button", { name: "Retry exact start", exact: true }).click();
-  await app.getByRole("button", { name: "Review again", exact: true }).waitFor();
+  await app.getByRole("button", { name: "Review again", exact: true }).waitFor({ timeout: 5_000 }).catch(async (error: unknown) => {
+    const state = await page.evaluate(() => ({ calls: window.__loomexCalls, body: document.getElementById("app").contentDocument.body.innerText, action: document.getElementById("app").contentDocument.getElementById("primary").outerHTML }));
+    throw new Error(`Stale-preparation recovery did not render: ${JSON.stringify(state)}`, { cause: error });
+  });
   const staleCommit = (await page.evaluate(() => window.__loomexCalls))[1];
   assert.deepEqual(staleCommit.arguments, ambiguousCommit.arguments, "an ambiguous start retains its exact confirmation and idempotency key");
   assert.equal(await app.getByRole("button", { name: "Start run" }).count(), 0);
@@ -2025,6 +2028,19 @@ test("all five views share design tokens, responsive components, focus states an
           font: css.fontFamily, titleSize: title.fontSize, titleColor: title.color,
           buttonHeight: refresh.minHeight, buttonRadius: refresh.borderRadius, buttonColor: refresh.color };
       });
+      assert.equal(await app.locator("body").evaluate((body: any) => body.ownerDocument.defaultView.getComputedStyle(body).backgroundColor), "rgb(10, 10, 10)", "the embedded view uses the actual frontend dark canvas in either host theme");
+      assert.match(styles.font, /Inter/);
+      assert.equal(styles.buttonRadius, "8px", "controls retain the frontend component radius");
+      const card = app.locator(".glass-panel").first();
+      if (await card.count()) assert.equal(await card.evaluate((node: any) => node.ownerDocument.defaultView.getComputedStyle(node).borderRadius), "12px");
+      const primaryButton = app.locator("button.btn-primary:visible").first();
+      if (await primaryButton.count()) {
+        const primaryStyle = await primaryButton.evaluate((node: any) => {
+          const style = node.ownerDocument.defaultView.getComputedStyle(node);
+          return { background: style.backgroundColor, color: style.color };
+        });
+        assert.deepEqual(primaryStyle, { background: "rgb(255, 255, 255)", color: "rgb(0, 0, 0)" }, "primary actions use the frontend white/black treatment");
+      }
       if (baseline === undefined) baseline = styles;
       else assert.deepEqual(styles, baseline, `${mode} must use the same shared shell and controls`);
       assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
@@ -2036,21 +2052,20 @@ test("all five views share design tokens, responsive components, focus states an
       await focusTarget.focus();
       const focus = await focusTarget.evaluate((target: any) => target.ownerDocument.defaultView.getComputedStyle(target).outlineStyle);
       assert.equal(focus, "solid");
-      const previousSizeCount = await page.evaluate(() => window.__loomexSizes.length);
       await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({
         jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { isError: true, structuredContent: { ok: false, error: { code: "TEST_ERROR" } } },
       }, "*"));
       await app.locator('#summary.error[role="alert"]').waitFor();
       await app.getByRole("heading", { name: expectedHeading, exact: true }).waitFor();
-      await waitForSettledAppSize(page, previousSizeCount);
+      await waitForSettledAppSize(page); // Identical geometry does not require another resize notification.
       if (directory && width === 760 && theme === "light") await app.locator("main").screenshot({ path: resolve(directory, `${mode}-error.png`) });
     }
   }
   const template = await readFile("assets/loomex-app.html", "utf8");
-  const css = template.split("<style>")[1]?.split("</style>")[0] || "";
+  const css = [...template.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(match => match[1]).join("\n");
   assert.doesNotMatch(css, /data-mode|prepare-/);
-  assert.match(css, /--card-background/);
-  assert.match(css, /--control-height/);
+  assert.doesNotMatch(css, /--green-|--red-|CanvasText|prefers-color-scheme/);
+  assert.match(css, /--loomex-control-height/);
 });
 
 test("workflow browser searches, pages, reviews and hands off preparation without execution", async (t) => {
@@ -2065,7 +2080,7 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   const app = await mountApp(page, "browser", first, false, false, null, false, { "loomex/taskWorkspace": { taskContext } });
   await app.getByRole("heading", { name: "Browse workflows", exact: true }).waitFor();
   await captureRequestedScreenshots(page, "workflow-list");
-  assert.match(await app.locator("body").innerText(), /Published/);
+  assert.match(await app.locator("body").innerText(), /Published/i);
   assert.match(await app.locator("body").innerText(), /v4/);
   assert.match(await app.locator("body").innerText(), /11 steps/);
   assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);

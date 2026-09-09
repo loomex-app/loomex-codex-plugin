@@ -129,3 +129,7 @@ direct_only_tool_namespaces = ["mcp__loomex"]
 Merge this into existing configuration, preserving other namespaces and the existing enabled state. Do not disable code mode globally or rewrite unrelated settings. The plugin cannot enforce this host setting. Restart the desktop host after changing routing so the active task receives the new tool surface. See the [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
 Regression checks distinguish explicitly empty pages from missing or malformed payloads. Test native structured data, hydration metadata, safe model-facing page summaries and typed-schema availability. Then test an installed Codex direct invocation both with the normal host configuration and with code mode enabled in an isolated process. Record native desktop rendering separately; a successful CLI call or browser harness does not establish that the desktop mounted a card.
+
+### Frontend design-system delivery
+
+The custom views consume a generated offline export of the frontend UI CSS, not a separate theme. When changing styles or utility classes, run `npm run design:sync` and `npm run design:check` against the intended frontend checkout, then review the generated CSS/provenance diff. The UI renderer verifies the packaged CSS hash before serving a resource. Follow [design-system.md](design-system.md) for source ownership, fixed dark-mode semantics, and accessibility adaptations. Set `LOOMEX_DESIGN_SCREENSHOT_DIR` while running the Chromium suite to inspect every resource and its error state.

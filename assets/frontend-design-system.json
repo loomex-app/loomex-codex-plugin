@@ -1,0 +1,51 @@
+{
+  "schema": "loomex/frontend-design-system/v1",
+  "frontendRevision": "04ba5e36993a5eba15727d4335b63aab19dcb386",
+  "compiler": {
+    "name": "@tailwindcss/node",
+    "version": "4.3.0"
+  },
+  "sources": {
+    "packages/ui/src/styles.css": "43b22bc43e0750f5254aa32766bd1ed384f443e3590b4f44ea962bf3000e79a1",
+    "packages/ui/src/components/Button.tsx": "e1803c77c988e7bea1c4158c0089a36486e62c859df1dd6640d5cd992b6e07d2",
+    "packages/ui/src/components/StatusBadge.tsx": "8910209413318bcca0e9719fb1d32f85410ff992a8530c845f0f6202ee1c3f5f",
+    "packages/ui/src/components/forms.tsx": "5961f75534a2c116dae2b5c959ff20ac215bd9c959a775c65b6f2269e3d53a32",
+    "packages/theme/src/brandTokens.ts": "41144301a71319f47ad32eeda807f3c5ed497a7af08848f1b68233b1d672cd06",
+    "packages/theme/src/neutralThemeOptions.ts": "0248fd4a0077a7212884f3b96b09db73ad4a7b002b40afdfd2122ffec799a2eb",
+    "pnpm-lock.yaml": "f432cad090bf9173090e7b227d850328a7a88e09ce0ba47665fcceb0c3e5c1f9"
+  },
+  "statusClasses": {
+    "active": "bg-brand-teal/10 text-brand-teal border-brand-teal/20",
+    "healthy": "bg-brand-teal/10 text-brand-teal border-brand-teal/20",
+    "succeeded": "bg-brand-teal/10 text-brand-teal border-brand-teal/20",
+    "published": "bg-brand-teal/10 text-brand-teal border-brand-teal/20",
+    "info": "bg-brand-teal/10 text-brand-teal border-brand-teal/20",
+    "completed": "bg-brand-teal/10 text-brand-teal border-brand-teal/20",
+    "connected": "bg-brand-teal/10 text-brand-teal border-brand-teal/20",
+    "trial": "bg-brand-violet/10 text-brand-violet border-brand-violet/20",
+    "invited": "bg-brand-violet/10 text-brand-violet border-brand-violet/20",
+    "running": "bg-brand-violet/10 text-brand-violet border-brand-violet/20",
+    "retrying": "bg-brand-violet/10 text-brand-violet border-brand-violet/20",
+    "draft": "bg-brand-violet/10 text-brand-violet border-brand-violet/20",
+    "medium": "bg-brand-violet/10 text-brand-violet border-brand-violet/20",
+    "warning": "bg-orange-500/10 text-orange-400 border-orange-500/20",
+    "waiting": "bg-orange-500/10 text-orange-400 border-orange-500/20",
+    "high": "bg-orange-500/10 text-orange-400 border-orange-500/20",
+    "pending": "bg-orange-500/10 text-orange-400 border-orange-500/20",
+    "inactive": "bg-white/5 text-gray-500 border-white/10",
+    "no_runs": "bg-white/5 text-gray-500 border-white/10",
+    "suspended": "bg-brand-pink/10 text-brand-pink border-brand-pink/20",
+    "locked": "bg-brand-pink/10 text-brand-pink border-brand-pink/20",
+    "failing": "bg-brand-pink/10 text-brand-pink border-brand-pink/20",
+    "failed": "bg-brand-pink/10 text-brand-pink border-brand-pink/20",
+    "disabled": "bg-brand-pink/10 text-brand-pink border-brand-pink/20",
+    "urgent": "bg-brand-pink/10 text-brand-pink border-brand-pink/20",
+    "critical": "bg-brand-pink/10 text-brand-pink border-brand-pink/20",
+    "error": "bg-brand-pink/10 text-brand-pink border-brand-pink/20",
+    "low": "bg-white/5 text-gray-500 border-white/10",
+    "unknown": "bg-white/5 text-gray-500 border-white/10"
+  },
+  "templateSha256": "2d95d2dfe5fd8b93a14a64f75b8396e05fbc71d6dbb0a8c018ec100bbd242667",
+  "candidatesSha256": "900b1bd308df9eceb917cc073e22672c18fb4f72e79c2cfd8eb33ee84aeec9f7",
+  "cssSha256": "b2a0e998099a2b3fa75c80ee37704a17bae2485b0f247d46227521ed8141ce83"
+}

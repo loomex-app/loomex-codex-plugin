@@ -1041,9 +1041,12 @@ test("MCP Apps resources use the portable bridge and no external network", async
     assert.match(text, /ui\/initialize/);
     assert.match(text, /tools\/call/);
     assert.match(text, /Content-Security-Policy/);
+    assert.doesNotMatch(text, /__LOOMEX_DESIGN_SYSTEM__|@import\s|url\(/);
+    assert.match(text, /--color-brand-teal/);
+    assert.match(text, /\.btn-primary/);
     assert.doesNotMatch(text, /window\.openai/);
     // The SVG namespace identifies local vector elements; it is not a network resource.
-    assert.doesNotMatch(text.replaceAll("http://www.w3.org/2000/svg", ""), /https?:\/\//);
+    assert.doesNotMatch(text.replaceAll("http://www.w3.org/2000/svg", "").replaceAll("https://tailwindcss.com", ""), /https?:\/\//);
     assert.match(text, /data\.execution/);
     assert.match(text, /data\.humanRequest/);
     assert.match(text, /data\.builderSession/);

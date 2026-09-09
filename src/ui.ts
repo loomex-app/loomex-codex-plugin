@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { renderUiHtml } from "./ui-template.js";
 
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -11,11 +11,6 @@ import {
   MONITOR_UI_URI,
   PREPARE_UI_URI,
 } from "./tool-catalog.js";
-
-const UI_TEMPLATE = readFileSync(
-  new URL("../assets/loomex-app.html", import.meta.url),
-  "utf8",
-);
 
 const RESOURCES = [
   { name: "loomex-browser", uri: BROWSER_UI_URI, mode: "browser" },
@@ -33,7 +28,7 @@ function resourceContents(uri: string, mode: string) {
   return { contents: [{
     uri,
     mimeType: "text/html;profile=mcp-app",
-    text: UI_TEMPLATE.replace("__LOOMEX_MODE__", mode),
+    text: renderUiHtml(mode),
     _meta: { ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [], frameDomains: [] } } },
   }] };
 }

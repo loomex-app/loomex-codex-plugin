@@ -1,18 +1,25 @@
 # Loomex custom UI design system
 
-All five MCP Apps views—workflow browsing, run preparation, workflow authoring, run monitoring and human interaction—use the same design system. The source is the single inline stylesheet and reusable presentation classes in `assets/loomex-app.html`. `src/ui.ts` uses this same template for every resource; no network stylesheet, runtime UI framework or separate per-view theme is needed.
+All five MCP Apps views use the **frontend design system** from `frontend/packages/ui/src/styles.css` and its Button, Field and StatusBadge components. The plugin does not own another palette. `assets/frontend-design-system.css` is a generated distribution snapshot, with source revision, input hashes, compiler version and output checksum in `assets/frontend-design-system.json`.
 
-## Tokens
+`src/ui-template.ts` verifies and inlines that snapshot into every resource. The browser harness uses the same renderer. Installed views require no frontend checkout, React runtime, external stylesheet, font download or network permission. The local stylesheet in `assets/loomex-app.html` owns only the compact iframe layout, domain-specific choice/rating widgets, and accessibility adaptations.
 
-The stylesheet declares three layers in one place:
+## Foundations and components
 
-| Layer | Responsibility |
-| --- | --- |
-| Primitive | Green/red palette, spacing scale, font families, sizes and radii |
-| Semantic | Canvas background/foreground, muted text, border, primary action, destructive action, error surface and focus ring |
-| Component | Shell width/padding, section gap, card surface/padding and control height/border |
+The frontend UI currently uses a dark canvas and card surfaces, white primary actions, transparent secondary actions, teal selection/success, violet running/draft, orange waiting and pink failure/destructive states. Its neutral theme factory exposes a light mode, but its actual UI component stylesheet is dark; embedded views deliberately use the shipped dark component design rather than inventing an inconsistent light variant. A future frontend light design must be exported and validated together with its components.
 
-The shell is 720px wide with 12px gutters and 12px section gaps. System fonts, a 20px content heading, 8px card corners and 7px controls apply everywhere. Desktop controls are 36px square; coarse-pointer devices use 44px targets. Light and dark modes share semantic tokens.
+Typography inherits the frontend Inter/system and JetBrains Mono/system font stacks. No web fonts are fetched. Cards use the frontend 12px radius; controls use its 8px radius and shared transition/state styling. The iframe retains compact 12px gutters, a 720px maximum width and 12px section gaps. Icon targets are at least 36px on desktop and 44px on coarse pointers; keyboard focus stays visible even where the frontend input class suppresses the native outline. Small muted labels use the frontend gray-400 token for contrast on dark cards; execution waiting states use its orange waiting color.
+
+## Updating the shared export
+
+From the plugin root, with frontend dependencies installed using its pinned package manager:
+
+```sh
+npm run design:sync
+npm run design:check
+```
+
+For a separate frontend checkout use `node scripts/sync-design-system.mjs --frontend /absolute/path/to/frontend`. Review and commit the generated CSS and provenance together. The export compiles the actual frontend CSS and discovers utility candidates from the plugin template and canonical frontend button/status variants. It rejects network imports and resource URLs. Do not edit the snapshot manually. Normal plugin release builds verify the packaged hash without requiring a sibling checkout; design changes additionally require the explicit upstream sync check.
 
 A compact contextual toolbar identifies the current stage (browse, workflow details, setup, review, monitoring or response). There is no branded header, visible connection control or persistent connection footer. Refresh sits in the toolbar; run duration appears at the top right. An action bar appears only when there are actions. Run status, stage and current step share one wrapping line instead of a statistics grid. Started/completed timestamps live in a Run timing information tooltip. Missing or invalid timestamps do not invent a duration; terminal runs without completion timestamps omit it.
 

@@ -54,3 +54,6 @@ diagnostics should verify that the supported
 cannot change that host setting. Installed transport and browser-resource
 checks do not prove that a native Codex card rendered; record that only from
 an authorized host observation.
+
+
+Custom views consume the frontend design system through a pinned, compiled CSS artifact. The shared renderer inlines it offline for every MCP resource. See [design-system.md](docs/design-system.md) for canonical sources, sync/check commands, dark-mode behavior and accessibility adaptations.
