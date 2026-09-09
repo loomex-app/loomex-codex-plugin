@@ -12,6 +12,8 @@ const provenanceSchema = z.object({
     "packages/ui/src/components/Button.tsx": digest,
     "packages/ui/src/components/StatusBadge.tsx": digest,
     "packages/ui/src/components/forms.tsx": digest,
+    "packages/ui/src/components/Pagination.tsx": digest,
+    "packages/ui/src/components/Select.tsx": digest,
     "packages/theme/src/brandTokens.ts": digest,
     "packages/theme/src/neutralThemeOptions.ts": digest,
     "pnpm-lock.yaml": digest,

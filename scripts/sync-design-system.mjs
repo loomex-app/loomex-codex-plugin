@@ -18,6 +18,7 @@ const frontend = resolve(frontendArg >= 0 ? args[frontendArg + 1] : resolve(root
 const sourcePaths = [
   'packages/ui/src/styles.css', 'packages/ui/src/components/Button.tsx',
   'packages/ui/src/components/StatusBadge.tsx', 'packages/ui/src/components/forms.tsx',
+  'packages/ui/src/components/Pagination.tsx', 'packages/ui/src/components/Select.tsx',
   'packages/theme/src/brandTokens.ts', 'packages/theme/src/neutralThemeOptions.ts',
   'pnpm-lock.yaml',
 ];
@@ -31,7 +32,7 @@ const { compile } = await import(pathToFileURL(compilerEntry).href);
 const template = await readFile(resolve(root, 'assets/loomex-app.html'), 'utf8');
 // Include complete literal utility tokens from the template and canonical React variants.
 // No runtime scan or frontend checkout is required by the installed plugin.
-const candidates = [...new Set([template, sources['packages/ui/src/components/Button.tsx'], sources['packages/ui/src/components/StatusBadge.tsx'], sources['packages/ui/src/components/forms.tsx']]
+const candidates = [...new Set([template, sources['packages/ui/src/components/Button.tsx'], sources['packages/ui/src/components/StatusBadge.tsx'], sources['packages/ui/src/components/forms.tsx'], sources['packages/ui/src/components/Pagination.tsx'], sources['packages/ui/src/components/Select.tsx']]
   .flatMap(source => source.match(/[^\s"'`<>={}(),;]+/g) ?? []))].sort();
 const compiler = await compile(sources['packages/ui/src/styles.css'], {
   base: resolve(frontend, 'apps/design-system'), onDependency() {},

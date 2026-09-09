@@ -20,9 +20,11 @@
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--color-bg-dark); color: var(--color-gray-300); font-family: var(--font-sans); font-size: 0.875rem; line-height: 1.5; }
-    main { display: grid; width: 100%; max-width: var(--loomex-shell-width); margin: 0 auto; padding: 0 var(--loomex-space-3); }
+    main { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; max-width: var(--loomex-shell-width); margin: 0 auto; padding: 0 var(--loomex-space-3); }
     .app-header { display: flex; align-items: center; justify-content: space-between; gap: var(--loomex-space-2); min-height: 48px; }
-    h1 { margin: 0; font-size: 13px; font-weight: 650; line-height: 1.3; color: var(--color-gray-400); }
+    .header-identity { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; flex-wrap: wrap; gap: var(--loomex-space-2); }
+    h1 { min-width: 0; flex: 1 1 auto; margin: 0; font-size: 13px; font-weight: 650; line-height: 1.3; color: var(--color-gray-400); overflow-wrap: anywhere; }
+    .header-stage, .header-status { min-width: 0; max-width: min(18rem, 45vw); overflow: hidden; text-overflow: ellipsis; flex: none; font-size: 11px; line-height: 1.2; white-space: nowrap; }
     .header-tools { display: flex; align-items: center; gap: var(--loomex-space-1); }
     .app-body { display: grid; gap: var(--loomex-space-3); padding: 0 0 var(--loomex-space-2); }
     .app-footer { padding: var(--loomex-space-1) 0 var(--loomex-space-2); }
@@ -42,6 +44,7 @@
     .ui-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--loomex-space-3); margin: 0; }
     .ui-card { min-width: 0; display: grid; align-content: start; gap: var(--loomex-space-2); padding: var(--loomex-space-3); }
     fieldset { min-width: 0; margin: 0; padding: var(--loomex-space-3); }
+    fieldset.single-question legend { max-width: 100%; color: var(--color-white); font-size: 20px; line-height: 1.2; font-weight: 700; letter-spacing: -.035em; overflow-wrap: anywhere; }
     .ui-label { margin: 0; color: var(--color-gray-400); font-size: 12px; font-weight: 550; }
     .ui-value { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
     .workspace-path { margin: 0; font: 11px/1.6 var(--font-mono); color: var(--color-gray-400); overflow-wrap: anywhere; }
@@ -63,10 +66,6 @@
     .workflow-detail-item dd { margin: 0; text-align: right; }
     .ui-list { margin: 0; padding-left: var(--loomex-space-5); display: grid; gap: var(--loomex-space-1); font-size: 13px; }
     .ui-list li { overflow-wrap: anywhere; white-space: pre-wrap; }
-    .progress-steps { display: flex; flex-wrap: wrap; align-items: center; gap: var(--loomex-space-2); margin: 0; padding: 0; list-style: none; color: var(--color-gray-400); font-size: 12px; }
-    .progress-steps li { display: flex; align-items: center; gap: var(--loomex-space-2); }
-    .progress-steps li:not(:last-child)::after { content: "→"; color: var(--color-gray-400); }
-    .progress-steps [aria-current="step"] { color: var(--color-brand-teal); font-weight: 700; }
     .review-list { margin: 0; display: grid; gap: var(--loomex-space-1); font-size: 13px; }
     .review-list dt { font-weight: 550; }
     .review-list dd { margin: 0 0 var(--loomex-space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -89,6 +88,7 @@
     .ui-disclosure dl { padding-top: var(--loomex-space-3); font-size: 11px; }
     .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--loomex-space-2); align-items: center; }
     .actions > .ui-caption:first-child { margin-right: auto; }
+    .app-footer .actions #secondary { margin-right: auto; }
     .app-body > .actions, .app-body .workflow-detail > .actions, .app-body nav.actions, .app-body section.actions { border-top: 1px solid var(--color-line); padding-top: var(--loomex-space-2); }
     .loomex-danger { border-color: color-mix(in srgb, var(--color-brand-pink) 35%, transparent); color: var(--color-brand-pink); }
     .loomex-danger:hover:not(:disabled) { border-color: var(--color-brand-pink); background: color-mix(in srgb, var(--color-brand-pink) 10%, transparent); }
@@ -121,6 +121,8 @@
     .rating-choice input:focus-visible + span { outline: 2px solid var(--color-brand-teal); outline-offset: 3px; }
     button.ui-button { min-height: var(--loomex-control-height); }
     button.ui-button-icon { width: var(--loomex-control-height); height: var(--loomex-control-height); }
+    button.action-with-label { width: auto; gap: var(--loomex-space-2); padding-inline: var(--loomex-space-3); }
+    button.action-with-label svg { width: 1rem; height: 1rem; pointer-events: none; }
     button.icon-button { flex: none; }
     .icon-button svg { width: 1rem; height: 1rem; pointer-events: none; }
     button.info-button { color: var(--color-gray-400); border-color: transparent; }
@@ -140,8 +142,9 @@
     .workflow-search { display: flex; align-items: center; gap: var(--loomex-space-2); }
     .workflow-search input { flex: 1; }
     .workflow-search-actions { flex-wrap: nowrap; }
-    .workflow-pagination { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, auto); }
-    .workflow-pagination output { align-self: center; font-variant-numeric: tabular-nums; }
+    .ui-data-table-pagination { min-width: 0; }
+    .ui-data-table-pagination-actions { min-width: 0; flex-wrap: wrap; }
+    .workflow-page-size { width: auto; max-width: 100%; min-width: 8.25rem; min-height: var(--loomex-control-height); }
     .workflow-loading-host { position: relative; isolation: isolate; }
     .workflow-loading-host > :not(.workflow-skeleton, .workflow-loading-status) { visibility: hidden; }
     .workflow-loading-status { position: absolute; inset: 0 auto auto 0; z-index: 2; min-height: var(--loomex-control-height); background: var(--color-bg-dark); }
@@ -162,6 +165,7 @@
       .workflow-detail-heading { flex-wrap: wrap; }
       .workflow-detail-heading .ui-hero { width: 100%; }
       .workflow-detail-heading-actions { width: 100%; justify-content: flex-end; }
+      .header-stage, .header-status { max-width: 100%; }
     }
     @media (pointer: coarse) { :root { --loomex-control-height: 44px; } }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
@@ -170,7 +174,11 @@
 <body data-mode="__LOOMEX_MODE__" data-theme-app="workspace" data-theme-mode="dark" data-theme-name="neutral">
 <main>
   <header class="app-header">
-    <h1 id="title">Workflows</h1>
+    <div class="header-identity">
+      <h1 id="title">Workflow</h1>
+      <span id="header-stage" class="ui-badge header-stage" aria-label="Current stage" hidden></span>
+      <span id="header-status" class="ui-badge header-status" aria-label="Current status" hidden></span>
+    </div>
     <div class="header-tools">
       <span id="run-clock" class="run-clock" hidden></span>
       <span id="connection" class="sr-only">Connecting…</span>
@@ -206,6 +214,8 @@
   const primary = document.getElementById("primary");
   const secondary = document.getElementById("secondary");
   const title = document.getElementById("title");
+  const headerStage = document.getElementById("header-stage");
+  const headerStatus = document.getElementById("header-status");
 
   const pending = new Map();
   const mutationKeys = new Map();
@@ -325,11 +335,14 @@
 
   function setAction(button, label) {
     applyButtonStyle(button);
-    button.classList.add("icon-button", "ui-button-icon");
+    const showLabel = /^(Review|Submit) answers?$|^Start run$/.test(label);
+    button.classList.toggle("icon-button", !showLabel);
+    button.classList.toggle("ui-button-icon", !showLabel);
+    button.classList.toggle("action-with-label", showLabel);
     button.classList.remove("ui-button-sm", "ui-button-md");
     button.setAttribute("aria-label", label);
     delete button.dataset.tooltip;
-    button.replaceChildren(icon(actionIcon(label)), element("span", { className: "sr-only" }, label));
+    button.replaceChildren(icon(actionIcon(label)), element("span", { className: showLabel ? "action-label" : "sr-only" }, label));
   }
   function infoButton(label, description) {
     const button = element("button", { type: "button", className: "secondary info-button" }, label);
@@ -411,12 +424,34 @@
       clock.setAttribute("aria-label", `Elapsed time: ${duration}`);
     }
   }
+  function headerRequest() {
+    return runHumanRequest?.() || humanRequest?.(latest || {});
+  }
+
+  function headerIdentity(request) {
+    const requestWorkflow = safeText(request?.execution?.workflowName);
+    if (requestWorkflow) return requestWorkflow;
+    if (runFlow) return ({ setup: "Run setup", review: "Review run", monitor: request ? "Your response" : "Run monitor" }[runFlow.stage]);
+    if (mode === "browser" && browserSelected) return "Workflow details";
+    if (mode === "authoring" && !builderSessionId(latest || {}) && Boolean(latest?.workflow)) return "Workflow details";
+    return labels[mode] || "Workflow";
+  }
+
   function syncChrome() {
     if (tooltipTarget && (!tooltipTarget.isConnected || tooltipTarget.disabled)) hideTooltip();
-    title.textContent = runFlow ? ({ setup: "Run setup", review: "Review run", monitor: runHumanRequest() ? "Your response" : "Run monitor" }[runFlow.stage])
-      : mode === "browser" && browserSelected ? "Workflow details"
-        : mode === "authoring" && !builderSessionId(latest || {}) && Boolean(latest?.workflow) ? "Workflow details"
-          : labels[mode] || "Workflow";
+    const request = headerRequest();
+    const presentation = humanPresentation(request);
+    title.textContent = headerIdentity(request);
+    const stageLabel = safeText(presentation?.stageLabel);
+    headerStage.hidden = !stageLabel;
+    headerStage.textContent = stageLabel || "";
+    headerStage.setAttribute("aria-label", stageLabel ? `Current stage: ${stageLabel}` : "Current stage");
+    const execution = request?.execution || runFlow?.result?.execution || latest?.execution;
+    const status = formatStatus(execution?.status);
+    headerStatus.hidden = !status;
+    headerStatus.textContent = status || "";
+    headerStatus.setAttribute("aria-label", status ? `Current status: ${status}` : "Current status");
+    if (status) applyBadgeStyle(headerStatus);
     updateClock();
     updateActivity();
   }
@@ -520,61 +555,27 @@
     return items.length;
   }
 
-  function appendRequirementsContext(parent, presentation, excluded) {
-    const content = element("div", { className: "ui-stack" });
-    const count = appendTextList(content, "Requirements gathered", presentation.priorRequirements, excluded) +
-      appendTextList(content, "Decisions", presentation.decisions, excluded) +
-      appendTextList(content, "Open questions", presentation.openQuestions, excluded);
-    if (!count) return;
-    const details = element("details", { className: "ui-disclosure" });
-    details.append(element("summary", {}, `Requirements context (${count} ${count === 1 ? "item" : "items"})`), content);
-    parent.append(details);
-  }
-
-  function appendProgress(parent, stageLabel) {
-    const current = safeText(stageLabel);
-    if (!current) return;
-    const stages = ["Idea", "Clarify", "Build", "Review"];
-    const normalized = current.toLowerCase();
-    const matched = stages.find((stage) => normalized === stage.toLowerCase());
-    if (!matched) {
-      const meta = element("div", { className: "ui-meta" });
-      meta.append(element("span", { className: "ui-badge" }, current));
-      parent.append(meta);
-      return;
-    }
-    const list = element("ol", { className: "progress-steps", "aria-label": "Workflow progress" });
-    for (const stage of stages) {
-      list.append(element("li", stage === matched ? { "aria-current": "step" } : {}, stage));
-    }
-    parent.append(list);
-  }
-
   function renderHumanPresentation(request, spec) {
     const presentation = humanPresentation(request);
     if (!presentation) return false;
     const wrapper = element("div", { className: "ui-stack" });
-    const hero = element("div", { className: "ui-hero" });
-    const heading = safeText(request && request.title) || (presentation.kind === "review" ? "Implementation review" : "Requirements progress");
-    hero.append(element("h2", {}, heading));
-    appendProgress(hero, presentation.stageLabel);
-    if (safeText(presentation.summary)) hero.append(element("p", { className: "ui-caption" }, safeText(presentation.summary)));
-    wrapper.append(hero);
     const questionTexts = new Set(questionCopyValues(spec).map(normalizedCopy));
-    appendTextList(wrapper, "Changed files", presentation.changedFiles, questionTexts);
-    appendTextList(wrapper, "Checks", presentation.verification, questionTexts);
-    appendTextList(wrapper, "Limitations", presentation.limitations, questionTexts);
-    appendTextList(wrapper, "Artifacts", presentation.artifacts, questionTexts);
     if (presentation.kind === "review") {
+      const hero = element("div", { className: "ui-hero" });
+      hero.append(element("h2", {}, safeText(request && request.title) || "Implementation review"));
+      if (safeText(presentation.summary)) hero.append(element("p", { className: "ui-caption" }, safeText(presentation.summary)));
+      wrapper.append(hero);
+      appendTextList(wrapper, "Changed files", presentation.changedFiles, questionTexts);
+      appendTextList(wrapper, "Checks", presentation.verification, questionTexts);
+      appendTextList(wrapper, "Limitations", presentation.limitations, questionTexts);
+      appendTextList(wrapper, "Artifacts", presentation.artifacts, questionTexts);
       appendTextList(wrapper, "Requirements gathered", presentation.priorRequirements, questionTexts);
       appendTextList(wrapper, "Decisions", presentation.decisions, questionTexts);
       appendTextList(wrapper, "Open questions", presentation.openQuestions, questionTexts);
-    } else {
-      appendRequirementsContext(wrapper, presentation, questionTexts);
     }
     context.className = "ui-stack";
     context.replaceChildren(wrapper);
-    context.hidden = false;
+    context.hidden = !wrapper.childElementCount;
     return true;
   }
 
@@ -650,14 +651,13 @@
     const hero = element("div", { className: "ui-hero" });
     hero.append(element("h2", {}, heading));
     const meta = element("div", { className: "run-meta" });
-    meta.append(element("span", { className: "run-status", dataset: { state: String(run.status || "").toLowerCase() } }, formatStatus(run.status) || "Checking status"));
     const stage = safeText(run.stageLabel);
     const step = safeText(run.currentNodeName);
     if (stage) meta.append(element("span", {}, stage));
     if (step && step !== stage) meta.append(element("span", {}, step));
     const dates = [["Started", formatDateTime(run.startedAt)], ["Completed", formatDateTime(run.completedAt)]].filter(([, value]) => value);
     if (dates.length) meta.append(infoButton("Run timing", dates.map(([label, value]) => `${label}: ${value}`).join(". ")));
-    hero.append(meta);
+    if (meta.childElementCount) hero.append(meta);
     context.className = "ui-stack";
     context.replaceChildren(hero);
     context.hidden = false;
@@ -1045,9 +1045,6 @@
     const version = workflowVersionNumber(selected?.version);
     hero.append(element("p", { className: "ui-meta" }, Number.isInteger(version) ? `Version ${version}` : "Pinned version"));
     context.append(hero);
-    const steps = element("ol", { className: "progress-steps", "aria-label": "Run progress" });
-    for (const [key, label] of [["setup", "Setup"], ["review", "Review"], ["monitor", "Run"]]) steps.append(element("li", key === "setup" ? { "aria-current": "step" } : {}, label));
-    context.append(steps);
     if (!runFlow.analysis.supported) {
       context.append(element("div", { className: "ui-callout" }, runFlow.analysis.reason));
       form.hidden = true;
@@ -1112,9 +1109,6 @@
     secondary.hidden = !runFlow.setup; setAction(secondary, "Edit setup"); secondary.disabled = runFlow.busy || runFlow.operations.size > 0;
     preparationView(runFlow.prepared);
     const review = context.firstElementChild;
-    const steps = element("ol", { className: "progress-steps", "aria-label": "Run progress" });
-    for (const [key, label] of [["setup", "Setup"], ["review", "Review"], ["monitor", "Run"]]) steps.append(element("li", key === "review" ? { "aria-current": "step" } : {}, label));
-    review.insertBefore(steps, review.children[1] || null);
     context.setAttribute("aria-busy", String(runFlow.busy));
     primary.hidden = false;
     const operation = runFlow.operations.values().next().value;
@@ -1532,9 +1526,6 @@
       return;
     }
     renderRun(runFlow.result.execution || {});
-    const steps = element("ol", { className: "progress-steps", "aria-label": "Run progress" });
-    for (const [key, label] of [["setup", "Setup"], ["review", "Review"], ["monitor", "Run"]]) steps.append(element("li", key === "monitor" ? { "aria-current": "step" } : {}, label));
-    context.insertBefore(steps, context.firstChild);
     context.setAttribute("aria-busy", String(runFlow.busy));
     summary.classList.remove("error"); summary.setAttribute("role", "status");
     const terminal = terminalRun(runFlow.result.execution || {});
@@ -2087,7 +2078,10 @@
     const presentation = humanPresentation(request);
     const questionCopies = new Set(questionCopyValues(spec).map(normalizedCopy));
     const candidateHeading = typeof request.title === "string" ? request.title.trim() : "";
-    const heading = presentation || questionCopies.has(normalizedCopy(candidateHeading)) ? "" : candidateHeading;
+    const askingQuestion = inputSpecSupported(spec);
+    const heading = presentation || (askingQuestion && presentation?.kind !== "review") || questionCopies.has(normalizedCopy(candidateHeading))
+      ? ""
+      : candidateHeading;
     const descriptions = [];
     const seen = new Set([normalizedCopy(heading), ...questionCopies]);
     if (presentation) {
@@ -2168,7 +2162,7 @@
     stack.append(label, entry);
   }
 
-  function renderQuestion(spec, schema, initial, questionIndex, batch) {
+  function renderQuestion(spec, schema, initial, questionIndex, batch, helperText) {
     const questionId = String(spec.id || `question_${questionIndex + 1}`);
     const inputType = normalizeInputType(spec.inputType);
     const answer = initialQuestionAnswer(initial, questionId, batch);
@@ -2176,10 +2170,12 @@
     const errorId = `question-${questionIndex}-error`;
     const legendId = `question-${questionIndex}-legend`;
     const fieldset = element("fieldset", {
+      className: batch ? "" : "single-question",
       dataset: { questionId, inputType, required: String(required), errorId },
       "aria-describedby": errorId,
     });
-    const legend = element("legend", { id: legendId }, spec.question);
+    const legend = element("legend", { id: legendId });
+    legend.append(batch ? spec.question : element("span", { role: "heading", "aria-level": "2" }, spec.question));
     if (required) legend.append(" ", element("span", { className: "required-mark", "aria-hidden": "true" }, "*"));
     fieldset.append(legend);
     const stack = element("div", { className: "control-stack" });
@@ -2258,8 +2254,18 @@
       }
       appendOtherControl(stack, fieldset, inputType, questionIndex, spec, answer);
     }
+    const helper = safeText(helperText)
+      ? element("p", { id: `question-${questionIndex}-helper`, className: "hint" }, safeText(helperText))
+      : null;
+    if (helper) {
+      for (const control of stack.querySelectorAll("input, textarea, select")) {
+        const descriptions = new Set(String(control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+        descriptions.add(helper.id);
+        control.setAttribute("aria-describedby", [...descriptions].join(" "));
+      }
+    }
     const error = element("p", { id: errorId, className: "field-error", role: "alert", hidden: true, dataset: { fieldError: "true" } });
-    fieldset.append(stack, error);
+    fieldset.append(stack, ...(helper ? [helper] : []), error);
     form.append(fieldset);
   }
 
@@ -2270,12 +2276,15 @@
     appendRequestCopy(request || {}, spec);
     const acceptance = humanPresentation(request || {})?.kind === "review" && questions.length === 1 &&
       normalizeInputType(questions[0].inputType || spec.inputType) === "boolean";
+    const clarificationHelper = questions.length === 1 && humanPresentation(request || {})?.kind === "clarification"
+      ? safeText(humanPresentation(request || {})?.summary)
+      : undefined;
     const normalizedQuestions = questions.map((question) => ({
       ...question,
       inputType: question.inputType || spec.inputType,
       acceptanceLabels: acceptance,
     }));
-    normalizedQuestions.forEach((question, index) => renderQuestion(question, schema, initial || {}, index, batch));
+    normalizedQuestions.forEach((question, index) => renderQuestion(question, schema, initial || {}, index, batch, clarificationHelper));
     if (questions.length > 1) {
       const stepper = element("nav", { className: "question-stepper", "aria-label": "Question navigation" });
       const previous = element("button", { type: "button", className: "secondary" }, "Previous question");
@@ -2641,6 +2650,7 @@
   }
 
   // Browsing only reads metadata. Execution preparation stays in the conversation.
+  const WORKFLOW_PAGE_SIZES = [10, 20, 50];
   let browserPage = null;
   let browserArgs = { limit: 20 };
   let browserHistory = [];
@@ -2651,8 +2661,13 @@
   let browserFocusReturn = null;
   const workflowIdValid = (id) => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
-  function browserButton(label, action, disabled = false, className = "secondary") {
-    const button = element("button", { type: "button", className, disabled: disabled || !connected || browserBusy }, label);
+  function browserButton(label, action, disabled = false, className = "secondary", visibleLabel = false) {
+    const button = element("button", { type: "button", className, disabled: disabled || !connected || browserBusy });
+    applyButtonStyle(button);
+    if (visibleLabel) {
+      button.setAttribute("aria-label", label);
+      button.textContent = label;
+    } else setAction(button, label);
     button.addEventListener("click", () => { if (!browserBusy && connected) action(); });
     return button;
   }
@@ -2956,11 +2971,6 @@
     context.setAttribute("aria-busy", String(browserBusy)); context.replaceChildren();
     form.hidden = true; primary.hidden = true; secondary.hidden = true;
     refresh.disabled = !connected || browserBusy;
-    if (browserSelected) {
-      const hero = element("div", { className: "ui-hero" });
-      hero.append(element("h2", {}, safeText(browserSelected.workflow.name) || "Workflow"));
-      context.append(hero);
-    }
     const paged = pagedResponse(browserDetailResponse?.data || browserPage);
     if (paged && (!browserSelected || browserDetailResponse)) {
       renderWorkflowPagedResponse(paged, browserDetailResponse ? { onBack: () => { browserDetailResponse = null; browserSelected = null; renderBrowser(); summary.textContent = ""; } } : {});
@@ -3009,18 +3019,42 @@
       row.append(copy, actions); rows.append(row);
     }
     context.append(rows);
-    const hasPages = Boolean(browserHistory.length || browserPage?.nextCursor);
-    if (hasPages || browserArgs.query) {
-      const nav = element("nav", { className: "actions workflow-pagination", "aria-label": hasPages ? "Workflow pages" : "Search results" });
-      const pageNumber = browserHistory.length + 1;
-      nav.append(element("output", { id: "workflow-page-info", className: "ui-caption", "aria-live": "polite" }, hasPages ? `Page ${pageNumber} · ${workflows.length} shown` : `${workflows.length} shown`));
-      if (browserArgs.query) nav.append(browserButton("Reset search", () => { const args = { ...browserArgs }; delete args.query; delete args.cursor; loadBrowserPage(args, []); }));
-      if (hasPages) {
-        nav.append(browserButton("Previous", () => loadBrowserPage(browserHistory.at(-1), browserHistory.slice(0, -1)), !browserHistory.length));
-        nav.append(browserButton("Next", () => loadBrowserPage({ ...browserArgs, cursor: browserPage.nextCursor }, [...browserHistory, browserArgs]), !browserPage?.nextCursor || authoritativeStateStale));
-      }
-      context.append(nav);
-    }
+    const nav = element("nav", { className: "ui-data-table-pagination", "aria-label": "Workflow pages" });
+    const pageNumber = browserHistory.length + 1;
+    const pageSummary = `Page ${pageNumber} · ${workflows.length} workflow${workflows.length === 1 ? "" : "s"}`;
+    nav.append(element("output", { id: "workflow-page-info", className: "ui-data-table-pagination-summary", "aria-live": "polite" }, pageSummary));
+    const paginationActions = element("div", { className: "ui-data-table-pagination-actions" });
+    const pageSize = element("select", {
+      id: "workflow-page-size",
+      className: "ui-select-trigger workflow-page-size",
+      "aria-label": "Workflows per page",
+      disabled: !connected || browserBusy,
+    });
+    const suppliedPageSize = Number(browserArgs.limit);
+    const currentPageSize = Number.isSafeInteger(suppliedPageSize) && suppliedPageSize > 0 ? suppliedPageSize : 20;
+    const pageSizes = [...new Set([currentPageSize, ...WORKFLOW_PAGE_SIZES])].sort((left, right) => left - right);
+    for (const size of pageSizes) pageSize.append(element("option", { value: String(size) }, `${size} / page`));
+    pageSize.value = String(currentPageSize);
+    pageSize.addEventListener("change", () => {
+      const limit = Number(pageSize.value);
+      if (!pageSizes.includes(limit)) return;
+      const args = { ...browserArgs, limit };
+      delete args.cursor;
+      loadBrowserPage(args, []);
+    });
+    paginationActions.append(pageSize);
+    if (browserArgs.query) paginationActions.append(browserButton("Reset search", () => {
+      const args = { ...browserArgs };
+      delete args.query;
+      delete args.cursor;
+      loadBrowserPage(args, []);
+    }, false, "secondary", true));
+    paginationActions.append(
+      browserButton("Previous", () => loadBrowserPage(browserHistory.at(-1), browserHistory.slice(0, -1)), !browserHistory.length || authoritativeStateStale, "secondary", true),
+      browserButton("Next", () => loadBrowserPage({ ...browserArgs, cursor: browserPage.nextCursor }, [...browserHistory, browserArgs]), !browserPage?.nextCursor || authoritativeStateStale, "secondary", true),
+    );
+    nav.append(paginationActions);
+    context.append(nav);
   }
 
   function render(result, options = {}) {
@@ -3659,7 +3693,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.10.0" },
+    appInfo: { name: "loomex", version: "0.11.0" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

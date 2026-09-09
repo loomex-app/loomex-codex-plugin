@@ -249,8 +249,14 @@
   .h-8 {
     height: calc(var(--spacing) * 8);
   }
+  .h-9 {
+    height: calc(var(--spacing) * 9);
+  }
   .w-8 {
     width: calc(var(--spacing) * 8);
+  }
+  .w-32 {
+    width: calc(var(--spacing) * 32);
   }
   .resize {
     resize: both;

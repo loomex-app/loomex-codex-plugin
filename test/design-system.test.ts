@@ -10,7 +10,7 @@ test("every UI resource embeds the same verified offline frontend design artifac
   const provenance = JSON.parse(readFileSync("assets/frontend-design-system.json", "utf8"));
   assert.equal(provenance.schema, "loomex/frontend-design-system/v1");
   assert.equal(provenance.cssSha256, createHash("sha256").update(css).digest("hex"));
-  for (const path of ["packages/ui/src/styles.css", "packages/ui/src/components/Button.tsx", "packages/ui/src/components/StatusBadge.tsx", "packages/theme/src/brandTokens.ts"]) {
+  for (const path of ["packages/ui/src/styles.css", "packages/ui/src/components/Button.tsx", "packages/ui/src/components/StatusBadge.tsx", "packages/ui/src/components/Pagination.tsx", "packages/ui/src/components/Select.tsx", "packages/theme/src/brandTokens.ts"]) {
     assert.match(provenance.sources[path], /^[a-f0-9]{64}$/);
   }
   for (const mode of ["browser", "authoring", "prepare", "monitor", "interaction"]) {

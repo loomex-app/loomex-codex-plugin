@@ -435,6 +435,7 @@ test("question UI collects seven mixed answer types, validates, preserves drafts
   assert.equal(await app.locator(".question-stepper").getByRole("button", { name: "Review answers", exact: true }).count(), 1);
   assert.equal(await app.locator("#primary").isVisible(), false);
   const reviewButton = app.locator(".question-stepper").getByRole("button", { name: "Review answers", exact: true });
+  assert.equal(await reviewButton.locator(".action-label").isVisible(), true);
   await reviewButton.focus();
   const reviewScrollBefore = await app.locator("body").evaluate((body: any) => body.ownerDocument.defaultView.scrollY);
   await reviewButton.click();
@@ -684,7 +685,7 @@ test("authoring supports aliases and simple schemas while rejecting invalid ques
   assert.equal(await invalid.getByRole("button", { name: "Review answer" }).isDisabled(), true);
 });
 
-test("single questions remove repeated copy and safe presentations add progress and acceptance context", async (t) => {
+test("single questions lead with the question and current stage while reviews retain decision context", async (t) => {
   const available = await browserTools();
   if (!available) { assert.fail("Chromium is required for the presentation gate"); }
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
@@ -718,19 +719,18 @@ test("single questions remove repeated copy and safe presentations add progress 
   assert.equal(await app.locator(".request-copy").getByText(question, { exact: true }).count(), 0);
   assert.equal(await app.getByText(/1 question/).count(), 0);
   await app.getByText("A sentence or two is enough to begin.", { exact: true }).waitFor();
-  await app.getByRole("heading", { name: "Describe Your Idea", exact: true }).waitFor();
-  assert.equal(await app.locator("h2").count(), 1);
-  await app.locator('[aria-current="step"]').getByText("Clarify", { exact: true }).waitFor();
-  const requirementsContext = app.locator("#context details.ui-disclosure");
-  await app.getByText("Requirements context (2 items)", { exact: true }).waitFor();
-  assert.equal(await requirementsContext.evaluate((details: any) => details.open), false);
-  assert.equal(await app.getByText("Use the existing Loomex workspace.", { exact: true }).isVisible(), false);
-  assert.equal(await app.getByText("Which output should be easiest to review?", { exact: true }).isVisible(), false);
-  await app.getByText("Requirements context (2 items)", { exact: true }).click();
-  await app.getByText("Use the existing Loomex workspace.", { exact: true }).waitFor();
-  await app.getByText("Which output should be easiest to review?", { exact: true }).waitFor();
+  assert.equal(await app.getByText("Describe Your Idea", { exact: true }).count(), 0);
+  assert.equal(await app.locator(".progress-steps").count(), 0);
+  await app.locator(".app-header").getByText("Clarify", { exact: true }).waitFor();
+  assert.equal(await app.getByText(/Requirements context/).count(), 0);
+  assert.equal(await app.getByText("Use the existing Loomex workspace.", { exact: true }).count(), 0);
+  assert.equal(await app.getByText("Which output should be easiest to review?", { exact: true }).count(), 0);
   assert.doesNotMatch(await app.locator("body").innerText(), /must-not-render/);
   await app.getByRole("button", { name: "Review answer", exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Review answer", exact: true }).locator(".action-label").isVisible(), true);
+  const helperDescriptions = await app.locator("textarea").evaluate((el: any) => String(el.getAttribute("aria-describedby") || "").split(/\s+/).map((id: string) => el.ownerDocument.getElementById(id)?.textContent || "").join(" "));
+  assert.match(helperDescriptions, /We have the goal and are narrowing the workflow behavior/);
+  await captureRequestedScreenshots(page, "single-idea");
   await app.getByRole("button", { name: "Refresh", exact: true }).waitFor();
 
   const reviewPage = await browser.newPage();
@@ -769,6 +769,7 @@ test("single questions remove repeated copy and safe presentations add progress 
   assert.equal(await app.getByText("The requested dashboard is ready for review.", { exact: true }).count(), 1);
   await app.getByText("Choose whether to accept this implementation.", { exact: true }).waitFor();
   await app.getByText(noncanonicalStage, { exact: true }).waitFor();
+  await captureRequestedScreenshots(reviewPage, "implementation-review");
   assert.equal(await app.locator('[aria-current="step"]').count(), 0);
   assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
   for (const copy of ["src/dashboard.ts", "Chrome interaction check passed.", "No hosted preview is available.", "Local dashboard source"]) {
@@ -2113,7 +2114,7 @@ test("integrated run setup validates inputs, grants one canonical workspace, pre
   };
   const app = await mountApp(page, "prepare", setup);
   await app.getByRole("heading", { name: "Integrated report", exact: true }).waitFor();
-  await app.getByText("Setup", { exact: true }).waitFor();
+  await app.getByRole("heading", { name: "Run setup", exact: true }).waitFor();
   await captureRequestedScreenshots(page, "run-setup");
   assert.equal(await app.getByLabel("Project directory", { exact: true }).count(), 0, "workspaceInputField must use the single workspace control");
   assert.equal(await app.getByRole("button", { name: "Change workspace", exact: true }).count(), 0, "missing task context keeps manual workspace entry available");
@@ -2398,7 +2399,7 @@ test("all five views share design tokens, responsive components, focus states an
         ? { execution: { id: "run-shared", name: "Idea to Implementation", status: "waiting for your response" } }
         : { humanRequest, ...(mode === "authoring" ? { builderSession: { id: "builder-shared" } } : {}) };
       const app = await mountApp(page, mode, data, false, false, mode === "prepare" ? presentation : null);
-      const expectedHeading = mode === "browser" ? "Browse workflows" : mode === "prepare" ? "Idea to Implementation" : mode === "monitor" ? "Idea to Implementation" : "Tell us about your idea";
+      const expectedHeading = mode === "browser" ? "Browse workflows" : mode === "prepare" ? "Idea to Implementation" : mode === "monitor" ? "Idea to Implementation" : "What would you like to build?";
       await app.getByRole("heading", { name: expectedHeading, exact: true }).waitFor();
       assert.equal(await app.locator(".app-header, .app-body, .app-footer").count(), 3);
       assert.equal(await app.locator(".app-header h1").textContent(), mode === "browser" ? "Browse workflows" : mode === "prepare" ? "Review run" : mode === "monitor" ? "Run monitor" : mode === "authoring" ? "Authoring review" : "Your response");
@@ -2495,7 +2496,7 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   assertStableLoadingLayout(pageLayoutBefore, pageLayoutDuring, "Loading workflows…");
   assert.equal(await page.evaluate(() => window.scrollY), scrollBefore);
   await waitForCallCount(page, 1);
-  await app.getByText("Page 2 · 1 shown", { exact: true }).waitFor();
+  await app.getByText("Page 2 · 1 workflow", { exact: true }).waitFor();
   assert.equal(await app.locator("#context").getAttribute("aria-busy"), "false");
   assert.equal(await app.locator(":focus").getAttribute("aria-label"), "Next", "focus returns to the same page control after replacement");
   assert.equal((await appLayoutSnapshot(page)).focusVisible, true, "restored page focus is visible");
@@ -2505,7 +2506,7 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   await page.evaluate(() => { window.__workflowDelayMs = 0; });
   await app.getByRole("button", { name: "Previous", exact: true }).click();
   await waitForCallCount(page, 2);
-  await app.getByText("Page 1 · 1 shown", { exact: true }).waitFor();
+  await app.getByText("Page 1 · 1 workflow", { exact: true }).waitFor();
   await page.evaluate(() => {
     window.__workflowDelayMs = 250;
     window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflows: [], nextCursor: null } } }];
@@ -2519,7 +2520,7 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   assertStableLoadingLayout(searchLayoutBefore, searchLayoutDuring, "Loading workflows…");
   assert.equal(await app.locator("#activity").isVisible(), false);
   await app.getByText("No workflows match this search.").waitFor();
-  await app.getByText("0 shown", { exact: true }).waitFor();
+  await app.getByText("Page 1 · 0 workflows", { exact: true }).waitFor();
   assert.equal((await appLayoutSnapshot(page)).focus, "Search", "search focus returns after replacement");
   assert.equal((await appLayoutSnapshot(page)).focusVisible, true, "restored search focus is visible");
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { limit: 20, query: "missing" });
@@ -2777,7 +2778,7 @@ test("workflow browser restores scope, handles large responses and shares respon
     const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
     if (directory) { await mkdir(directory, { recursive: true }); await app.locator("main").screenshot({ path: resolve(directory, `browser-${width}-${colorScheme}.png`) }); }
     await app.getByRole("button", { name: "Next", exact: true }).click();
-    await app.getByText("Page 2 · 2 shown", { exact: true }).waitFor();
+    await app.getByText("Page 2 · 2 workflows", { exact: true }).waitFor();
     assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1).arguments, { query: "idea", systemKey: "scope", limit: 2, cursor: "next" });
     await page.evaluate((data: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data } }]; }, paged);
     await app.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -2789,13 +2790,13 @@ test("workflow browser restores scope, handles large responses and shares respon
   await recovery.getByRole("button", { name: "Next", exact: true }).click();
   await recovery.getByRole("button", { name: "View complete response", exact: true }).waitFor();
   await recovery.getByRole("button", { name: "Refresh", exact: true }).click();
-  await recovery.getByText("Page 2 · 2 shown", { exact: true }).waitFor();
+  await recovery.getByText("Page 2 · 2 workflows", { exact: true }).waitFor();
   assert.equal(await recovery.getByRole("button", { name: "Previous", exact: true }).isEnabled(), true);
   await page.evaluate((data: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data } }]; }, paged);
   await recovery.getByRole("button", { name: "View: One", exact: true }).click();
   await recovery.getByRole("button", { name: "View complete response", exact: true }).waitFor();
   await recovery.getByRole("button", { name: "Back to workflows", exact: true }).click();
-  await recovery.getByText("Page 2 · 2 shown", { exact: true }).waitFor();
+  await recovery.getByText("Page 2 · 2 workflows", { exact: true }).waitFor();
   const app = await mountApp(page, "browser", paged, false, false, null, true);
   await app.getByRole("button", { name: "View complete response", exact: true }).click();
   await app.locator("#summary.error").waitFor();
@@ -2871,8 +2872,10 @@ test("compact controls avoid redundant tooltips while in-place loading and stabl
   assert.equal(await app.getByRole("button", { name: "Connection information", exact: true }).count(), 0);
   await app.getByRole("button", { name: "Refresh", exact: true }).focus();
   assert.equal(await app.getByRole("tooltip").count(), 0, "an obvious refresh icon does not repeat its accessible name as a tooltip");
-  assert.equal(await app.locator("button:visible").evaluateAll((buttons: any[]) => buttons.every(button =>
+  assert.equal(await app.locator("button.icon-button:visible").evaluateAll((buttons: any[]) => buttons.every(button =>
     button.querySelector('svg[aria-hidden="true"]') && button.getAttribute("aria-label") && button.querySelector(".sr-only"))), true);
+  assert.equal(await app.getByRole("button", { name: "Previous", exact: true }).innerText(), "Previous");
+  assert.equal(await app.getByRole("button", { name: "Next", exact: true }).innerText(), "Next");
   const searchBounds = await app.locator(".workflow-search").boundingBox();
   assert.ok(searchBounds.height <= 44, "Search controls occupy one compact row");
   assert.equal(await app.locator(".app-footer").isVisible(), false, "Empty action bars reserve no space");
@@ -2901,4 +2904,46 @@ test("compact controls avoid redundant tooltips while in-place loading and stabl
   assert.match(await terminal.getByRole("tooltip").textContent(), /Started:.*Completed:/);
   await page.waitForTimeout(1100);
   assert.equal(await terminal.locator("#run-clock").textContent(), "2m 5s", "Terminal duration does not keep ticking");
+});
+
+test("workflow pagination stays visible for single and empty pages and resets cursors on page size changes", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium required for cursor pagination");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
+  const workflow = { id: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e", name: "Idea", latestVersion: 7, nodeCount: 11 };
+  const app = await mountApp(page, "browser", { workflows: [workflow], nextCursor: null });
+  const nav = app.getByRole("navigation", { name: "Workflow pages", exact: true });
+  await nav.waitFor();
+  assert.equal(await nav.getByRole("button", { name: "Previous", exact: true }).isDisabled(), true);
+  assert.equal(await nav.getByRole("button", { name: "Next", exact: true }).isDisabled(), true);
+  await nav.getByText("Page 1 · 1 workflow", { exact: true }).waitFor();
+  assert.match(await nav.getAttribute("class"), /ui-data-table-pagination/);
+  const size = app.getByLabel("Workflows per page", { exact: true });
+  assert.equal(await size.inputValue(), "20");
+  await page.evaluate((workflow: any) => {
+    window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflows: [workflow], nextCursor: "second-page" } } }];
+  }, workflow);
+  await app.getByRole("button", { name: "Refresh", exact: true }).click();
+  await nav.getByRole("button", { name: "Next", exact: true }).locator("xpath=self::*[not(@disabled)]").waitFor();
+  await page.evaluate((workflow: any) => {
+    window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflows: [workflow], nextCursor: null } } }];
+  }, workflow);
+  await nav.getByRole("button", { name: "Next", exact: true }).click();
+  await nav.getByText("Page 2 · 1 workflow", { exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.__workflowDelayMs = 200;
+    window.__workflowResponses = [{ structuredContent: { ok: true, data: { workflows: [], nextCursor: null } } }];
+  });
+  await size.focus();
+  await size.selectOption("10");
+  await app.getByText("Page 1 · 0 workflows", { exact: true }).waitFor();
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).at(-1), { name: "loomex_workflows_list", arguments: { limit: 10 } });
+  assert.equal(await size.inputValue(), "10");
+  assert.equal(await size.evaluate((el: any) => el === el.ownerDocument.activeElement), true);
+  assert.equal(await nav.getByRole("button", { name: "Previous", exact: true }).isDisabled(), true);
+  assert.equal(await nav.getByRole("button", { name: "Next", exact: true }).isDisabled(), true);
+  assert.equal(await app.locator("body").evaluate((el: any) => el.scrollWidth <= el.clientWidth), true);
+  await captureRequestedScreenshots(page, "workflow-pagination-mobile-empty");
 });

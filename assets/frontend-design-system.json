@@ -1,6 +1,6 @@
 {
   "schema": "loomex/frontend-design-system/v1",
-  "frontendRevision": "04ba5e36993a5eba15727d4335b63aab19dcb386",
+  "frontendRevision": "8d88a4a74989165c38f3c2cfa34828dc609d2566",
   "compiler": {
     "name": "@tailwindcss/node",
     "version": "4.3.0"
@@ -10,6 +10,8 @@
     "packages/ui/src/components/Button.tsx": "e1803c77c988e7bea1c4158c0089a36486e62c859df1dd6640d5cd992b6e07d2",
     "packages/ui/src/components/StatusBadge.tsx": "8910209413318bcca0e9719fb1d32f85410ff992a8530c845f0f6202ee1c3f5f",
     "packages/ui/src/components/forms.tsx": "5961f75534a2c116dae2b5c959ff20ac215bd9c959a775c65b6f2269e3d53a32",
+    "packages/ui/src/components/Pagination.tsx": "b0247454fd7d1c18ad96b7aed90a81750416deedc8cb03b8e0b2e12a0233bb2d",
+    "packages/ui/src/components/Select.tsx": "97efedef6b95f49c1519a725aafcbb5bbb5ec2fe3f870ae24ca5c7f5a3e33ab1",
     "packages/theme/src/brandTokens.ts": "41144301a71319f47ad32eeda807f3c5ed497a7af08848f1b68233b1d672cd06",
     "packages/theme/src/neutralThemeOptions.ts": "0248fd4a0077a7212884f3b96b09db73ad4a7b002b40afdfd2122ffec799a2eb",
     "pnpm-lock.yaml": "f432cad090bf9173090e7b227d850328a7a88e09ce0ba47665fcceb0c3e5c1f9"
@@ -45,7 +47,7 @@
     "low": "bg-white/5 text-gray-500 border-white/10",
     "unknown": "bg-white/5 text-gray-500 border-white/10"
   },
-  "templateSha256": "6b569f749d0d1c3362744a997332b855fdc1024964c9dcdba8b1b7da69dec436",
-  "candidatesSha256": "dfc28f836ef24e0684c2ee03c2085f021741b784ed479102daba033ff344db3b",
-  "cssSha256": "913a195c314a53bc4ed77307e2000f361996369616a48e6c45df2bb5a6001fbd"
+  "templateSha256": "2301e0c60e5fe41a7f5c3dd9417abf8a16270c1b28915889747696903d473a97",
+  "candidatesSha256": "707d158fe1b3f32fbb9d7a1090576aad35f30e8e8838ccae91b956f27f6ea313",
+  "cssSha256": "0ed1369d0a3baa06f94c3085090f86f31fe053d4d2d62a35da00603a274f0dca"
 }
