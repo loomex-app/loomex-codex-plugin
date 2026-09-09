@@ -57,6 +57,7 @@ const RunProjection = {
   latestSequence: NonNegativeInteger,
   hasMoreEvents: z.boolean(),
   timedOut: z.boolean(),
+  progress: JsonObject.optional(),
   aiTrace: z.union([JsonObject, z.array(JsonValueSchema), z.null()]).optional(),
   builderSession: JsonObject.optional(),
   editResult: JsonObject.optional(),
@@ -76,7 +77,24 @@ const InteractionResolutionResult = z
   })
   .strict();
 
+const ViewSession = z.object({
+  viewSessionId: z.uuid(), kind: z.enum(["browser", "authoring", "prepare", "monitor", "interaction"]),
+  entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation"]), entityId: z.uuid(),
+  revision: NonNegativeInteger, state: JsonObject, status: z.string(), createdAt: NonNegativeInteger, updatedAt: NonNegativeInteger,
+  details: Details, expiresAt: NonNegativeInteger.nullable(), operation: z.object({operationId:z.uuid(),status:z.string()}).strict().nullable(),
+}).strict();
+
 const primarySchemas = {
+  "preparations.get": z.union([
+    z.object({status:z.literal("valid"),operation:z.enum(["runs.prepare","builder.prepare","editor.prepare"]),preparation:z.object({preparationId:z.string(),bindingDigest:z.string(),binding:JsonObject,limits:JsonObject,expiresAt:z.null(),confirmationKey:z.string(),details:Details}).strict(),details:Details}).strict(),
+    z.object({status:z.literal("stale"),operation:z.enum(["runs.prepare","builder.prepare","editor.prepare"]),preparationId:z.string(),reason:z.enum(["workspace_changed","provider_changed","expired","commit_started","record_invalid"]),nextAction:z.enum(["prepare_again","reconcile_operation"]),details:Details}).strict(),
+  ]),
+  "presentation.sessions.create": ViewSession,
+  "presentation.sessions.get": ViewSession,
+  "presentation.sessions.update": ViewSession,
+  "presentation.sessions.delete": z.object({viewSessionId:z.uuid(),deleted:z.boolean(),details:Details}).strict(),
+  "presentation.operations.get": z.object({operationId:z.uuid(),viewSessionId:z.uuid(),method:z.string(),params:JsonObject,idempotencyKey:z.uuid(),reconciliation:z.union([z.object({method:z.string(),params:JsonObject}).strict(),z.object({}).strict()]),status:z.string(),createdAt:NonNegativeInteger,updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
+  "presentation.operations.settle": z.object({operationId:z.uuid(),viewSessionId:z.uuid(),status:z.enum(["completed","ambiguous"]),updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
   "status.get": z
     .object({
       version: z.string(),
@@ -209,6 +227,7 @@ const primarySchemas = {
   "builder.get": z
     .object({
       builderSession: JsonObject,
+      progress: JsonObject.optional(),
       execution: ObjectOrNull.optional(),
       events: Objects,
       latestSequence: NonNegativeInteger,
@@ -282,6 +301,9 @@ const primarySchemas = {
       details: Details,
     })
     .strict(),
+  "interactions.draft.get": z.object({ draft: JsonObject.nullable(), details: Details }).strict(),
+  "interactions.draft.update": z.object({ draft: JsonObject, details: Details }).strict(),
+  "interactions.draft.delete": z.object({ requestId: z.string(), deleted: z.boolean(), revision: NonNegativeInteger, details: Details }).strict(),
   "interactions.get": z
     .object({
       request: JsonObject.optional(),

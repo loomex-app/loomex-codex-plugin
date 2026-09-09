@@ -47,7 +47,7 @@
     "low": "bg-white/5 text-gray-500 border-white/10",
     "unknown": "bg-white/5 text-gray-500 border-white/10"
   },
-  "templateSha256": "2301e0c60e5fe41a7f5c3dd9417abf8a16270c1b28915889747696903d473a97",
-  "candidatesSha256": "707d158fe1b3f32fbb9d7a1090576aad35f30e8e8838ccae91b956f27f6ea313",
-  "cssSha256": "0ed1369d0a3baa06f94c3085090f86f31fe053d4d2d62a35da00603a274f0dca"
+  "templateSha256": "25d70491a4c6bd755e960e313e717ca79eb548fce13e4c544548e17f6575510c",
+  "candidatesSha256": "4e46a1ad11442adecc3cbeda0e6ca8c289d3ecf7a5ff6a5a5704b5ed4f6151b0",
+  "cssSha256": "9b2e7e207b02cfeb7e3bfc05f36d236e7a5d52fe3f2137e7c8951da48260d164"
 }

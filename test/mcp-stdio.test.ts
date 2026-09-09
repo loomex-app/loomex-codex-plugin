@@ -45,7 +45,13 @@ async function connect(runner: FakeRunner): Promise<Client> {
     stderr: "pipe",
   });
   const client = new Client({ name: "loomex-plugin-test", version: "0.1.0" });
-  await client.connect(transport);
+  try {
+    await client.connect(transport);
+  } catch (error) {
+    await transport.close();
+    await runner.stop();
+    throw error;
+  }
   running.push({ client, transport, runner });
   return client;
 }
@@ -266,19 +272,27 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
     };
     const primary = output.anyOf[0];
     assert.ok(primary);
-    assert.equal(primary.additionalProperties, false);
-    assert.deepEqual(
-      Object.keys(primary.properties).sort(),
-      Object.keys(method.outputSchema.oneOf[0]?.properties ?? {}).sort(),
-    );
-    assert.deepEqual(
-      [...(primary.required ?? [])].sort(),
-      [...(method.outputSchema.oneOf[0]?.required ?? [])].sort(),
-    );
+    const variants = output.anyOf.flatMap(variant => (variant as typeof primary & {anyOf?: typeof output.anyOf}).anyOf ?? [variant]);
+    assert.equal(variants.length, method.outputSchema.oneOf.length, `${method.name} result variants`);
+    for (const [index, variant] of variants.entries()) {
+      assert.equal(variant.additionalProperties, false);
+      assert.deepEqual(Object.keys(variant.properties).sort(), Object.keys(method.outputSchema.oneOf[index]?.properties ?? {}).sort());
+      assert.deepEqual([...(variant.required ?? [])].sort(), [...(method.outputSchema.oneOf[index]?.required ?? [])].sort());
+    }
   }
 });
 
-test("SDK stdio discovery exposes only the focused 0.6.0 tool catalog", async () => {
+test("literal UI tool invocations use the app-callable catalog", async () => {
+  const source = await readFile("assets/loomex-app.html", "utf8");
+  const invocations = [...source.matchAll(/(?:callTool|browserRead|runFlowMutation|callMutation|callVerifiedInteractionMutation)\("(loomex_[a-z_]+)"/g)];
+  assert.ok(invocations.length > 0);
+  for (const [, name] of invocations) {
+    assert.ok(name);
+    assert.ok(APP_CALLABLE_TOOLS.has(name), `${name} is not available to MCP Apps`);
+  }
+});
+
+test("SDK stdio discovery exposes only the focused tool catalog", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.respond(socket, request, {
       version: "0.1.0",
@@ -292,7 +306,7 @@ test("SDK stdio discovery exposes only the focused 0.6.0 tool catalog", async ()
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [...TOOL_NAMES].sort());
-  assert.equal(names.length, 51);
+  assert.equal(names.length, 61);
   assert.equal(names.includes("protocol.negotiate"), false);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.some((name) => /legacy|alias|v1/i.test(name)), false);
@@ -309,7 +323,14 @@ test("SDK stdio discovery exposes only the focused 0.6.0 tool catalog", async ()
       | Array<Record<string, unknown>>
       | undefined;
     assert.equal(resultAlternatives?.length, 2);
-    assert.equal(resultAlternatives?.every((schema) => schema.additionalProperties === false), true);
+    const objectVariants = (schema: Record<string, unknown>): Array<Record<string, unknown>> => {
+      const branches = (schema.anyOf ?? schema.oneOf) as Array<Record<string, unknown>> | undefined;
+      return branches ? branches.flatMap(objectVariants) : [schema];
+    };
+    for (const schema of resultAlternatives!.flatMap(objectVariants)) {
+      assert.equal(schema.type, "object", `${tool.name}: result variant must be an object`);
+      assert.equal(schema.additionalProperties, false, `${tool.name}: result variant must remain strict`);
+    }
   }
 });
 
@@ -350,7 +371,7 @@ test("run setup collects schema through a read-only entry point without opening 
   const output = result.structuredContent as { ok: boolean; data: { inputSchema: unknown } };
   assert.equal(output.ok, true, JSON.stringify(result));
   assert.deepEqual(output.data.inputSchema, inputSchema);
-  assert.equal(runner.requests.length, 1);
+  assert.equal(runner.requests.filter(request => !request.method.startsWith("presentation.")).length, 1);
   assert.equal(runner.requests[0]?.method, "workflows.get");
   assert.deepEqual(runner.requests[0]?.params, { workflowId, version: "5" });
   assert.deepEqual(result._meta?.["loomex/taskWorkspace"], {
@@ -1118,16 +1139,16 @@ test("workflow views route task workspace metadata without changing runner reque
   const result = await client.callTool({ name: "loomex_workflows_view", arguments: { query: "idea", limit: 20, taskContext } });
   assert.deepEqual(result._meta?.["loomex/workflowListQuery"], { query: "idea", limit: 20 });
   assert.deepEqual(result._meta?.["loomex/taskWorkspace"], { taskContext });
-  assert.deepEqual(runner.requests.at(-1)?.params, { query: "idea", limit: 20 });
+  assert.deepEqual(runner.requests.filter(request => !request.method.startsWith("presentation.")).at(-1)?.params, { query: "idea", limit: 20 });
 
   const detail = await client.callTool({ name: "loomex_workflow_view", arguments: { workflowId, taskContext } });
   assert.deepEqual(detail._meta?.["loomex/taskWorkspace"], { taskContext });
-  assert.deepEqual(runner.requests.at(-1)?.params, { workflowId });
+  assert.deepEqual(runner.requests.filter(request => !request.method.startsWith("presentation.")).at(-1)?.params, { workflowId });
 
   const withoutContext = await client.callTool({ name: "loomex_workflows_view", arguments: { limit: 5 } });
   assert.equal(withoutContext._meta?.["loomex/taskWorkspace"], undefined, "task context must not leak across tool calls");
   assert.deepEqual(withoutContext._meta?.["loomex/workflowListQuery"], { limit: 5 });
-  assert.deepEqual(runner.requests.at(-1)?.params, { limit: 5 });
+  assert.deepEqual(runner.requests.filter(request => !request.method.startsWith("presentation.")).at(-1)?.params, { limit: 5 });
 });
 
 test("workflow list text summaries are compact, safe projections and retain canonical results", async () => {
@@ -1264,7 +1285,7 @@ test("chat monitoring data tools never remount views and display tools fetch aut
     assert.equal(tool?.annotations?.readOnlyHint, true);
     const result = await client.callTool({ name, arguments: args });
     assert.notEqual(result.isError, true);
-    assert.equal(runner.requests.at(-1)?.method, method);
+    assert.equal(runner.requests.filter(request => !request.method.startsWith("presentation.")).at(-1)?.method, method);
     if (name === "loomex_interaction_view") {
       const summary = JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
       assert.equal(summary.awaitingUserAnswer, true);
@@ -1296,4 +1317,23 @@ test("headless monitoring fetches the typed interaction and pauses without sugge
   assert.equal(questionSummary.nextAction, undefined);
   assert.deepEqual((question.structuredContent as { data: { humanRequest: unknown } }).data.humanRequest, humanRequest);
   assert.deepEqual(runner.requests.map(request => request.method), ["runs.get", "interactions.get"]);
+});
+
+
+test("commit journal survives the MCP bridge without a reconciliation read or execution replay", async () => {
+  const viewSessionId = "59e37bb3-6c47-4ae2-b41f-0d80b2ad0c95";
+  const operationId = "404cc12a-c3fb-48bb-aa37-20bb5a1c2fbd";
+  const idempotencyKey = "013446a2-194b-432b-8caf-a1b59cceec63";
+  const params = { preparationId: "558efdf2-88fa-4f18-b9e6-f01c4c8330fc", confirmationKey: "exact-owner-confirmation", bindingDigest: "a".repeat(64), idempotencyKey };
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    viewSessionId, operationId, method: "runs.commit", params, idempotencyKey,
+    reconciliation: {}, status: "pending", createdAt: 1, updatedAt: 1, resultReference: null,
+  }));
+  const client = await connect(runner);
+  const result = await client.callTool({name: "loomex_view_operation_get", arguments: {viewSessionId, operationId}});
+  assert.notEqual(result.isError, true);
+  assert.deepEqual((result.structuredContent as any).data.params, params);
+  assert.deepEqual((result.structuredContent as any).data.reconciliation, {});
+  assert.deepEqual(runner.requests.map(request => request.method), ["presentation.operations.get"]);
 });

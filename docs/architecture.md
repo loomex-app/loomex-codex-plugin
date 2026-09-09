@@ -87,30 +87,33 @@ Both typed run requests and browser actions use setup to collect required workfl
 
 UI addresses are stable (`ui://loomex/authoring.html`, etc.) so a product update does not invalidate a task’s tool metadata. A resource template serves the current view for allowlisted cached 0.2.3–0.2.7 addresses, including `ui://loomex/authoring-0.2.3.html`. Unknown views/releases remain errors. Compatibility changes resource lookup only; it does not recover or authorize old preparation state.
 
-Run and interaction text summaries use method-aware, namespaced projections. Execution status is read only from `data.execution`; runner connectivity cannot overwrite it. Pending request identifiers and bounded authored input-spec question previews support headless continuation, while full typed schemas stay in structuredContent. Summaries exclude execution inputs, internal runner bindings, answers, prompts, traces and arbitrary details.
+Run and interaction text summaries use method-aware, namespaced projections. Execution status is read only from `data.execution`; runner connectivity cannot overwrite it. Pending request identifiers and bounded authored input-spec question previews support headless continuation, while full typed schemas, the authoritative `answerChannel`, and chat-question revision stay in structuredContent. Progress distinguishes observed runner facts from reported user-facing detail: it reports only meaningful stage changes and never exposes private reasoning, traces, or invented percentages. Summaries exclude execution inputs, internal runner bindings, answers, prompts and arbitrary details.
 
-Run execution belongs to the runner; monitoring belongs to an active chat turn. A one-off status request reads once. An explicit monitor request or accepted `monitor_existing_run` continuation reads the exact execution and follows serial, bounded 30-second waits. Event pages drain from their last returned sequence before advancing to the global cursor. Invalid identities or inconsistent projections stop continuation. Internal provider work does not itself wake the backend wait; dispatch recovery, user input, new events, terminal state and the deadline do.
+Run execution belongs to the runner; monitoring belongs to an active chat turn. A one-off status request reads once. An explicit monitor request or accepted `monitor_existing_run` continuation reads the exact execution and follows serial, bounded 30-second waits. Event pages drain from their last returned sequence before advancing to the global cursor. Invalid identities or inconsistent projections stop continuation. Normalized provider activity is persisted as an event and wakes the backend wait; dispatch recovery, user input, terminal state and the deadline also do.
 
-`loomex_run_get`, `loomex_run_wait` and `loomex_interaction_get` are headless. Separate `loomex_run_view` and `loomex_interaction_view` render intentional snapshots/forms. The UI has no scheduled run reads or waits; explicit Refresh reads once. Batch forms display one question at a time, retain drafts during navigation, and show an editable answer preview before final submission.
+`loomex_run_get`, `loomex_run_wait` and `loomex_interaction_get` are headless. Separate `loomex_run_view` and `loomex_interaction_view` render intentional snapshots/forms. A pending request's authoritative `answerChannel` selects the path: `chat` gives the exact singular long-text question, schema and revision to the headless read, while `ui` gives the focused form view. `unsupported` surfaces the authoritative compatibility error and pauses without a fallback form. The UI has no scheduled run reads or waits; explicit Refresh reads once. UI forms display one question at a time, retain drafts during navigation, and show an editable answer preview before final submission.
 
 An accepted Start or human response cannot be replayed by handoff recovery. The UI sends factual lifecycle context in an acknowledged `ui/update-model-context` request and then a separate `$loomex-follow` command through `ui/message`, detecting both capabilities independently. A rejected or ambiguous handoff offers read-only continuation, while a host acknowledgement means only receipt. It does not establish that a model turn ran or that monitoring continues after chat becomes inactive. Full headless continuation remains available through the same tools. Large accepted results are recovered from immutable response pages with checksum verification, never by repeating their originating mutation.
 
 ## Command entry points
 
-Fifteen focused plugin skills expose user operations through the same 51 MCP tools. The existing `loomex-workflows` skill routes help and multi-operation requests. Shared packaged references own identity resolution, exact execution review, monitoring and human continuation, avoiding duplicated lifecycle rules across commands. No tool schema, backend endpoint, or runner policy is added. Skill invocation is model-guided; it does not bypass confirmation or act as a deterministic shell command. See [command guide](commands.md).
+Fifteen focused plugin skills expose user operations through the same 61 MCP tools. The existing `loomex-workflows` skill routes help and multi-operation requests. Shared packaged references own identity resolution, exact execution review, monitoring and human continuation, avoiding duplicated lifecycle rules across commands. Commands use the tool contracts and runner policy directly. Skill invocation is model-guided; it does not bypass confirmation or act as a deterministic shell command. See [command guide](commands.md).
 
 
 ## Presentation and chat continuation
 
-A pending request verified by the run projection leads directly to one
-`loomex_interaction_view` call. The view performs the authoritative read and
-returns `awaitingUserAnswer`, with no self-referential presentation action.
-Headless clients use the separate `headlessAction` to read the complete schema.
-The conversation remembers the displayed request ID and pauses until the user
-submits or explicitly asks to reopen it. Shared skills and UI continuation text
-follow the same sequence; tool output previews never substitute for complete
-schemas. A continuation identifies the exact existing run and starts with a
-fresh read, not a repeated commit or accepted answer.
+A pending request verified by the run projection follows that fresh projection's
+`nextAction` and authoritative `answerChannel`. A `ui` request leads to one
+`loomex_interaction_view` call; the view performs the authoritative read and
+returns `awaitingUserAnswer`, with no self-referential presentation action. Its
+exact returned `viewSessionId` persists for an explicit reopen only. A `chat`
+request leads to `loomex_interaction_get`, which returns its exact singular
+long-text question, complete schema and revision without rendering a textarea
+card. An `unsupported` request surfaces its compatibility error and pauses. The conversation pauses until the user answers or explicitly asks to
+reopen a UI form. Shared skills and UI continuation text follow the same
+sequence; previews never substitute for complete schemas. A continuation
+identifies the exact existing run and starts with a fresh read, not a repeated
+commit or accepted answer.
 
 ## One run-preparation flow
 

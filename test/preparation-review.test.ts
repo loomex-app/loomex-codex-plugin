@@ -525,3 +525,10 @@ test("MCP attaches review metadata only to a successful preparation result", asy
   assert.equal(readiness._meta?.["loomex/preparationReview"], undefined);
   assert.deepEqual(client.calls.map((call) => call.method), ["status.get"]);
 });
+
+
+test("valid restored preparations rebuild review metadata without preparing again", () => {
+  const preparation = {preparationId:binding.preparationId,bindingDigest:binding.bindingDigest,binding:{workflowId:WORKFLOW_ID,versionId:VERSION_ID,organizationId:ORGANIZATION_ID}};
+  assert.equal(preparationReviewBinding("preparations.get",output("preparations.get",{status:"valid",operation:"runs.prepare",preparation}))?.preparationId,binding.preparationId);
+  assert.equal(preparationReviewBinding("preparations.get",output("preparations.get",{status:"stale",operation:"runs.prepare",preparation})),undefined);
+});

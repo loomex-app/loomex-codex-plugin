@@ -215,3 +215,26 @@ test("monitoring does not call malformed identities terminal", () => {
     assert.deepEqual(invalid?.monitoring, { state: "needs_attention", recoveryAction: "pause", continuePolling: false });
   }
 });
+
+test("authoritative chat questions route headlessly and retain submission context", () => {
+  const responseSchema = { type: "object", properties: { value: { type: "string" } }, required: ["value"] };
+  const humanRequest = { ...data.humanRequest, answerChannel: "chat", schemaDigest: "a".repeat(64), responseSchema };
+  const result = runSummary("runs.wait", { ...data, humanRequest });
+  assert.deepEqual(result?.nextAction, { tool: "loomex_interaction_get", arguments: { requestId } });
+  assert.deepEqual(result?.monitoring, { state: "needs_input", recoveryAction: "pause", continuePolling: false });
+  const question = runSummary("interactions.get", { humanRequest });
+  assert.equal(question?.answerChannel, "chat");
+  assert.equal(question?.question, "What would you like to build?");
+  assert.deepEqual(question?.responseSchema, responseSchema);
+  assert.equal(question?.schemaDigest, "a".repeat(64));
+  assert.equal(question?.awaitingUserAnswer, true);
+});
+
+test("progress summaries preserve silence and omitted backend activity", () => {
+  const result=runSummary("runs.get", {execution:{id:runId,status:"RUNNING"},progress:{version:1,activeNodes:[{nodeExecutionId:requestId,nodeName:"Build",lastActivity:null}],latestActivity:null,hasMore:true}});
+  const progress=result?.progress as any;
+  assert.equal(progress.truncated,true);
+  assert.equal(progress.hasMore,true);
+  assert.equal(progress.latestActivity,null);
+  assert.equal(progress.activeNodes[0].lastActivity,null);
+});

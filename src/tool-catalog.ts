@@ -84,7 +84,46 @@ const BuilderStreamQuery = {
   timeoutSeconds: TimeoutSeconds,
 };
 
-export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
+const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
+  {
+    name: "loomex_preparation_get", rpcMethod: "preparations.get", title: "Restore Loomex preparation",
+    description: "Read an existing owner-bound preparation without preparing or starting again. Restore only a valid exact review; stale preparations require the returned recovery action. Reading never confirms execution.",
+    inputSchema: z.object({ preparationId: Uuid }).strict(), mutating: false, destructive: false,
+  },
+  {
+    name: "loomex_view_session_create", rpcMethod: "presentation.sessions.create", title: "Remember Loomex view",
+    description: "Create an owner-scoped durable presentation session. Stored state never authorizes workflow execution.",
+    inputSchema: z.object({ kind: z.enum(["browser", "authoring", "prepare", "monitor", "interaction"]), entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation"]), entityId: Uuid, state: JsonObject, idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true, destructive: false,
+  },
+  {
+    name: "loomex_view_session_get", rpcMethod: "presentation.sessions.get", title: "Restore Loomex view",
+    description: "Read the exact presentation session for the current owner. Reconcile current domain state before restoring drafts or navigation.",
+    inputSchema: z.object({ viewSessionId: Uuid }).strict(), mutating: false, destructive: false,
+  },
+  {
+    name: "loomex_view_session_update", rpcMethod: "presentation.sessions.update", title: "Save Loomex view",
+    description: "Persist presentation state at its exact revision and optionally journal a pending operation. A conflict requires reconciliation. Journaling never executes the operation.",
+    inputSchema: z.object({ viewSessionId: Uuid, expectedRevision: z.number().int().nonnegative(), state: JsonObject, status: z.string().optional(),
+      operation: z.object({ method: z.string(), params: JsonObject, idempotencyKey: IdempotencyKey, reconciliation: z.object({method:z.string(),params:JsonObject}).strict().optional() }).strict().optional(), idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true, destructive: false,
+  },
+  {
+    name: "loomex_view_session_delete", rpcMethod: "presentation.sessions.delete", title: "Forget Loomex view",
+    description: "Delete the exact local presentation session. Does not cancel or delete the workflow run.",
+    inputSchema: z.object({ viewSessionId: Uuid, idempotencyKey: IdempotencyKey }).strict(), mutating: true, destructive: true,
+  },
+  {
+    name: "loomex_view_operation_get", rpcMethod: "presentation.operations.get", title: "Reconcile Loomex operation",
+    description: "Read the exact owner-scoped operation journal for this view. Reconcile its outcome before any retry; never change its arguments or key.",
+    inputSchema: z.object({ viewSessionId: Uuid, operationId: Uuid }).strict(), mutating: false, destructive: false,
+  },
+  {
+    name: "loomex_view_operation_settle", rpcMethod: "presentation.operations.settle", title: "Record Loomex operation outcome",
+    description: "Record a verified completion or ambiguous outcome of an existing operation. Does not execute it.",
+    inputSchema: z.object({ viewSessionId: Uuid, operationId: Uuid, status: z.enum(["completed", "ambiguous"]), resultReference: JsonObject.optional(), idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true, destructive: false,
+  },
   {
     name: "loomex_readiness",
     rpcMethod: "status.get",
@@ -631,7 +670,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_interaction_get",
     rpcMethod: "interactions.get",
     title: "Get Loomex interaction",
-    description: "Read this interaction and its authoritative run identity and complete typed answer schema without opening a UI. Use loomex_interaction_view to collect answers visually, or ask the user headlessly. Do not poll or invent answers while a human response is pending.",
+    description: "Read this interaction and its authoritative run identity and complete typed answer schema without opening a UI. Follow authoritative answerChannel: chat asks the singular long-answer question directly without a custom UI; ui uses loomex_interaction_view. A clear direct user answer may submit after a fresh read; research is not an answer and synthesized answers require review. Do not poll or invent answers while a human response is pending.",
     inputSchema: z.object({ requestId: Uuid }).strict(),
     mutating: false,
     destructive: false,
@@ -647,6 +686,31 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     uiUri: INTERACTION_UI_URI,
   },
   {
+    name: "loomex_interaction_draft_get",
+    rpcMethod: "interactions.draft.get",
+    title: "Restore Loomex answer draft",
+    description: "Read saved answers and question position for this exact authorized interaction. A draft never resolves the interaction.",
+    inputSchema: z.object({ requestId: Uuid }).strict(),
+    mutating: false, destructive: false,
+  },
+  {
+    name: "loomex_interaction_draft_update",
+    rpcMethod: "interactions.draft.update",
+    title: "Save Loomex answer draft",
+    description: "Save partial answers and question position with optimistic revision checking. Use revision zero only when no draft exists. A conflict requires reconciliation; never overwrite another card silently.",
+    inputSchema: z.object({ requestId: Uuid, expectedRevision: z.number().int().nonnegative(), expectedSchemaDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(), idempotencyKey: IdempotencyKey,
+      answers: JsonObject, currentQuestionId: z.string().nullable(), phase: z.enum(["answer", "review"]) }).strict(),
+    mutating: true, destructive: false,
+  },
+  {
+    name: "loomex_interaction_draft_delete",
+    rpcMethod: "interactions.draft.delete",
+    title: "Discard Loomex answer draft",
+    description: "Discard the selected interaction draft at its exact revision. Does not submit an answer or cancel execution.",
+    inputSchema: z.object({ requestId: Uuid, expectedRevision: z.number().int().nonnegative(), expectedSchemaDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(), idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true, destructive: true,
+  },
+  {
     name: "loomex_interaction_respond",
     rpcMethod: "interactions.respond",
     title: "Respond to Loomex interaction",
@@ -656,6 +720,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       .object({
         requestId: Uuid,
         answer: JsonObject,
+        expectedSchemaDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
         requestType: z.string().optional(),
         idempotencyKey: IdempotencyKey,
       })
@@ -741,18 +806,31 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   },
 ] as const;
 
+// UI access is explicit and independent of whether a tool opens a view.
+/** Stable view identity is adapter context, never an execution input. */
+export const TOOL_DEFINITIONS: readonly ToolDefinition[] = BASE_TOOL_DEFINITIONS.map((definition) => definition.uiUri === undefined ? definition : {
+  ...definition,
+  inputSchema: definition.inputSchema.extend({ viewSessionId: Uuid.optional().describe("Reopen this exact returned view session; omit only for a new view.") }),
+  localOnlyInputKeys: [...(definition.localOnlyInputKeys ?? []), "viewSessionId"],
+});
+
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((definition) => definition.name);
 
-// UI access is explicit and independent of whether a tool opens a view.
 export const APP_CALLABLE_TOOLS = new Set([
+  "loomex_preparation_get",
+  "loomex_view_session_create", "loomex_view_session_get", "loomex_view_session_update", "loomex_view_session_delete",
+  "loomex_view_operation_get", "loomex_view_operation_settle",
   "loomex_readiness", "loomex_workspaces_list", "loomex_workspace_grant",
   "loomex_workflows_list", "loomex_workflow_get", "loomex_run_setup",
   "loomex_run_prepare", "loomex_run_commit", "loomex_run_get", "loomex_run_cancel",
   "loomex_builder_get", "loomex_builder_commit", "loomex_builder_respond", "loomex_editor_commit",
   "loomex_interaction_get", "loomex_interaction_respond", "loomex_interaction_decide",
+  "loomex_interaction_draft_get", "loomex_interaction_draft_update", "loomex_interaction_draft_delete",
 ]);
 
 const SEMANTIC_CAPABILITIES = [
+  "presentation.sessions/v1",
+  "interactions.drafts/v1",
   "execution.host_user/v1",
   "authorization.prepare-commit/v1",
   "auth.device-v2/v1",

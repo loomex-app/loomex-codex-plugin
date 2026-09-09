@@ -46,22 +46,28 @@ request, fetch results, or surface an actionable error.
    actionable failures, required input or completion without repeating unchanged
    status. Follow bounded event/result pages when needed.
 3. When a pending human request appears, verify its execution and organization
-   identities against the monitored run. In a UI-capable host call
-   `loomex_interaction_view` once with its exact request ID. That view fetches
-   the current complete schema itself; do not first call `interaction_get` or
-   open `run_view`. On a headless host use `loomex_interaction_get` instead,
-   and collect answers using the full `structuredContent.data.humanRequest`,
-   including `inputSpec` and `responseSchema`. Summaries are bounded previews.
-4. Remember the displayed request ID and pause chat polling for the user's
-   answer. Do not repeat an unanswered card unless asked to reopen it. The card
-   owns question navigation, answer preview and explicit submission. Do not
-   duplicate the form in chat, submit defaults or answer on the user's behalf.
+   identities against the monitored run. Follow the snapshot's live `nextAction`
+   and the authoritative `humanRequest.answerChannel`; do not unconditionally
+   call `loomex_interaction_view`. For `answerChannel: "ui"`, call that view once
+   with its exact request ID. It fetches the complete schema itself; do not first
+   call `interaction_get` or open `run_view`. Remember the exact returned
+   `viewSessionId` if present and carry it only where documented. For
+   `answerChannel: "chat"`, call `loomex_interaction_get` and collect the exact
+   singular long-text question in chat using its full question, schema and
+   revision. For `answerChannel: "unsupported"`, surface the authoritative compatibility error, pause recovery, and stop polling; do not render or reinterpret it. Summaries are bounded previews and never substitute for that read.
+4. Pause chat polling and same-task recovery for the user's answer on either
+   channel. Do not repeat an unanswered UI card unless the user asks to reopen
+   it. The UI card owns navigation, answer preview and submission. A chat answer
+   has no textarea card: submit a clear direct user answer, but treat requests
+   to research, discuss or use tools/files as continued conversation. Confirm a
+   concise synthesized multi-exchange/tool/file answer before submission. Never
+   duplicate a form, submit defaults or answer on the user's behalf.
 5. After an accepted answer/approval or a follow-up from that card, begin again
    at step 1 for the same run. Do not reuse the old pending state or replay an
    accepted response. A displayed-card deduplication applies only to the same
    unresolved request ID: a different request ID from the fresh snapshot is a
-   new request and must be shown once. Fetch current state first if the handoff
-   was interrupted.
+   new request and must be handled once by its fresh channel action. Fetch
+   current state first if the handoff was interrupted.
 6. At a terminal state, get `loomex_run_result` and required artifact/output
    pages, report the result, and stop polling. For a user stop request, stop chat
    monitoring; cancel the actual workflow only if requested. Authentication,

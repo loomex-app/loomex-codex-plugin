@@ -17,7 +17,8 @@ available. The current visual entry points are:
 | Inspect a workflow | `loomex_workflow_view` | `loomex_workflow_get` |
 | Set up a run | `loomex_run_setup` | `loomex_workflow_get` for the schema and setup facts |
 | Show run status | `loomex_run_view` | `loomex_run_get` |
-| Show a pending interaction | `loomex_interaction_view` | `loomex_interaction_get` |
+| Show a UI-channel pending interaction | `loomex_interaction_view` | unavailable: `answerChannel: "ui"` requires its focused view |
+| Read a chat-channel pending interaction | no visual card | `loomex_interaction_get` |
 
 The visual tool is the UI bridge. Wrapping a tool result in generic execution
 text such as `text(result)` only serializes a value into the conversation; it
@@ -49,15 +50,18 @@ selected target and operation:
 - A preparation card carries the exact canonical workspace and provider/
   execution binding returned by prepare. Review and commit remain separate;
   never create a second card with guessed or rewritten facts.
-- An interaction card carries the exact pending request, run and organization
-  identities plus its complete typed schema. Let the card own question
-  navigation, answer preview and submission; do not prefetch it into a second
-  form or submit from a duplicate card.
+- A UI-channel interaction card carries the exact pending request, run and
+  organization identities plus its complete typed schema. Let the card own
+  question navigation, answer preview and submission; do not prefetch it into
+  a second form or submit from a duplicate card. Persist the exact returned
+  `viewSessionId` when available and carry only that documented value on an
+  explicit reopen; never invent a Codex or host session ID.
 
 For all three cases, a handoff or follow-up preserves the same IDs and sealed
 arguments. An accepted mutation remains accepted if a later UI handoff fails;
 the handoff must not replay it. A status view is a snapshot and does not start
-polling. A pending interaction is shown once and is reopened only on request.
+polling. A UI-channel pending interaction is shown once and is reopened only on
+explicit request.
 
 ## Headless fallback and payload truth
 
@@ -66,7 +70,9 @@ against the same resolved workflow/version, run ID or request ID. Preserve the
 same query, cursor, workspace choice and preparation/interaction identity.
 Headless fallback is a read or a focused question for the user; it must not
 replay a mutation, create a new run, prepare again, answer on the user's
-behalf, or manufacture a replacement card. For run setup, `loomex_workflow_get`
+behalf, or manufacture a replacement card. A chat-channel long-text request is
+the deliberate exception to visual delivery: its `interaction_get` data is
+presented in chat and answered there, with no textarea card. For run setup, `loomex_workflow_get`
 can expose the input schema and workflow facts, but setup and preparation
 authorization still follow [execution guidance](execution.md).
 

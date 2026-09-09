@@ -61,8 +61,9 @@ followed by that fresh active state.
    two-minute cadence. Use the host's active status value only when the fresh
    run is active and has no pending human request.
 2. `pause`: update the known matching heartbeat to the host's paused status.
-   A pending interaction pauses recovery before its verified request is shown.
-   Remember the displayed request in shared task history, so that a later
+   A pending interaction on either answer channel pauses recovery before its
+   verified request is handled. Remember the unresolved request and, for a UI
+   delivery, its exact returned `viewSessionId` when available, so that a later
    recovery wake-up does not show the same unresolved request twice.
 3. `remove`: delete the known matching heartbeat after a terminal result is
    retrieved or the user explicitly stops monitoring. If deletion is unsupported
@@ -102,10 +103,12 @@ history. Report only a new meaningful state change, a required user action, a
 terminal result, or an actionable error. Stay quiet when the snapshot is
 unchanged.
 
-If a human request is pending, pause this recovery heartbeat and show the
-verified request only if this task has not already displayed that unresolved
-request ID. Do not answer for the user. If the run is terminal, retrieve the
-required result, remove this exact recovery heartbeat, and report the result.
+If a human request is pending, pause this recovery heartbeat and follow the
+fresh nextAction and authoritative answer channel. Show a UI request only if
+this task has not already displayed that unresolved request ID; handle a chat
+request with its headless get path. Do not answer for the user. If the run is
+terminal, retrieve the required result, remove this exact recovery heartbeat,
+and report the result.
 If active with no pending request, leave this exact heartbeat available for a
 later recovery wake-up. If state identity cannot be verified, the run has an
 actionable error, or a required read/page verification fails, pause this exact

@@ -32,7 +32,7 @@ function question(value: JsonValue | undefined): ObjectValue {
 function interaction(value: JsonValue | undefined): ObjectValue {
   const request = object(value);
   const spec = object(request.inputSpec);
-  const result: ObjectValue = fields(request, ["id", "status", "type", "title"]);
+  const result: ObjectValue = fields(request, ["id", "status", "type", "title", "answerChannel", "schemaDigest"]);
   const execution = object(request.execution);
   if (typeof execution.id === "string") result.executionId = execution.id.slice(0, 160);
   if (Object.keys(spec).length) {
@@ -96,6 +96,20 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
   const execution = run(data.execution);
   const request = interaction(data.humanRequest);
   const summary: ObjectValue = { execution, ...fields(data, ["waitState", "latestSequence", "hasMoreEvents", "timedOut", "preparationId", "executionPolicy"]) };
+  const progress = object(data.progress);
+  if (progress.version === 1 && Array.isArray(progress.activeNodes)) {
+    const activity = (value: JsonValue | undefined) => value == null ? null : fields(object(value), ["eventId", "nodeExecutionId", "jobId", "attempt", "timestamp", "kind", "summary", "provenance"]);
+    summary.progress = {
+      version: 1,
+      activeNodes: progress.activeNodes.slice(0, PAGE_PREVIEW).map((value) => {
+        const node = object(value);
+        return { ...fields(node, ["nodeExecutionId", "nodeName", "status", "attempt", "elapsedSeconds", "waitState"]), lastActivity: activity(node.lastActivity) };
+      }),
+      count: progress.activeNodeCount ?? progress.activeNodes.length, truncated: progress.hasMore === true || progress.activeNodesTruncated === true || progress.activeNodes.length > PAGE_PREVIEW,
+      hasMore: progress.hasMore === true,
+      latestActivity: activity(progress.latestActivity),
+    };
+  }
   if (typeof request.id === "string") summary.humanRequest = request;
   if (Array.isArray(data.events)) summary.eventCount = data.events.length;
   if (Array.isArray(data.jobs)) summary.jobCount = data.jobs.length;
@@ -127,9 +141,12 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
     } else if (TERMINAL.has(status)) {
       if (status !== "deleted") summary.nextAction = { tool: "loomex_run_result", arguments: { runId: rawExecution.id } };
     } else if (pendingRequest) {
-      if (uuid(rawRequest.id) && requestBelongsToRun) {
+      if (rawRequest.answerChannel === "unsupported") {
+        summary.stateNeedsVerification = true;
+        summary.answerIssue = fields(object(rawRequest.answerIssue), ["code", "message"]);
+      } else if (uuid(rawRequest.id) && requestBelongsToRun) {
         summary.requiresUserInput = true;
-        summary.nextAction = { tool: "loomex_interaction_view", arguments: { requestId: rawRequest.id } };
+        summary.nextAction = { tool: rawRequest.answerChannel === "chat" ? "loomex_interaction_get" : "loomex_interaction_view", arguments: { requestId: rawRequest.id } };
         summary.headlessAction = { tool: "loomex_interaction_get", arguments: { requestId: rawRequest.id } };
       } else summary.stateNeedsVerification = true;
     } else if (data.humanRequest !== undefined && data.humanRequest !== null ||
@@ -142,8 +159,20 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
     }
   } else if (method === "interactions.get" && pendingRequest && uuid(rawRequest.id) && uuid(requestExecution.id) && organizationConsistent &&
       (!rawExecution.id || requestBelongsToRun) && !TERMINAL.has(status)) {
+    if (rawRequest.answerChannel === "unsupported") {
+      summary.stateNeedsVerification = true;
+      summary.answerIssue = fields(object(rawRequest.answerIssue), ["code", "message"]);
+      return summary;
+    }
     summary.requiresUserInput = true;
     summary.awaitingUserAnswer = true;
+    if (rawRequest.answerChannel === "chat") {
+      summary.answerChannel = "chat";
+      summary.question = object(rawRequest.inputSpec).question ?? rawRequest.prompt ?? "";
+      summary.responseSchema = rawRequest.responseSchema ?? null;
+      summary.schemaDigest = rawRequest.schemaDigest ?? null;
+      summary.answerInstruction = "Ask this question directly in chat. Submit a clear direct user answer after a fresh request read; research requests are not answers. Review synthesized answers with the user first. Never open a textarea or replay an accepted answer.";
+    }
   }
   if ((method === "runs.get" || method === "runs.wait" || method === "runs.events") && uuid(rawExecution.id)) {
     summary.monitoring = monitoring(summary, status, organizationConsistent);

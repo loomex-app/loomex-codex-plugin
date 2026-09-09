@@ -194,6 +194,15 @@ export const ToolOutputSchema = z
 export type ToolOutput = z.infer<typeof ToolOutputSchema>;
 
 const SAFE_MESSAGES: Readonly<Record<string, string>> = {
+  VIEW_SESSION_NOT_FOUND: "This saved view is no longer available. Open a new view to continue.",
+  REVISION_CONFLICT: "This view changed in another window. Reload its saved state before editing.",
+  INTERACTION_DRAFT_CONFLICT: "This answer draft changed in another view. Reload it before saving.",
+  HUMAN_REQUEST_SCHEMA_CHANGED: "The question changed. Read it again before answering.",
+  HUMAN_REQUEST_SCHEMA_CONFLICT: "The question changed. Review the saved answer before continuing.",
+  HUMAN_REQUEST_ALREADY_RESOLVED: "This question has already been answered. Refresh to continue.",
+  OPERATION_PENDING: "A previous operation still needs reconciliation. Check its outcome before continuing.",
+  OPERATION_NOT_FOUND: "The saved operation could not be found. Refresh the authoritative state.",
+  OPERATION_SETTLED: "This operation has already finished. Refresh to see its outcome.",
   INVALID_REQUEST: "The local runner rejected the request shape.",
   INVALID_RESPONSE: "The local runner returned an invalid response.",
   PROTOCOL_MISMATCH: "The plugin and local runner protocol versions are incompatible.",

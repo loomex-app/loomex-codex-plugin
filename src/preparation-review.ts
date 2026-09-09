@@ -250,8 +250,10 @@ export function preparationReviewBinding(
   method: string,
   output: ToolOutput,
 ): PreparationReviewBinding | undefined {
-  if (!PREPARATION_METHODS.has(method) || !output.ok || output.method !== method) return undefined;
-  const data = output.data;
+  if (!output.ok || output.method !== method) return undefined;
+  const restored = method === "preparations.get" && output.data?.status === "valid" && PREPARATION_METHODS.has(String(output.data?.operation));
+  if (!PREPARATION_METHODS.has(method) && !restored) return undefined;
+  const data = restored ? objectValue(output.data?.preparation) : output.data;
   const binding = objectValue(data?.binding);
   const preparationId = nonemptyString(data?.preparationId);
   const bindingDigest = nonemptyString(data?.bindingDigest);
