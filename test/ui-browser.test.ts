@@ -1832,6 +1832,39 @@ test("known task workspace automatically prepares zero-input runs and reseals af
   assert.equal(await app.getByLabel("Workspace directory *", { exact: true }).inputValue(), "");
   assert.equal(await app.getByRole("button", { name: "Change workspace", exact: true }).count(), 0,
     "a new setup request without task metadata must clear the prior task workspace");
+
+  const manualPath = "/Users/example/manual-task";
+  await app.getByLabel("Workspace directory *", { exact: true }).fill(manualPath);
+  const manualPrepared = {
+    preparationId: "e4f1b67f-0cf3-4ac5-9a72-4dba5c71d6a1", bindingDigest: "4".repeat(64),
+    confirmationKey: "c6d7d5f2-1a80-4c82-bd41-28f5c8f5930a",
+    binding: { ...prepared.binding, workspacePath: manualPath },
+  };
+  const manualPresentation = { ...presentation, preparationId: manualPrepared.preparationId, bindingDigest: manualPrepared.bindingDigest };
+  const manualGrant = { structuredContent: { ok: true, data: {
+    workspace: { path: manualPath, organizationId, installationId }, executionPolicy: "host_user/v1",
+  } } };
+  await page.evaluate(({ manualGrant, manualPrepared, manualPresentation }: any) => { window.__workflowResponses = [
+    manualGrant,
+    { structuredContent: { ok: true, data: manualPrepared }, _meta: { "loomex/preparationReview": manualPresentation } },
+  ]; }, { manualGrant, manualPrepared, manualPresentation });
+  await app.getByRole("button", { name: "Review run", exact: true }).click();
+  await app.getByRole("button", { name: "Start run", exact: true }).waitFor();
+  const settledManualCalls = await page.evaluate(() => window.__loomexCalls);
+  assert.equal(settledManualCalls.filter((call: any) => call.name === "loomex_workspace_grant").length, 3);
+  assert.equal(settledManualCalls.filter((call: any) => call.name === "loomex_run_prepare").length, 3);
+  const callsBeforeUnidentified = settledManualCalls.length;
+  await page.evaluate((setupData: any) => {
+    const frame = document.getElementById("app");
+    frame.contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: {
+      structuredContent: { ok: true, data: setupData },
+    } }, "*");
+  }, setup);
+  await app.getByLabel("Workspace directory *", { exact: true }).waitFor();
+  assert.equal(await app.getByLabel("Workspace directory *", { exact: true }).inputValue(), "",
+    "an unidentified context-free setup must reset a settled manual review");
+  assert.equal((await page.evaluate(() => window.__loomexCalls)).length, callsBeforeUnidentified,
+    "resetting a settled review must not replay grant or preparation");
 });
 
 test("ambiguous automatic workspace grant waits for the exact retry before preparing", async (t) => {

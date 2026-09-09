@@ -881,7 +881,7 @@
       selected.workflowId === flow.selected.workflowId &&
       selected.versionId === flow.selected.versionId &&
       selected.organizationId === flow.selected.organizationId &&
-      (flow.setupWorkspacePath === suggestedWorkspacePath() || (preserveWorkspaceWithoutMetadata && sameRequest)) &&
+      (preserveWorkspaceWithoutMetadata ? sameRequest : flow.setupWorkspacePath === suggestedWorkspacePath()) &&
       (!sourceIdentity || !flow.setupRequestIdentity || sourceIdentity === flow.setupRequestIdentity));
   }
 
