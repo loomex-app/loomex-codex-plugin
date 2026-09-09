@@ -2385,6 +2385,64 @@ test("workflow browser restores scope, handles large responses and shares respon
   assert.match((await page.evaluate(() => window.__loomexMessages))[0].content[0].text, /loomex_response_read/);
 });
 
+test("workflow browser fails closed for unverifiable pages while a verified empty page stays empty", async (t) => {
+  const available = await browserTools();
+  if (!available) {
+    if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Playwright requires an installed Chromium browser");
+    t.skip("Playwright or a local Chromium executable is unavailable");
+    return;
+  }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 900 } });
+  const invalidPages = [
+    { nextCursor: null },
+    { workflows: [], nextCursor: 3 },
+    { workflows: [{ id: "", name: "Untrusted workflow" }], nextCursor: null },
+  ];
+
+  for (const data of invalidPages) {
+    const app = await mountApp(page, "browser", data);
+    await app.getByText("The workflow list could not be verified. Continue in the conversation.", { exact: true }).waitFor();
+    await app.getByText("The workflow list is unavailable in this view. Continue in the conversation.", { exact: true }).waitFor();
+    assert.equal(await app.getByText(/No workflows (match|are)/).count(), 0);
+    assert.equal(await app.getByRole("button", { name: /^View:/ }).count(), 0);
+    assert.deepEqual(await page.evaluate(() => window.__loomexCalls), []);
+  }
+
+  const app = await mountApp(page, "browser", { workflows: [], nextCursor: null });
+  await app.getByText("No workflows are available in the selected organization.", { exact: true }).waitFor();
+  assert.equal(await app.locator("#summary.error").count(), 0);
+  assert.equal(await app.getByText("The workflow list is unavailable in this view.").count(), 0);
+});
+
+test("interaction with a typed question but no response schema cannot submit", async (t) => {
+  const available = await browserTools();
+  if (!available) {
+    if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Playwright requires an installed Chromium browser");
+    t.skip("Playwright or a local Chromium executable is unavailable");
+    return;
+  }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 760, height: 900 } });
+  const app = await mountApp(page, "interaction", {
+    humanRequest: {
+      id: "a3e04768-688e-42a5-a857-2f62f3855328",
+      type: "manual_input",
+      status: "pending",
+      title: "Missing schema",
+      inputSpec: { inputType: "text", question: "What should we do?", collectionMode: "single" },
+    },
+  });
+  await app.locator("#form").getByText("This form is missing its response schema. Continue in the conversation to provide your answer.", { exact: true }).waitFor();
+  const review = app.locator("#primary");
+  await review.waitFor({ state: "visible", timeout: 5_000 });
+  assert.equal(await review.isDisabled(), true);
+  assert.equal(await app.locator("input[data-value]").count(), 0);
+  assert.equal(await page.evaluate(() => window.__loomexCalls.some((call: any) => call.name === "loomex_interaction_respond")), false);
+});
+
 test("compact controls avoid redundant tooltips while in-place loading and stable timing remain", async (t) => {
   const available = await browserTools();
   if (!available) assert.fail("Chromium required for compact UI interaction checks");

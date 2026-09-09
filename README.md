@@ -44,3 +44,13 @@ working directory supplied by the calling skill. An explicit user path wins.
 This context is handled inside the plugin and is never inferred from the MCP
 server process or forwarded as a runner protocol field; grants and prepared
 bindings still establish the canonical execution workspace.
+
+Visual entry points use direct MCP Apps invocation when the host supports it;
+the shared [visual delivery contract](skills/loomex-workflows/references/visual-delivery.md)
+defines the native and headless paths. On hosts that gate direct invocation,
+diagnostics should verify that the supported
+`features.code_mode.direct_only_tool_namespaces` setting includes
+`mcp__loomex`. The plugin advertises the namespace and visual resources but
+cannot change that host setting. Installed transport and browser-resource
+checks do not prove that a native Codex card rendered; record that only from
+an authorized host observation.

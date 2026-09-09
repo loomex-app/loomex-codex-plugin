@@ -618,6 +618,21 @@
       : undefined;
   }
 
+  // A successful list is only renderable when every row has the identities
+  // required by the browser actions. Missing data is not an empty result.
+  function workflowPageData(data) {
+    if (!data || typeof data !== "object" || Array.isArray(data) ||
+      !Array.isArray(data.workflows) || (data.nextCursor !== null && typeof data.nextCursor !== "string")) return undefined;
+    return data.workflows.every((workflow) => workflow && typeof workflow === "object" && !Array.isArray(workflow) &&
+      workflowIdValid(workflow.id) && typeof workflow.name === "string" && workflow.name.trim())
+      ? data
+      : undefined;
+  }
+
+  function workflowRowName(value) {
+    return typeof value === "string" && value.trim() ? value.trim().slice(0, 240) : "Untitled workflow";
+  }
+
   function formatBytes(value) {
     if (!Number.isSafeInteger(value) || value < 0) return undefined;
     if (value < 1024) return `${value} B`;
@@ -1779,8 +1794,12 @@
   }
 
   function dataOf(result) {
-    const structured = result && result.structuredContent ? result.structuredContent : result;
-    return structured && structured.data ? structured.data : structured;
+    const hasStructuredContent = Boolean(result && typeof result === "object" && result.structuredContent);
+    const structured = hasStructuredContent ? result.structuredContent : result;
+    if (!structured || typeof structured !== "object") return undefined;
+    const envelope = hasStructuredContent || (Object.hasOwn(structured, "ok") && Object.hasOwn(structured, "method"));
+    if (envelope) return Object.hasOwn(structured, "data") ? structured.data : undefined;
+    return structured;
   }
 
   function methodOf(result) {
@@ -2185,6 +2204,14 @@
   }
 
   function typedForm(schema, initial, spec, request = {}) {
+    form.replaceChildren();
+    if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+      form.append(element("p", { className: "notice error", role: "alert" }, "This form is missing its response schema. Continue in the conversation to provide your answer."));
+      form.dataset.formKind = "unsupported";
+      form.hidden = false;
+      setError(new Error("This form is missing its response schema. Continue in the conversation to provide your answer."));
+      return false;
+    }
     if (inputSpecSupported(spec)) {
       questionForm(spec, schema, initial, request);
       return true;
@@ -2587,7 +2614,7 @@
         else browserDetailResponse = { data, workflowId: args.workflowId };
       }
       else {
-      if (name === "loomex_workflows_list" && !Array.isArray(data.workflows)) throw new Error("The workflow list is unavailable. Continue in the conversation.");
+      if (name === "loomex_workflows_list" && !workflowPageData(data)) throw new Error("The workflow list could not be verified. Continue in the conversation.");
       if (name === "loomex_workflow_get" && (!data.workflow || data.workflow.id !== args.workflowId)) throw new Error("The workflow details could not be verified. Refresh and try again.");
       browserDetailResponse = null; commit(data);
       }
@@ -2857,7 +2884,7 @@
     for (const workflow of workflows) {
       const row = element("li", { className: "workflow-row" });
       const copy = element("div", { className: "workflow-row-copy" });
-      copy.append(element("h3", { className: "ui-value" }, safeText(workflow.name) || "Untitled workflow"));
+      copy.append(element("h3", { className: "ui-value" }, workflowRowName(workflow.name)));
       const description = safeText(workflow.description);
       if (description) copy.append(element("p", { className: "ui-caption" }, description));
       const version = workflow.activeVersion || workflow.latestVersion;
@@ -2871,7 +2898,7 @@
       const invalid = !workflowIdValid(workflow.id) || authoritativeStateStale;
       actions.append(browserButton("View", () => browserRead("loomex_workflow_get", { workflowId: workflow.id }, (data) => { browserSelected = data; }), invalid));
       actions.append(browserButton("Prepare run", () => requestWorkflowPreparation(workflow.id), invalid));
-      Array.from(actions.children).forEach((button) => button.setAttribute("aria-label", `${button.textContent}: ${safeText(workflow.name) || "Untitled workflow"}`));
+      Array.from(actions.children).forEach((button) => button.setAttribute("aria-label", `${button.textContent}: ${workflowRowName(workflow.name)}`));
       row.append(copy, actions); rows.append(row);
     }
     context.append(rows);
@@ -2946,7 +2973,21 @@
     context.hidden = true;
 
     if (mode === "browser") {
-      if (!failed) { browserPage = output; browserSelected = null; browserDetailResponse = null; }
+      if (!failed) {
+        const page = workflowPageData(output) || pagedResponse(output);
+        if (!page) {
+          browserPage = null; browserSelected = null; browserDetailResponse = null;
+          authoritativeStateStale = true;
+          summary.classList.add("error");
+          summary.setAttribute("role", "alert");
+          summary.textContent = "The workflow list could not be verified. Continue in the conversation.";
+          context.hidden = false;
+          context.className = "ui-stack";
+          context.replaceChildren(element("p", { className: "notice error", role: "alert" }, "The workflow list is unavailable in this view. Continue in the conversation."));
+          return;
+        }
+        browserPage = page; browserSelected = null; browserDetailResponse = null;
+      }
       summary.textContent = failed ? "Workflows could not be loaded. Try Refresh again." : "";
       renderBrowser();
     } else if (mode === "prepare") {
@@ -3498,7 +3539,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.6.0" },
+    appInfo: { name: "loomex", version: "0.6.1" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

@@ -8,6 +8,26 @@ import { TOOL_DEFINITIONS } from "../src/tool-catalog.js";
 
 const SOURCE_SKILLS_ROOT = resolve(import.meta.dirname, "../skills");
 
+const VISUAL_SKILL_NAMES = [
+  "loomex-browse",
+  "loomex-inspect",
+  "loomex-status",
+  "loomex-run",
+  "loomex-answer",
+  "loomex-follow",
+  "loomex-results",
+  "loomex-create",
+  "loomex-edit",
+] as const;
+
+const VISUAL_TOOL_PAIRS = [
+  ["loomex_workflows_view", "loomex_workflows_list"],
+  ["loomex_workflow_view", "loomex_workflow_get"],
+  ["loomex_run_setup", "loomex_workflow_get"],
+  ["loomex_run_view", "loomex_run_get"],
+  ["loomex_interaction_view", "loomex_interaction_get"],
+] as const;
+
 interface PackagedFile {
   readonly path: string;
   readonly relativePath: string;
@@ -188,5 +208,44 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(authoring, /Do not add a project-directory input or `settings\.workspaceInputField`/);
     assert.match(authoring, /Existing stored versions.*remain valid and readable/);
     assert.match(authoring, /"source": "execution_context", "value": "workspace\.path"/);
+  });
+
+  await t.test("visual entry points link the shared delivery contract", async () => {
+    const contractPath = join(skillsRoot, "loomex-workflows/references/visual-delivery.md");
+    const contract = await readFile(contractPath, "utf8");
+    const common = await readFile(join(skillsRoot, "loomex-workflows/references/common.md"), "utf8");
+    assert.match(common, /visual-delivery\.md/);
+
+    for (const skillName of VISUAL_SKILL_NAMES) {
+      const sourcePath = join(skillsRoot, skillName, "SKILL.md");
+      const source = await readFile(sourcePath, "utf8");
+      assert.ok(
+        markdownDestinations(source).some((destination) => destination.includes("visual-delivery.md")),
+        `${skillName} must link the visual delivery contract`,
+      );
+    }
+
+    for (const [visualName, headlessName] of VISUAL_TOOL_PAIRS) {
+      const visual = TOOL_DEFINITIONS.find(({ name }) => name === visualName);
+      const headless = TOOL_DEFINITIONS.find(({ name }) => name === headlessName);
+      assert.ok(visual, `${visualName} must be exported by the tool catalog`);
+      assert.ok(headless, `${headlessName} must be exported by the tool catalog`);
+      assert.ok(visual.uiUri, `${visualName} must advertise a native UI resource`);
+      assert.equal(visual.mutating, false, `${visualName} must be read-only`);
+      assert.equal(visual.rpcMethod, headless.rpcMethod, `${visualName} and ${headlessName} must read the same RPC target`);
+      assert.match(contract, new RegExp(`\\b${visualName}\\b`));
+      assert.match(contract, new RegExp(`\\b${headlessName}\\b`));
+    }
+
+    for (const requiredTerm of ["content", "structuredContent", "_meta", "tool identity"]) {
+      assert.match(contract, new RegExp(requiredTerm.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&"), "i"));
+    }
+    assert.match(contract, /text\(result\).*serializ|serializ[\s\S]*text\(result\)/i);
+    assert.match(contract, /missing array/i);
+    assert.match(contract, /missing schema/i);
+    assert.match(contract, /same (?:resolved )?workflow\/version|same target/i);
+    assert.match(contract, /must not\s+replay a mutation/i);
+    assert.match(contract, /one exact card|single card/i);
+    assert.match(contract, /do not establish that a real Codex host rendered/i);
   });
 });

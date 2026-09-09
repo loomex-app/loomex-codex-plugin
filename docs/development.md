@@ -114,3 +114,18 @@ The prepare view's runner check is a read-only status check that retains prepara
 Every custom view uses the tokens and components documented in [design-system.md](design-system.md). Styling must not branch on `data-mode`; differences come from semantic components and action variants. Content-size reporting applies to all five resources. Run the shared browser visual matrix when changing tokens, shell layout, forms, status messages or actions.
 
 Workflow browser coverage exercises search, empty results, forward/back cursor pages, details/back, read failure and recovery, text-safe labels, task-workspace metadata retention, manual and explicit workspace selection, and preparation handoff without execution. Verify an installed cached package discovers five resources and the list tool advertises the browser resource.
+
+### Native visual tool delivery
+
+Visual commands must retain their native MCP invocation identity and complete structured result. Generic executor text output, including `text(result)`, is not a renderer. Follow the [shared visual delivery contract](../skills/loomex-workflows/references/visual-delivery.md) for all visual entry points and headless recovery.
+
+Codex supports a narrowly scoped routing configuration in its user config:
+
+```toml
+[features.code_mode]
+direct_only_tool_namespaces = ["mcp__loomex"]
+```
+
+Merge this into existing configuration, preserving other namespaces and the existing enabled state. Do not disable code mode globally or rewrite unrelated settings. The plugin cannot enforce this host setting. Restart the desktop host after changing routing so the active task receives the new tool surface. See the [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+Regression checks distinguish explicitly empty pages from missing or malformed payloads. Test native structured data, hydration metadata, safe model-facing page summaries and typed-schema availability. Then test an installed Codex direct invocation both with the normal host configuration and with code mode enabled in an isolated process. Record native desktop rendering separately; a successful CLI call or browser harness does not establish that the desktop mounted a card.

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { LocalControlClient, toolErrorOutput } from "./local-control.js";
@@ -52,6 +53,64 @@ function findStableFields(value: JsonValue, depth = 0): Record<string, JsonValue
   return output;
 }
 
+function safeWorkflowText(value: unknown, maximumLength = 240): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text ? text.slice(0, maximumLength) : undefined;
+}
+
+function safeWorkflowId(value: unknown): string | undefined {
+  return z.uuid().safeParse(value).success ? value as string : undefined;
+}
+
+/**
+ * The model-facing text is deliberately a compact projection. The canonical
+ * runner response remains in structuredContent for Apps clients. In
+ * particular, an omitted workflows array must never look like an empty page.
+ */
+function workflowPageSummary(data: Record<string, JsonValue>): Record<string, JsonValue> {
+  const responseRef = safeWorkflowId(data.responseRef);
+  if (responseRef !== undefined && data.encoding === "json" &&
+      Number.isSafeInteger(data.sizeBytes) && (data.sizeBytes as number) >= 0 &&
+      Number.isSafeInteger(data.nextOffset) && (data.nextOffset as number) >= 0 &&
+      typeof data.checksumSha256 === "string") {
+    return {
+      workflowPage: { state: "pending" },
+      responseRef, encoding: data.encoding,
+      sizeBytes: data.sizeBytes as number, nextOffset: data.nextOffset as number,
+      checksumSha256: data.checksumSha256,
+    };
+  }
+  const workflows = data.workflows;
+  const nextCursor = data.nextCursor;
+  if (!Array.isArray(workflows) || (nextCursor !== null && typeof nextCursor !== "string")) {
+    return { workflowPage: { state: "unavailable" }, stateNeedsVerification: true };
+  }
+
+  const preview: Array<Record<string, JsonValue>> = [];
+  for (const workflow of workflows) {
+    if (workflow === null || typeof workflow !== "object" || Array.isArray(workflow)) {
+      return { workflowPage: { state: "unavailable" }, stateNeedsVerification: true };
+    }
+    const item = workflow as Record<string, JsonValue>;
+    const id = safeWorkflowId(item.id);
+    const name = safeWorkflowText(item.name);
+    if (id === undefined || name === undefined) {
+      return { workflowPage: { state: "unavailable" }, stateNeedsVerification: true };
+    }
+    if (preview.length < 8) preview.push({ id, name });
+  }
+
+  return {
+    workflowPage: {
+      count: workflows.length,
+      workflows: preview,
+      truncated: workflows.length > preview.length,
+      hasNextPage: nextCursor !== null,
+    },
+  };
+}
+
 function contentFor(output: ToolOutput): string {
   if (!output.ok) {
     return JSON.stringify({
@@ -66,7 +125,10 @@ function contentFor(output: ToolOutput): string {
     ok: true,
     method: output.method,
     requestId: output.requestId,
-    ...(output.data === undefined ? {} : (runSummary(output.method, output.data) ?? findStableFields(output.data))),
+    ...(output.data === undefined
+      ? {}
+      : (runSummary(output.method, output.data)
+        ?? (output.method === "workflows.list" ? workflowPageSummary(output.data) : findStableFields(output.data)))),
   });
 }
 
@@ -81,7 +143,7 @@ function timeoutFor(definition: ToolDefinition, params: Record<string, JsonValue
 
 export function createServer(client: PreparationReviewClient = new LocalControlClient()): McpServer {
   const server = new McpServer(
-    { name: "loomex", version: "0.6.0" },
+    { name: "loomex", version: "0.6.1" },
     {
       capabilities: { tools: {}, resources: {} },
       instructions: [
@@ -153,13 +215,14 @@ export function createServer(client: PreparationReviewClient = new LocalControlC
               : await buildPreparationReview(client, reviewBinding, extra.signal).catch(
                   () => undefined,
                 );
+          const mergedMeta = {
+            ...resultMeta,
+            ...(preparationReview === undefined ? {} : { "loomex/preparationReview": preparationReview }),
+          };
           return {
             structuredContent: output,
             content: [{ type: "text", text: contentFor(output) }],
-            ...(Object.keys(resultMeta).length ? { _meta: resultMeta } : {}),
-            ...(preparationReview === undefined
-              ? {}
-              : { _meta: { "loomex/preparationReview": preparationReview } }),
+            ...(Object.keys(mergedMeta).length ? { _meta: mergedMeta } : {}),
           };
         } catch (error) {
           const output = toolErrorOutput(definition.rpcMethod, error);

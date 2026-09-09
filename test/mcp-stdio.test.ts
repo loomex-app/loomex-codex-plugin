@@ -1127,6 +1127,95 @@ test("workflow views route task workspace metadata without changing runner reque
   assert.deepEqual(runner.requests.at(-1)?.params, { limit: 5 });
 });
 
+test("workflow list text summaries are compact, safe projections and retain canonical results", async () => {
+  const workflowId = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+  const longName = `  ${"A".repeat(245)}  `;
+  const responseRef = "92d719c6-8fcd-46aa-8d97-85bdeea754ec";
+  const spooledPage = {
+    responseRef,
+    encoding: "json",
+    sizeBytes: 90_000,
+    nextOffset: 0,
+    checksumSha256: "a".repeat(64),
+  };
+  const fullPage = {
+    workflows: Array.from({ length: 9 }, (_, index) => ({
+      id: workflowId(index + 1),
+      name: index === 0 ? longName : ` Workflow ${index + 1} `,
+      nodeCount: index,
+    })),
+    nextCursor: "page-2",
+  };
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => {
+    const query = request.params.query;
+    const result = query === "empty"
+      ? { workflows: [], nextCursor: null }
+      : query === "malformed"
+        ? { workflows: [{ id: "x".repeat(161), name: "Cannot trust this row" }], nextCursor: null }
+        : query === "friendly"
+          ? { workflows: [{ id: "friendly-name", name: "Looks ordinary" }], nextCursor: null }
+        : query === "missing"
+          ? { nextCursor: null }
+          : query === "spooled"
+            ? spooledPage
+          : fullPage;
+    runner.respond(socket, request, result);
+  });
+  const client = await connect(runner);
+
+  const full = await client.callTool({
+    name: "loomex_workflows_view",
+    arguments: { query: "full", limit: 9, taskContext: { cwd: "/Users/example/task" } },
+  });
+  const fullText = JSON.parse((full.content as Array<{ text: string }>)[0]!.text) as Record<string, any>;
+  assert.deepEqual(fullText.workflowPage, {
+    count: 9,
+    workflows: [
+      { id: workflowId(1), name: "A".repeat(240) },
+      ...Array.from({ length: 7 }, (_, index) => ({ id: workflowId(index + 2), name: `Workflow ${index + 2}` })),
+    ],
+    truncated: true,
+    hasNextPage: true,
+  });
+  assert.deepEqual((full.structuredContent as Record<string, any>).data, fullPage);
+  assert.equal(((full.structuredContent as Record<string, any>).data.workflows[0].name as string).length, 249);
+  assert.deepEqual(full._meta?.["loomex/workflowListQuery"], { query: "full", limit: 9 });
+  assert.deepEqual(full._meta?.["loomex/taskWorkspace"], { taskContext: { cwd: "/Users/example/task" } });
+
+  const empty = await client.callTool({ name: "loomex_workflows_list", arguments: { query: "empty" } });
+  const emptyText = JSON.parse((empty.content as Array<{ text: string }>)[0]!.text) as Record<string, any>;
+  assert.deepEqual(emptyText.workflowPage, { count: 0, workflows: [], truncated: false, hasNextPage: false });
+  assert.deepEqual((empty.structuredContent as Record<string, any>).data, { workflows: [], nextCursor: null });
+
+  const malformed = await client.callTool({ name: "loomex_workflows_list", arguments: { query: "malformed" } });
+  const malformedText = JSON.parse((malformed.content as Array<{ text: string }>)[0]!.text) as Record<string, any>;
+  assert.deepEqual(malformedText.workflowPage, { state: "unavailable" });
+  assert.equal(malformedText.stateNeedsVerification, true);
+  assert.equal((malformed.structuredContent as Record<string, any>).data.workflows[0].id.length, 161);
+
+  const friendly = await client.callTool({ name: "loomex_workflows_list", arguments: { query: "friendly" } });
+  const friendlyText = JSON.parse((friendly.content as Array<{ text: string }>)[0]!.text) as Record<string, any>;
+  assert.deepEqual(friendlyText.workflowPage, { state: "unavailable" });
+  assert.equal(friendlyText.stateNeedsVerification, true);
+  assert.deepEqual((friendly.structuredContent as Record<string, any>).data, {
+    workflows: [{ id: "friendly-name", name: "Looks ordinary" }],
+    nextCursor: null,
+  });
+
+  const spooled = await client.callTool({ name: "loomex_workflows_list", arguments: { query: "spooled" } });
+  const spooledText = JSON.parse((spooled.content as Array<{ text: string }>)[0]!.text) as Record<string, any>;
+  assert.equal(spooledText.responseRef, responseRef);
+  assert.equal(spooledText.workflowPage?.count, undefined, "a spooled page must not be represented as an empty list");
+  assert.deepEqual((spooled.structuredContent as Record<string, any>).data, spooledPage);
+
+  const missing = await client.callTool({ name: "loomex_workflows_list", arguments: { query: "missing" } });
+  assert.equal(missing.isError, true);
+  const missingText = JSON.parse((missing.content as Array<{ text: string }>)[0]!.text) as Record<string, any>;
+  assert.equal(missingText.error.code, "INVALID_RESPONSE");
+  assert.equal("workflowPage" in missingText, false);
+});
+
 
 test("stable UI resources resolve previously shipped cached references only", async () => {
   let runner!: FakeRunner;

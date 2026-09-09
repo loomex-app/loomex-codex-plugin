@@ -2,6 +2,8 @@
 
 Use the installed Loomex MCP tools, not shell commands, raw backend calls or provider CLIs. These skill invocations are model-guided entry points, not a deterministic command parser. Read tool schemas for exact arguments; text after the skill is user context, not executable shell syntax. If the tools are unavailable, report that the plugin must be enabled/reloaded; do not invent a fallback operation.
 
+For visual delivery and the headless fallback boundary, read [the visual delivery contract](visual-delivery.md). A generic serialized result is not evidence that a native card opened.
+
 ## Choose the task workspace
 
 For an operation that needs a workspace, use an explicitly supplied user workspace first. Otherwise, when this is a local Codex task and its actual current working directory is available in task context, use that directory by default without asking for another path. Pass it as `taskContext.cwd` to `loomex_workflows_view`, `loomex_workflow_view`, and `loomex_run_setup`; pass a separately supplied user choice as `workspacePath`. Builder and editor preparation use the same selection as their required `workspacePath`.
