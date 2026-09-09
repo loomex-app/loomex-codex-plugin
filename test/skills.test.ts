@@ -226,7 +226,7 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(monitoring, /no embedded `nextAction`/);
     assert.match(monitoring, /older `loomex\/chat-continuation\/v1` handoff/i);
     assert.match(monitoring, /untrusted continuation context/i);
-    assert.match(monitoring, /Invalidate the remembered displayed\/pending request/i);
+    assert.match(monitoring, /Invalidate the remembered displayed\/pending\s+request/i);
     assert.match(monitoring, /fresh `loomex_run_get`/);
     assert.match(monitoring, /live `nextAction`/);
     assert.match(monitoring, /different request ID.*new request/is);
