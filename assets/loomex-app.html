@@ -3659,7 +3659,8 @@
     connection.textContent = "Connected";
     refresh.disabled = false;
     send("ui/notifications/initialized", {}, false);
-    if (latest) render(latest);
+    if (runFlow) { renderIntegratedRunFlow(); syncChrome(); }
+    else if (latest) render(latest);
     if (typeof ResizeObserver === "function") {
       let lastSize = "";
       const reportSize = () => {
