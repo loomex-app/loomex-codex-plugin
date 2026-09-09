@@ -74,6 +74,15 @@ does not prove a chat turn ran. Do not claim monitoring continues after the task
 has ended. If the user needs later/background follow-up, use a supported host
 scheduling mechanism rather than claiming an iframe or inactive chat is polling.
 
+For an explicit live follow, treat the current chat loop as the monitor: it
+continues through quiet wait timeouts and owns ordinary polling. A same-task
+heartbeat may be maintained only as the best-effort recovery wake-up described
+in [scheduled recovery](recovery.md). The projection's `monitoring.state` and
+`recoveryAction` (`ensure`, `pause`, or `remove`) and boolean `continuePolling` are
+advisory; a fresh `loomex_run_get` and the interaction/terminal rules above
+remain authoritative. Do not claim that the host serializes a heartbeat with a
+live turn or that this arrangement atomically prevents duplicate monitors.
+
 A `responseRef` receipt means the originating operation completed. Read
 `loomex_response_read` starting at offset 0, follow each `nextOffset` until null,
 verify the full SHA-256, then interpret the reconstructed original result.

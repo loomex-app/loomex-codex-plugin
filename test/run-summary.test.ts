@@ -157,3 +157,61 @@ test("truncated event pages cannot advance beyond the authoritative sequence", (
   assert.equal(displayed?.nextAction, undefined);
   assert.deepEqual(runSummary("runs.get", data)?.headlessAction, { tool: "loomex_interaction_get", arguments: { requestId } });
 });
+
+test("monitoring remains active across quiet waits until a new question arrives", () => {
+  const quiet = { execution: { id: runId, status: "RUNNING" }, latestSequence: 23, timedOut: true };
+  const activeMonitoring = { state: "active", recoveryAction: "ensure", continuePolling: true };
+  for (let poll = 0; poll < 7; poll += 1) {
+    const result = runSummary("runs.wait", quiet);
+    assert.deepEqual(result?.monitoring, activeMonitoring);
+    assert.deepEqual(result?.nextAction, { tool: "loomex_run_wait", arguments: { runId, timeoutSeconds: 30, afterSequence: 23 } });
+  }
+
+  const newQuestion = { ...quiet, execution: { ...quiet.execution, status: "WAITING" }, humanRequest: data.humanRequest };
+  const result = runSummary("runs.wait", newQuestion);
+  assert.deepEqual(result?.monitoring, { state: "needs_input", recoveryAction: "pause", continuePolling: false });
+  assert.deepEqual(result?.nextAction, { tool: "loomex_interaction_view", arguments: { requestId } });
+});
+
+test("monitoring lifecycle follows pagination, verified actions and terminal state", () => {
+  const pageResult = runSummary("runs.get", {
+    execution: { id: runId, status: "COMPLETED" },
+    humanRequest: data.humanRequest,
+    events: [{ sequence: 4 }], latestSequence: 5, hasMoreEvents: true,
+  });
+  assert.deepEqual(pageResult?.monitoring, { state: "active", recoveryAction: "ensure", continuePolling: true });
+  assert.deepEqual(pageResult?.nextAction, { tool: "loomex_run_events", arguments: { runId, afterSequence: 4 } });
+
+  for (const status of ["COMPLETED", "FAILED", "CANCELED", "DELETED"]) {
+    const result = runSummary("runs.wait", { execution: { id: runId, status }, timedOut: true });
+    assert.deepEqual(result?.monitoring, { state: "terminal", recoveryAction: "remove", continuePolling: false });
+    assert.deepEqual(result?.nextAction, status === "DELETED" ? undefined : { tool: "loomex_run_result", arguments: { runId } });
+  }
+
+  const actionable = runSummary("runs.get", {
+    execution: { id: runId, status: "WAITING" }, humanRequest: { status: "pending" }, waitState: "human_action_required",
+  });
+  assert.deepEqual(actionable?.monitoring, { state: "needs_attention", recoveryAction: "pause", continuePolling: false });
+  assert.equal(actionable?.nextAction, undefined);
+});
+
+test("monitoring does not call malformed identities terminal", () => {
+  const invalidRun = runSummary("runs.get", { execution: { id: "invalid", status: "COMPLETED" } });
+  assert.equal(invalidRun?.monitoring, undefined);
+
+  const invalidOrganization = runSummary("runs.get", {
+    execution: { id: runId, status: "COMPLETED", organizationId: "invalid" },
+  });
+  assert.deepEqual(invalidOrganization?.monitoring, { state: "needs_attention", recoveryAction: "pause", continuePolling: false });
+  assert.equal(invalidOrganization?.nextAction, undefined);
+  assert.equal(invalidOrganization?.stateNeedsVerification, true);
+  for (const status of ["RUNNING", "WAITING"]) {
+    const invalid = runSummary("runs.wait", {
+      execution: { id: runId, status, organizationId: "invalid" },
+      humanRequest: data.humanRequest,
+      events: [{ sequence: 4 }], latestSequence: 5, hasMoreEvents: true,
+    });
+    assert.equal(invalid?.nextAction, undefined);
+    assert.deepEqual(invalid?.monitoring, { state: "needs_attention", recoveryAction: "pause", continuePolling: false });
+  }
+});

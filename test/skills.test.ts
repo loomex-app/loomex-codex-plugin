@@ -240,6 +240,25 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(interactionView?.description ?? "", /different pending request ID.*new interaction/i);
   });
 
+  await t.test("follow recovery is packaged and distinct from one-off reads", async () => {
+    const recovery = await readFile(join(skillsRoot, "loomex-workflows/references/recovery.md"), "utf8");
+    const monitoring = await readFile(join(skillsRoot, "loomex-workflows/references/monitoring.md"), "utf8");
+    const follow = await readFile(join(skillsRoot, "loomex-follow/SKILL.md"), "utf8");
+    assert.match(follow, /recovery\.md/);
+    assert.match(monitoring, /recovery\.md/);
+    assert.match(recovery, /automation_update/);
+    assert.match(recovery, /scheduled_recovery/);
+    assert.match(recovery, /one-off status read/);
+    assert.match(recovery, /loomex_run_get/);
+    assert.match(recovery, /destination: "thread"/);
+    assert.match(recovery, /notificationPolicy/);
+    assert.match(recovery, /ambiguous/);
+    assert.match(recovery, /no documented atomic uniqueness/);
+    for (const name of ["loomex-cancel", "loomex-delete-run"]) {
+      assert.match(await readFile(join(skillsRoot, name, "SKILL.md"), "utf8"), /recovery\.md/);
+    }
+  });
+
   await t.test("visual entry points link the shared delivery contract", async () => {
     const contractPath = join(skillsRoot, "loomex-workflows/references/visual-delivery.md");
     const contract = await readFile(contractPath, "utf8");

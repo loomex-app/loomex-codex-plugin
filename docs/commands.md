@@ -46,3 +46,7 @@ Keep operational invariants in `skills/loomex-workflows/references/`; entry skil
 Release packaging includes the complete skills tree. After updating the plugin, reopen the skill picker or start a fresh task if commands have not appeared. Do not create deprecated custom prompt files as an alternate command installation.
 
 Sources: [official skills guidance](https://learn.chatgpt.com/docs/build-skills), [custom prompt deprecation](https://learn.chatgpt.com/docs/custom-prompts).
+
+## Follow recovery
+
+`follow` also arranges a verified same-task recovery schedule when the host supports it. Recovery checks every two minutes, stays quiet while automated work is unchanged, and pauses for your answer or an actionable problem. Accepted answers resume the same run after a fresh read. Completion or “stop following” removes the matching schedule; stopping monitoring does not cancel the run. Without host scheduling, following is limited to the active turn and reports that limitation. Local scheduled checks need the host and machine available. See the [recovery contract](../skills/loomex-workflows/references/recovery.md).

@@ -50,6 +50,31 @@ function page(data: ObjectValue, key: string, project: (value: JsonValue) => Obj
     truncated: items.length > PAGE_PREVIEW, ...fields(data, ["nextCursor", "executionId"]) };
 }
 
+/**
+ * Advisory lifecycle data for an explicit follow loop. A one-off status read
+ * must still be reported once; these fields never create a schedule or imply
+ * polling after the current chat turn ends.
+ */
+function monitoring(summary: ObjectValue, status: string, identityValid: boolean): ObjectValue {
+  if (!identityValid || summary.stateNeedsVerification === true) {
+    return { state: "needs_attention", recoveryAction: "pause", continuePolling: false };
+  }
+  const tool = object(summary.nextAction).tool;
+  if (tool === "loomex_run_events") {
+    return { state: "active", recoveryAction: "ensure", continuePolling: true };
+  }
+  if (tool === "loomex_interaction_view" || tool === "loomex_interaction_get") {
+    return { state: "needs_input", recoveryAction: "pause", continuePolling: false };
+  }
+  if (tool === "loomex_run_result" || TERMINAL.has(status)) {
+    return { state: "terminal", recoveryAction: "remove", continuePolling: false };
+  }
+  if (tool === "loomex_run_wait") {
+    return { state: "active", recoveryAction: "ensure", continuePolling: true };
+  }
+  return { state: "needs_attention", recoveryAction: "pause", continuePolling: false };
+}
+
 /** Model-facing run state must never be overwritten by nested runner/context fields. */
 export function runSummary(method: string, data: ObjectValue): ObjectValue | undefined {
   if (!method.startsWith("runs.") && !method.startsWith("interactions.")) return undefined;
@@ -87,7 +112,9 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
   if ((method === "runs.commit" || method === "runs.cancel") && uuid(rawExecution.id)) {
     summary.nextAction = { tool: "loomex_run_get", arguments: { runId: rawExecution.id } };
   } else if ((method === "runs.get" || method === "runs.wait" || method === "runs.events") && uuid(rawExecution.id)) {
-    if (data.hasMoreEvents === true) {
+    if (!organizationConsistent) {
+      summary.stateNeedsVerification = true;
+    } else if (data.hasMoreEvents === true) {
       const events = Array.isArray(data.events) ? data.events : [];
       const sequences = events.map(event => object(event).sequence);
       const last = sequences.at(-1);
@@ -117,6 +144,9 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
       (!rawExecution.id || requestBelongsToRun) && !TERMINAL.has(status)) {
     summary.requiresUserInput = true;
     summary.awaitingUserAnswer = true;
+  }
+  if ((method === "runs.get" || method === "runs.wait" || method === "runs.events") && uuid(rawExecution.id)) {
+    summary.monitoring = monitoring(summary, status, organizationConsistent);
   }
   return summary;
 }

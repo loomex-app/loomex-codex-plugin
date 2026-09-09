@@ -1,4 +1,4 @@
 interface:
   display_name: "Follow Loomex Run"
-  short_description: "Follow a run or accepted-answer continuation"
-  default_prompt: "Use $loomex-follow to re-check the exact existing run and follow its live next action."
+  short_description: "Follow one run with same-task recovery"
+  default_prompt: "Use $loomex-follow to re-check the exact existing run, follow its live next action, and use same-task scheduled recovery only when the supported host automation capability is available."
