@@ -249,6 +249,10 @@
     } else if (replace) taskWorkspace = null;
   }
 
+  function hasTaskWorkspaceResult(result) {
+    return Boolean(result?._meta && Object.hasOwn(result._meta, "loomex/taskWorkspace"));
+  }
+
   function topLevelReplacesTaskWorkspace(result) {
     if (TASK_WORKSPACE_TOOLS.has(latestToolName) || mode === "browser") return true;
     return ["prepare", "authoring"].includes(mode) && Boolean(selectedWorkflowVersion(dataOf(result)));
@@ -384,7 +388,7 @@
     const descriptions = {
       "ui/initialize": "Connecting…", "ui/update-model-context": "Preparing chat handoff…", "ui/message": "Sending run to chat…", loomex_run_commit: "Starting your run…",
       loomex_run_prepare: "Preparing your review…", loomex_run_setup: "Loading run inputs…",
-      loomex_workspace_grant: "Checking workspace access…",
+      loomex_workspace_grant: "Checking project folder…",
       loomex_run_get: "Updating run status…", loomex_interaction_respond: "Sending your answer…",
       loomex_interaction_approve: "Sending your decision…", loomex_run_cancel: "Requesting cancellation…",
       loomex_workflows_list: "Loading workflows…", loomex_workflow_get: "Loading workflow details…",
@@ -840,7 +844,12 @@
     return { supported: true, schema, entries, workspaceInputField };
   }
 
-  function initializeRunSetup(data, returnToBrowser = false) {
+  function setupRequestIdentity(result) {
+    const envelope = result?.structuredContent || result;
+    return safeText(envelope?.requestId || result?._meta?.requestId, 128);
+  }
+
+  function initializeRunSetup(data, returnToBrowser = false, sourceIdentity = "") {
     const selected = selectedWorkflowVersion(data);
     const analysis = setupSchemaAnalysis(data);
     const initialWorkspace = suggestedWorkspacePath();
@@ -854,10 +863,50 @@
       workspaceDraft: initialWorkspace,
       workspaceEditing: !initialWorkspace,
       workspaceSource: taskWorkspace?.workspacePath ? "override" : initialWorkspace ? "task" : "manual",
+      setupWorkspacePath: initialWorkspace,
+      setupRequestIdentity: sourceIdentity,
       canonicalWorkspace: "",
       operations: new Map(),
       busy: false,
+      autoPreparation: "idle",
     };
+  }
+
+  // A repeated setup notification is descriptive state, not a request to discard
+  // an in-progress review or replay its preparation.
+  function matchesRunSetup(data, sourceIdentity = "", flow = runFlow, preserveWorkspaceWithoutMetadata = false) {
+    const selected = selectedWorkflowVersion(data);
+    const sameRequest = Boolean(sourceIdentity && flow?.setupRequestIdentity && sourceIdentity === flow.setupRequestIdentity);
+    return Boolean(flow?.setup && selected && flow.selected &&
+      selected.workflowId === flow.selected.workflowId &&
+      selected.versionId === flow.selected.versionId &&
+      selected.organizationId === flow.selected.organizationId &&
+      (flow.setupWorkspacePath === suggestedWorkspacePath() || (preserveWorkspaceWithoutMetadata && sameRequest)) &&
+      (!sourceIdentity || !flow.setupRequestIdentity || sourceIdentity === flow.setupRequestIdentity));
+  }
+
+  function autoPreparationEligible(flow = runFlow) {
+    return Boolean(flow?.stage === "setup" && flow.analysis?.supported && flow.selected &&
+      flow.analysis.entries.every((entry) => entry.workspace) &&
+      ["task", "override"].includes(flow.workspaceSource) &&
+      typeof flow.workspaceDraft === "string" && flow.workspaceDraft.startsWith("/") &&
+      flow.autoPreparation === "idle");
+  }
+
+  function scheduleAutomaticPreparation(flow = runFlow) {
+    if (!connected || !autoPreparationEligible(flow)) return false;
+    flow.autoPreparation = "scheduled";
+    Promise.resolve().then(async () => {
+      if (runFlow !== flow || flow.autoPreparation !== "scheduled" || flow.stage !== "setup") return;
+      flow.autoPreparation = "started";
+      try {
+        await beginSetupReview({});
+      } catch (error) {
+        runFlowError(error?.message || "The review could not be prepared. Choose Review run to try again.", error);
+        renderIntegratedRunFlow();
+      }
+    });
+    return true;
   }
 
   function runFlowError(message, error = runFlow?.error) {
@@ -983,7 +1032,10 @@
     const data = runFlow.setup;
     const selected = runFlow.selected;
     context.hidden = false; context.className = "ui-stack"; context.replaceChildren();
-    context.setAttribute("aria-label", "Run setup"); context.setAttribute("aria-busy", String(runFlow.busy));
+    const autoPending = runFlow.autoPreparation === "scheduled" ||
+      (runFlow.autoPreparation === "started" && (runFlow.busy ||
+        (Object.hasOwn(runFlow, "pendingSetupInputs") && runFlow.operations.size === 0)));
+    context.setAttribute("aria-label", "Run setup"); context.setAttribute("aria-busy", String(runFlow.busy || autoPending));
     form.hidden = false; form.className = "setup-fields"; form.replaceChildren();
     errorDetails.hidden = true; errorDetails.replaceChildren();
     refresh.hidden = true; secondary.hidden = !runFlow.returnToBrowser;
@@ -1001,6 +1053,16 @@
       form.hidden = true;
       primary.hidden = false; setAction(primary, "Continue in conversation"); primary.disabled = !connected || runFlow.busy;
       summary.textContent = "This workflow’s inputs need to be collected in the conversation.";
+      return;
+    }
+    if (autoPreparationEligible() || autoPending) {
+      form.hidden = true;
+      primary.hidden = true;
+      context.append(element("p", { className: "activity", role: "status", "aria-live": "polite" }, "Preparing your review…"));
+      summary.classList.remove("error"); summary.setAttribute("role", "status");
+      if (!runFlow.errorMessage) summary.textContent = "";
+      scheduleAutomaticPreparation();
+      if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
       return;
     }
     for (const entry of runFlow.analysis.entries) if (!entry.workspace) form.append(createSetupControl(entry));
@@ -1036,16 +1098,12 @@
     else if (runFlow.workspaceSource === "override") workspaceField.append(element("p", { className: "hint" }, "Selected for this run. Change it if needed."));
     else workspaceField.append(element("p", { className: "hint" }, safeText(mappedWorkspaceSchema?.description, 500) || "Choose the directory where this workflow may run."));
     form.append(workspaceField);
-    const access = element("section", { className: "ui-callout" });
-    access.append(element("h3", {}, "Host-user authorization"));
-    access.append(element("p", {}, "Granting this workspace records your approval for Loomex to run processes there with your signed-in macOS user’s permissions. It does not create a filesystem or network sandbox."));
-    context.append(access);
     primary.hidden = false;
     const operation = runFlow.operations.values().next().value;
-    setAction(primary, operation ? `Retry exact ${operation.label}` : runFlow.canonicalWorkspace ? "Review run" : "Grant workspace access");
+    setAction(primary, operation ? `Retry exact ${operation.label}` : "Review run");
     primary.disabled = !connected || runFlow.busy;
     summary.classList.remove("error"); summary.setAttribute("role", "status");
-    if (!operation && !runFlow.errorMessage) summary.textContent = runFlow.canonicalWorkspace ? "Workspace authorized." : "";
+    if (!operation && !runFlow.errorMessage) summary.textContent = "";
     if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
   }
 
@@ -1519,8 +1577,15 @@
     return safeText(error?.message, 1000) || fallback;
   }
 
+  function stopAutomaticPreparation(operation) {
+    if (runFlow?.autoPreparation === "started" && ["loomex_workspace_grant", "loomex_run_prepare"].includes(operation?.name)) {
+      runFlow.autoPreparation = "failed";
+    }
+  }
+
   async function runFlowMutation(name, slot, label, args, accept) {
     if (runFlow.busy) return;
+    let afterAccepted;
     let operation = runFlow.operations.get(slot);
     if (!operation) {
       operation = { name, slot, label, arguments: immutableCopy({ ...args, idempotencyKey: uuid() }) };
@@ -1534,7 +1599,11 @@
       if (result?.isError || result?.structuredContent?.ok === false) {
         const code = errorCodeOf(result);
         const ambiguous = ["NETWORK_AMBIGUOUS", "IDEMPOTENCY_REQUEST_IN_PROGRESS"].includes(code);
-        if (!ambiguous) runFlow.operations.delete(slot);
+        stopAutomaticPreparation(operation);
+        if (!ambiguous) {
+          runFlow.operations.delete(slot);
+          if (operation.name === "loomex_run_prepare") delete runFlow.pendingSetupInputs;
+        }
         if (!ambiguous && operation.name === "loomex_run_commit" && stalePreparationError(code)) {
           runFlow.preparationStale = true;
           runFlowError("The workflow or its execution settings changed after preparation. Review a new preparation before starting.", structuredError(result));
@@ -1553,15 +1622,15 @@
       const afterSuccess = await accept(result, operation.arguments);
       runFlow.operations.delete(slot);
       authoritativeStateStale = false;
-      if (typeof afterSuccess === "function") {
-        await afterSuccess();
-      }
+      if (typeof afterSuccess === "function") afterAccepted = afterSuccess;
     } catch (error) {
       authoritativeStateStale = false;
+      stopAutomaticPreparation(operation);
       runFlowError(`${error?.message || `The ${label} outcome is uncertain.`} Retry sends the exact same request and operation ID.`, undefined);
     } finally {
       runFlow.busy = false; renderIntegratedRunFlow();
     }
+    if (afterAccepted) await afterAccepted();
   }
 
   async function beginRunSetup(id, detailData) {
@@ -1574,7 +1643,7 @@
       if (result?.isError || result?.structuredContent?.ok === false) throw new Error("Run setup could not be loaded. Try again or continue in the conversation.");
       const data = dataOf(result);
       if (!selectedWorkflowVersion(data) || data.workflow.id !== id) throw new Error("The exact workflow version could not be verified for run setup.");
-      initializeRunSetup(data, true);
+      initializeRunSetup(data, true, setupRequestIdentity(result));
     } catch (error) { setError(error); }
     finally {
       browserBusy = false;
@@ -1593,6 +1662,45 @@
     summary.textContent = "Continue in the conversation to provide the unsupported inputs and review the exact preparation.";
   }
 
+  function setupPreparationArguments(inputs) {
+    if (!runFlow?.selected || !runFlow.canonicalWorkspace?.startsWith("/")) {
+      throw new Error("Choose a valid workspace before reviewing this run.");
+    }
+    const preparedInputs = immutableCopy({
+      ...(inputs || {}),
+      ...(runFlow.analysis.workspaceInputField ? { [runFlow.analysis.workspaceInputField]: runFlow.canonicalWorkspace } : {}),
+    });
+    return {
+      workflowId: runFlow.selected.workflowId,
+      versionId: runFlow.selected.versionId,
+      ...(Object.keys(preparedInputs).length ? { inputs: preparedInputs } : {}),
+      workspacePath: runFlow.canonicalWorkspace,
+    };
+  }
+
+  async function prepareSetupReview() {
+    if (!Object.hasOwn(runFlow || {}, "pendingSetupInputs")) {
+      throw new Error("Complete run setup before reviewing this run.");
+    }
+    const args = setupPreparationArguments(runFlow.pendingSetupInputs);
+    await runFlowMutation("loomex_run_prepare", `prepare:${runFlow.selected.versionId}:${runFlow.canonicalWorkspace}`, "review", args, acceptRunPreparation);
+  }
+
+  async function beginSetupReview(collectedInputs) {
+    if (!runFlow?.analysis.supported) throw new Error("This workflow’s inputs need to be collected in the conversation.");
+    const inputs = collectedInputs === undefined ? collectRunSetupInputs() : immutableCopy(collectedInputs);
+    runFlow.errorMessage = "";
+    runFlow.pendingSetupInputs = immutableCopy(inputs);
+    if (!runFlow.canonicalWorkspace || runFlow.workspaceDraft !== runFlow.canonicalWorkspace) {
+      await runFlowMutation("loomex_workspace_grant", `workspace:${runFlow.workspaceDraft}`, "workspace check", {
+        workspacePath: runFlow.workspaceDraft,
+        organizationId: runFlow.selected.organizationId,
+      }, acceptWorkspaceGrant);
+      return;
+    }
+    await prepareSetupReview();
+  }
+
   async function handleRunFlowPrimary() {
     if (!runFlow || runFlow.busy) return;
     if (runFlow.stage === "setup") {
@@ -1604,23 +1712,7 @@
         } else await runFlowMutation(retained.name, retained.slot, retained.label, {}, acceptRunPreparation);
         return;
       }
-      const inputs = collectRunSetupInputs();
-      runFlow.errorMessage = "";
-      if (!runFlow.canonicalWorkspace || runFlow.workspaceDraft !== runFlow.canonicalWorkspace) {
-        await runFlowMutation("loomex_workspace_grant", `workspace:${runFlow.workspaceDraft}`, "workspace grant", {
-          workspacePath: runFlow.workspaceDraft,
-          organizationId: runFlow.selected.organizationId,
-        }, acceptWorkspaceGrant);
-        return;
-      }
-      const preparedInputs = { ...inputs };
-      if (runFlow.analysis.workspaceInputField) preparedInputs[runFlow.analysis.workspaceInputField] = runFlow.canonicalWorkspace;
-      await runFlowMutation("loomex_run_prepare", `prepare:${runFlow.selected.versionId}:${runFlow.canonicalWorkspace}`, "preparation", {
-        workflowId: runFlow.selected.workflowId,
-        versionId: runFlow.selected.versionId,
-        ...(Object.keys(preparedInputs).length ? { inputs: preparedInputs } : {}),
-        workspacePath: runFlow.canonicalWorkspace,
-      }, acceptRunPreparation);
+      await beginSetupReview();
       return;
     }
     if (runFlow.stage === "review") {
@@ -1681,13 +1773,14 @@
     const organizationId = safeText(data?.workspace?.organizationId, 64);
     const installationId = safeText(data?.workspace?.installationId, 64);
     if (!canonical || !canonical.startsWith("/") || organizationId !== runFlow.selected.organizationId || !workflowIdValid(installationId) || data.executionPolicy !== "host_user/v1") {
-      throw new Error("The runner did not return a verified canonical workspace grant for this organization and installation.");
+      throw new Error("The selected project folder could not be verified. Check the folder or try again.");
     }
     runFlow.canonicalWorkspace = canonical;
     runFlow.workspaceDraft = canonical;
     runFlow.workspaceEditing = false;
     runFlow.installationId = installationId;
     if (runFlow.analysis.workspaceInputField) runFlow.inputDraft[runFlow.analysis.workspaceInputField] = canonical;
+    if (Object.hasOwn(runFlow, "pendingSetupInputs")) return () => prepareSetupReview();
   }
 
   async function acceptRunPreparation(result, request) {
@@ -1709,6 +1802,7 @@
     latest = data;
     runFlow.prepared = immutableCopy(data);
     runFlow.preparationStale = false;
+    delete runFlow.pendingSetupInputs;
     runFlow.stage = "review";
   }
 
@@ -2651,7 +2745,7 @@
       if (result?.isError || result?.structuredContent?.ok === false) throw new Error("Run setup could not be loaded. Try again or continue in the conversation.");
       const data = dataOf(result);
       if (!selectedWorkflowVersion(data) || data.workflow.id !== id) throw new Error("The exact workflow version could not be verified for run setup.");
-      initializeRunSetup(data, false);
+      initializeRunSetup(data, false, setupRequestIdentity(result));
     } catch (error) { setError(error); }
     finally {
       browserBusy = false;
@@ -2925,6 +3019,7 @@
 
   function renderContent(result, options = {}) {
     if (runFlow?.stage === "monitor") captureRunHumanDraft();
+    const workspaceMetadataSupplied = hasTaskWorkspaceResult(result);
     applyTaskWorkspaceResult(result, options.replaceTaskWorkspace === true);
     renderCount += 1;
     if (mode === "browser" && !runFlow) {
@@ -2935,6 +3030,16 @@
     latestMethod = methodOf(result) || latestMethod;
     const failed = Boolean(result && (result.isError || result.structuredContent?.ok === false));
     const incoming = dataOf(result);
+    const sourceIdentity = setupRequestIdentity(result);
+    const incomingSetup = !failed && mode === "prepare" && selectedWorkflowVersion(incoming) && !incoming?.preparationId;
+    const setupPending = Boolean(runFlow?.busy || runFlow?.operations?.size || Object.hasOwn(runFlow || {}, "pendingSetupInputs"));
+    const matchingSetup = matchesRunSetup(incoming, sourceIdentity, runFlow, !workspaceMetadataSupplied);
+    // A new notification cannot replace the owner of an in-flight or uncertain
+    // mutation. Its exact response/retry must settle before setup can change.
+    if (incomingSetup && runFlow && (matchingSetup || setupPending)) {
+      renderIntegratedRunFlow();
+      return;
+    }
     if (!failed) {
       authoritativeStateStale = false;
       latest = incoming;
@@ -2995,7 +3100,9 @@
       renderBrowser();
     } else if (mode === "prepare") {
       if (!failed && selectedWorkflowVersion(output) && !output.preparationId) {
-        initializeRunSetup(output, false);
+        if (!runFlow || (!matchingSetup && !setupPending)) {
+          initializeRunSetup(output, false, sourceIdentity);
+        }
         renderIntegratedRunFlow();
       } else if (!failed && output.execution && !output.preparationId) {
         try {
@@ -3542,7 +3649,7 @@
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.7.0" },
+    appInfo: { name: "loomex", version: "0.8.0" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

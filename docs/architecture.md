@@ -111,3 +111,11 @@ submits or explicitly asks to reopen it. Shared skills and UI continuation text
 follow the same sequence; tool output previews never substitute for complete
 schemas. A continuation identifies the exact existing run and starts with a
 fresh read, not a repeated commit or accepted answer.
+
+## One run-preparation flow
+
+A current task path or explicit override selects the workspace without another prompt. Workspace registration validates and records that canonical scope; it is not execution authorization. The UI performs registration and preparation as one ordered pipeline, skipping the setup form when there are no authored inputs and the workspace is known. Missing values still require input. Ambiguous outcomes stop the pipeline and preserve the exact operation for an explicit retry. A repeated setup notification must preserve the current flow, including its pending/accepted preparation, instead of creating another one.
+
+The single review displays the canonical workspace and host-user permissions. Start remains the explicit commit boundary, and runner checks remain unchanged. Workspace list/grant/revoke tools are advanced management operations; normal runs do not open an extra grant screen or ask for the same path twice.
+
+Setup notifications cannot replace the owner of an in-flight or uncertain mutation; the exact operation must settle or be retried first. For a settled flow, an identical nonempty request ID and workflow/version/organization may retain its review when repeated metadata is omitted. A new context-free request clears the previous task path, and an explicit changed path requires fresh preparation.

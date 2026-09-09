@@ -8,7 +8,7 @@ For visual delivery and the headless fallback boundary, read [the visual deliver
 
 For an operation that needs a workspace, use an explicitly supplied user workspace first. Otherwise, when this is a local Codex task and its actual current working directory is available in task context, use that directory by default without asking for another path. Pass it as `taskContext.cwd` to `loomex_workflows_view`, `loomex_workflow_view`, and `loomex_run_setup`; pass a separately supplied user choice as `workspacePath`. Builder and editor preparation use the same selection as their required `workspacePath`.
 
-The task path is a convenience input. Workspace grant and prepare responses remain authoritative for the canonical path and execution binding. Never derive a path from the plugin process working directory, environment variables, a prior task, or an undocumented host/iframe API. A remote or cloud task without an available local cwd has no automatic workspace; collect one manually when execution requires it.
+The task path selects the project; it does not by itself authorize execution. Workspace registration belongs inside preparation and needs no separate confirmation for that already selected project. Start authorizes only the exact reviewed run. Workspace grant and prepare responses remain authoritative for the canonical path and execution binding. Never derive a path from the plugin process working directory, environment variables, a prior task, or an undocumented host/iframe API. A remote or cloud task without an available local cwd has no automatic workspace; collect one manually when execution requires it.
 
 ## Resolve the target before acting
 

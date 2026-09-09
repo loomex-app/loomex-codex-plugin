@@ -174,7 +174,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "workspaces.grant",
     title: "Grant Loomex workspace",
     description:
-      "Remember the user's approval to execute in a canonical workspace root. This records scope but does not sandbox host-user processes.",
+      "Register the user's selected canonical workspace for preparation, scoped to organization and installation. Execution still requires confirmation of the exact prepared run. This is not a sandbox.",
     inputSchema: z
       .object({
         workspacePath: AbsolutePath,
@@ -259,7 +259,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_run_setup",
     rpcMethod: "workflows.get",
     title: "Set up Loomex run",
-    description: "Start here when the user asks to run a workflow, including typed commands. For a local Codex task, pass its actual cwd as taskContext.cwd; setup uses it as the initial workspace. Pass workspacePath only when the user explicitly chose another workspace. This read-only action opens the exact workflow input schema, grants no workspace, and starts nothing. Without local task context or an explicit workspace, collect the workspace manually. Do not silently omit inputs or invent values.",
+    description: "Start here when the user asks to run a workflow, including typed commands. For a local Codex task, pass its actual cwd as taskContext.cwd; setup uses it as the initial workspace. Pass workspacePath only when the user explicitly chose another workspace. Reads the exact workflow schema and opens one preparation flow. The UI automatically verifies/registers the selected workspace and prepares a review when no inputs are needed; otherwise it collects the missing setup first. Only an explicit Start commits execution. Without local task context or an explicit workspace, collect the workspace manually. Do not duplicate UI preparation calls in chat, silently omit inputs, or invent values.",
     inputSchema: z.object({ workflowId: Uuid, version: z.string().optional(), ...TaskWorkspaceInput }).strict(),
     mutating: false,
     destructive: false,

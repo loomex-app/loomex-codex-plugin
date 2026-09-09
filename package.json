@@ -1,6 +1,6 @@
 {
   "name": "@loomex/codex-plugin",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Local Loomex MCP bridge for Codex desktop and CLI",
   "type": "module",
