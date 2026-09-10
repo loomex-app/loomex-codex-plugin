@@ -759,10 +759,11 @@ test("batch choices auto-advance only after deliberate activation and the final 
     throw new Error(`Keyboard auto-next did not advance: ${JSON.stringify(diagnostics)}`, { cause: error });
   }
 
+  await page.evaluate(() => { window.__persistenceDelayMs = 200; });
   await app.locator("#question-1-option-0").check();
   await app.getByText("Question 2 of 4", { exact: true }).waitFor();
+  assert.equal(await app.locator("#activity").isVisible(), false, "background checkbox saves never insert a visible activity row");
   await app.getByRole("button", { name: "Next question", exact: true }).click();
-  await page.evaluate(() => { window.__persistenceDelayMs = 200; });
   const activation = app.locator('label[for="question-2-option-1"]').click();
   await page.waitForFunction(() => window.__loomexPersistenceCalls.some((call: any) =>
     call.name === "loomex_interaction_draft_update" && call.arguments.answers?.choice?.value === "beta"));
@@ -1968,6 +1969,8 @@ test("accepted run response retries only a failed chat handoff", async (t) => {
   await app.getByRole("textbox", { name: "Name the deliverable Your answer" }).fill("Release brief");
   await reviewAndSubmit(app);
   await app.getByRole("button", { name: "Retry chat handoff", exact: true }).waitFor();
+  await app.getByRole("heading", { name: "Submitted answers", exact: true }).waitFor();
+  await app.getByText("Release brief", { exact: true }).waitFor();
   assert.equal((await page.evaluate(() => window.__loomexCalls)).length, 1);
   assert.equal((await page.evaluate(() => window.__loomexCalls))[0].name, "loomex_interaction_respond");
   assert.equal(await app.getByRole("button", { name: "Retry exact response" }).count(), 0);
@@ -3676,6 +3679,48 @@ test("a failed forward-target read retries the exact saved navigation without re
   }), targetSession.viewSessionId);
   assert.ok(evidence.targetReads > targetReadsBeforeRetry, "Retry restore re-reads the exact failed forward target");
   assert.deepEqual(evidence.domainNames, ["loomex_preparation_get"]);
+});
+
+test("reopening setup follows a committed preparation through its durable monitor target", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for durable chained navigation recovery");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const workflowId = "dd25f9b7-c98e-4c15-a31a-7d4f49ca1e68";
+  const versionId = "48a69d1e-05af-4225-b1b5-69f93f6637fb";
+  const preparationId = "a48d8335-780c-4cb3-a469-62edf392a20a";
+  const runId = "1708af25-8f7d-439c-a864-0405402d9c76";
+  const source = viewSession("87e001a2-4ce5-40a9-a1b9-dfa3bb2744ca", "prepare", "workflow", workflowId, {
+    schemaVersion: 1, screen: "setup", disclosures: {}, workflowId, versionId,
+  });
+  const preparation = viewSession("b9c53d9f-b468-4e9f-a874-e357914d9f22", "prepare", "preparation", preparationId, {
+    schemaVersion: 1, screen: "review", disclosures: {}, preparationId,
+  });
+  const monitor = viewSession("6e141f1a-879c-4640-8e10-d26611649832", "monitor", "execution", runId, {
+    schemaVersion: 1, screen: "monitor", disclosures: {}, executionId: runId,
+  });
+  source.state.forwardSession = { viewSessionId: preparation.viewSessionId, kind: preparation.kind, entityType: preparation.entityType, entityId: preparation.entityId };
+  source.status = "inactive";
+  preparation.state.forwardSession = { viewSessionId: monitor.viewSessionId, kind: monitor.kind, entityType: monitor.entityType, entityId: monitor.entityId };
+  preparation.status = "inactive";
+  const setup = {
+    workflow: { id: workflowId, organizationId: "44a4d854-30a4-4d7d-8950-09b3ba459765", name: "Chained recovery" },
+    selectedVersion: { id: versionId, workflowId, versionNumber: 1, definition: { settings: { inputSchema: { type: "object", properties: {} } }, nodes: [] } },
+    inputSchema: { type: "object", properties: {} },
+  };
+  await mountApp(page, "prepare", setup, false, false, null, false, { "loomex/viewSession": source });
+  await waitForPersistenceToolCount(page, "loomex_view_session_get", 1);
+  await page.evaluate((sessions: any[]) => {
+    for (const session of sessions) window.__loomexPersistenceStore.sessions[session.viewSessionId] = structuredClone(session);
+  }, [source, preparation, monitor]);
+  const app = await mountApp(page, "prepare", setup, false, false, null, false, { "loomex/viewSession": source }, undefined, [
+    { structuredContent: { ok: true, data: { execution: { id: runId, status: "running", workflowName: "Chained recovery" }, latestSequence: 4 } } },
+  ], true);
+  await app.getByText("Chained recovery", { exact: true }).waitFor();
+  const calls = await page.evaluate(() => window.__loomexCalls.map((call: any) => call.name));
+  assert.deepEqual(calls, ["loomex_run_get"], "a committed preparation must be skipped in favor of its monitor target");
+  assert.equal(await app.getByText("The saved preparation is no longer available.", { exact: false }).count(), 0);
 });
 
 test("authoring workflow detail matches the browser read view and only hands preparation to the conversation", async (t) => {
