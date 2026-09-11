@@ -8,8 +8,10 @@
     "node": ">=24.20.0 <25"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/server.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/server.js && esbuild src/compatibility-export.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-export.mjs && esbuild scripts/export-plugin-components.mjs --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-check.mjs",
     "typecheck": "tsc --noEmit",
+    "compatibility:export": "npm run build && node dist/compatibility-check.mjs --package-root .",
+    "compatibility:check": "npm run build && node dist/compatibility-check.mjs --package-root . --check",
     "test:compile": "esbuild test/*.test.ts --bundle --packages=external --platform=node --format=esm --target=node24 --outdir=.test-dist",
     "test": "npm run build && npm run test:compile && node --test --test-concurrency=1 .test-dist/*.test.js",
     "test:ui": "npm run test:compile && LOOMEX_REQUIRE_BROWSER=1 node --test .test-dist/ui-browser.test.js",

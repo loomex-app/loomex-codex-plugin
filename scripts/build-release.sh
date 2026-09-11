@@ -56,6 +56,8 @@ cp -R "$build_root/hooks/." "$payload/plugin/hooks/"
 [[ ! -d "$build_root/skills" ]] || cp -R "$build_root/skills" "$payload/plugin/skills"
 mkdir -p "$payload/plugin/dist"
 cp "$build_root/dist/server.js" "$payload/plugin/dist/server.js"
+cp "$build_root/dist/compatibility-export.mjs" "$payload/plugin/dist/compatibility-export.mjs"
+cp "$build_root/dist/compatibility-check.mjs" "$payload/plugin/dist/compatibility-check.mjs"
 
 runtime_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$build_root/scripts/node-runtime.lock.json")"
 runtime_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$build_root/scripts/node-runtime.lock.json")"

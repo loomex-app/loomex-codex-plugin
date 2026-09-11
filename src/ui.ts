@@ -4,29 +4,7 @@ import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/serv
 
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 
-import {
-  AUTHORING_UI_URI,
-  BROWSER_UI_URI,
-  INTERACTION_UI_URI,
-  MONITOR_UI_URI,
-  PREPARE_UI_URI,
-  CONNECTION_UI_URI,
-  ORGANIZATIONS_UI_URI,
-} from "./tool-catalog.js";
-
-const RESOURCES = [
-  { name: "loomex-browser", uri: BROWSER_UI_URI, mode: "browser" },
-  { name: "loomex-authoring", uri: AUTHORING_UI_URI, mode: "authoring" },
-  { name: "loomex-prepare", uri: PREPARE_UI_URI, mode: "prepare" },
-  { name: "loomex-monitor", uri: MONITOR_UI_URI, mode: "monitor" },
-  { name: "loomex-interaction", uri: INTERACTION_UI_URI, mode: "interaction" },
-  { name: "loomex-organizations", uri: ORGANIZATIONS_UI_URI, mode: "organizations" },
-  { name: "loomex-connection", uri: CONNECTION_UI_URI, mode: "connection" },
-] as const;
-
-// Stable resource identities avoid retaining a deleted release URI in a host task.
-// Only previously shipped identities are accepted by the compatibility template.
-const CACHED_RELEASES = new Set(["0.2.3", "0.2.4", "0.2.5", "0.2.6", "0.2.7"]);
+import { UI_RESOURCE_REGISTRY, uiResourceForLegacyAlias } from "./ui-resources.js";
 
 function resourceContents(uri: string, mode: string) {
   return { contents: [{
@@ -38,7 +16,7 @@ function resourceContents(uri: string, mode: string) {
 }
 
 export function registerUiResources(server: McpServer): void {
-  for (const resource of RESOURCES) {
+  for (const resource of UI_RESOURCE_REGISTRY) {
     server.registerResource(resource.name, resource.uri, {
       title: `Loomex ${resource.mode}`,
       description: `Optional Loomex ${resource.mode} interface. All operations remain available as headless tools.`,
@@ -51,8 +29,10 @@ export function registerUiResources(server: McpServer): void {
   }, async (uri, variables) => {
     const view = variables.view;
     const version = variables.version;
-    const resource = typeof view === "string" && view !== "connection" ? RESOURCES.find((item) => item.mode === view) : undefined;
-    if (!resource || typeof version !== "string" || (!CACHED_RELEASES.has(version) || (view === "browser" && version !== "0.2.7"))) {
+    const resource = typeof view === "string" && typeof version === "string"
+      ? uiResourceForLegacyAlias(uri.href)
+      : undefined;
+    if (!resource) {
       throw new McpError(ErrorCode.InvalidParams, "Unsupported Loomex UI resource");
     }
     return resourceContents(uri.href, resource.mode);

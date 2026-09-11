@@ -2,6 +2,7 @@
 """Validate the release allowlist, manifest paths, and MCP entrypoint binding."""
 import argparse
 import json
+import subprocess
 from pathlib import Path, PurePosixPath
 
 FORBIDDEN_PARTS = {
@@ -68,6 +69,25 @@ marketplace=json.loads((root/".agents/plugins/marketplace.json").read_text())
 entries=marketplace.get("plugins",[])
 if len(entries)!=1 or entries[0].get("name")!="loomex" or entries[0].get("version")!=args.expected_version or entries[0].get("source",{}).get("path")!="./plugin":
     raise SystemExit("private marketplace descriptor mismatch")
+for component in ("compatibility-export.mjs", "compatibility-check.mjs"):
+    if not (root / "plugin" / "dist" / component).is_file():
+        raise SystemExit(f"plugin compatibility bundle is missing: dist/{component}")
+try:
+    subprocess.run(
+        [
+            str(plugin / "runtime" / "bin" / "node"),
+            str(plugin / "dist" / "compatibility-check.mjs"),
+            "--package-root",
+            str(plugin),
+            "--check",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+except (OSError, subprocess.CalledProcessError) as exc:
+    detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
+    raise SystemExit(f"plugin compatibility bundle could not be evaluated from the package: {detail}") from exc
 if args.template:
     template=(plugin/".mcp.template.json").read_text()
     if template.count("__LOOMEX_NODE__") != 1 or template.count("__LOOMEX_PLUGIN_SERVER__") != 1:

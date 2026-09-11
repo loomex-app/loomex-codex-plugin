@@ -10,14 +10,24 @@ import {
   RUN_GET_MONITORING_DESCRIPTION,
   RUN_WAIT_MONITORING_DESCRIPTION,
 } from "./monitoring-contract.js";
-
-export const BROWSER_UI_URI = "ui://loomex/browser.html";
-export const AUTHORING_UI_URI = "ui://loomex/authoring.html";
-export const PREPARE_UI_URI = "ui://loomex/prepare.html";
-export const MONITOR_UI_URI = "ui://loomex/monitor.html";
-export const INTERACTION_UI_URI = "ui://loomex/interaction.html";
-export const CONNECTION_UI_URI = "ui://loomex/connection.html";
-export const ORGANIZATIONS_UI_URI = "ui://loomex/organizations.html";
+export {
+  AUTHORING_UI_URI,
+  BROWSER_UI_URI,
+  CONNECTION_UI_URI,
+  INTERACTION_UI_URI,
+  MONITOR_UI_URI,
+  ORGANIZATIONS_UI_URI,
+  PREPARE_UI_URI,
+} from "./ui-resources.js";
+import {
+  AUTHORING_UI_URI,
+  BROWSER_UI_URI,
+  CONNECTION_UI_URI,
+  INTERACTION_UI_URI,
+  MONITOR_UI_URI,
+  ORGANIZATIONS_UI_URI,
+  PREPARE_UI_URI,
+} from "./ui-resources.js";
 
 type InputSchema = z.ZodObject<z.ZodRawShape>;
 
@@ -179,7 +189,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     name: "loomex_view_session_update", rpcMethod: "presentation.sessions.update", title: "Save Loomex view",
     description: "Persist presentation state at its exact revision and optionally journal a pending operation. A conflict requires reconciliation. Journaling never executes the operation.",
-    inputSchema: z.object({ viewSessionId: Uuid, expectedRevision: z.number().int().nonnegative(), state: JsonObject, status: z.string().optional(),
+    inputSchema: z.object({ viewSessionId: Uuid, expectedRevision: z.number().int().nonnegative(), state: JsonObject, status: z.enum(["active", "inactive", "resolved"]).optional(),
       operation: z.object({ method: z.string(), params: JsonObject, idempotencyKey: IdempotencyKey, reconciliation: z.object({method:z.string(),params:JsonObject}).strict().optional() }).strict().optional(), idempotencyKey: IdempotencyKey }).strict(),
     mutating: true, destructive: false,
   },

@@ -18,6 +18,7 @@ Useful source entry points are:
 
 - `src/server.ts`: MCP server, tool registration, annotations, safe text projections, and per-method timeouts.
 - `src/tool-catalog.ts`: focused MCP names, strict inputs, mutation metadata, and UI-resource associations.
+- `src/ui-resources.ts` and [`compatibility-components.md`](compatibility-components.md): canonical UI identities, deprecated aliases, and the deterministic component export used by CI and cached-package checks.
 - `src/local-control.ts`: socket ownership checks, framing, ambiguity classification, cancellation, and response validation.
 - `src/protocol.ts` and `src/result-schemas.ts`: common envelope and strict method-specific result schemas.
 - `src/ui.ts` and `assets/loomex-app.html`: optional portable MCP Apps resources.
