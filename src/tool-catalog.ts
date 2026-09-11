@@ -2,15 +2,22 @@ import { z } from "zod";
 
 import {
   JsonValueSchema,
+  RECOVERY_COORDINATION_CAPABILITY,
   VALIDATION_ERRORS_CAPABILITY,
   type JsonValue,
 } from "./protocol.js";
+import {
+  RUN_GET_MONITORING_DESCRIPTION,
+  RUN_WAIT_MONITORING_DESCRIPTION,
+} from "./monitoring-contract.js";
 
 export const BROWSER_UI_URI = "ui://loomex/browser.html";
 export const AUTHORING_UI_URI = "ui://loomex/authoring.html";
 export const PREPARE_UI_URI = "ui://loomex/prepare.html";
 export const MONITOR_UI_URI = "ui://loomex/monitor.html";
 export const INTERACTION_UI_URI = "ui://loomex/interaction.html";
+export const CONNECTION_UI_URI = "ui://loomex/connection.html";
+export const ORGANIZATIONS_UI_URI = "ui://loomex/organizations.html";
 
 type InputSchema = z.ZodObject<z.ZodRawShape>;
 
@@ -25,6 +32,10 @@ export interface ToolDefinition {
   readonly uiUri?: string;
   /** Input fields handled by this MCP adapter and never sent over local-control. */
   readonly localOnlyInputKeys?: readonly string[];
+  /** Public input names translated to established local-control parameter names. */
+  readonly runnerInputAliases?: Readonly<Record<string, string>>;
+  /** Established local-control inputs deliberately hidden from the public tool contract. */
+  readonly omittedRunnerInputKeys?: readonly string[];
 }
 
 const Empty = z.object({}).strict();
@@ -45,15 +56,76 @@ const TaskContext = z
   })
   .strict();
 const TaskWorkspaceInput = {
-  taskContext: TaskContext.optional().describe(
-    "Optional context supplied by the calling Codex skill for the active local task. This is a workspace suggestion, not execution authority.",
+  taskContext: TaskContext.describe(
+    "Required context supplied by the calling Codex skill for the active local task. The plugin cannot discover or infer this cwd. It is a workspace suggestion, not execution authority.",
   ),
   workspacePath: AbsolutePath.optional().describe(
     "An explicit workspace chosen by the user for this operation. When present, it overrides taskContext.cwd in setup.",
   ),
 };
 const TASK_WORKSPACE_INPUT_KEYS = ["taskContext", "workspacePath"] as const;
+export const TASK_WORKSPACE_TOOL_NAMES = new Set([
+  "loomex_workflows_view",
+  "loomex_workflow_view",
+  "loomex_run_setup",
+]);
 const JsonObject = z.record(z.string(), JsonValueSchema);
+
+/**
+ * Provider authentication belongs to the installed provider CLI or its
+ * host-owned credential store. Preparations may select non-secret provider
+ * settings, but must never transport credentials to the runner or review UI.
+ */
+function inlineProviderCredentialKey(key: string): boolean {
+  const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return normalized === "password" ||
+    normalized === "authorization" ||
+    normalized === "credential" ||
+    normalized === "credentials" ||
+    normalized === "token" ||
+    normalized === "key" ||
+    normalized.endsWith("secret") ||
+    /(?:api|access|refresh|bearer|auth)token$/.test(normalized) ||
+    /(?:api|access|private|secret|signing|client)key$/.test(normalized);
+}
+
+function providerCredentialPath(value: JsonValue, path = "providerConfiguration"): string | undefined {
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const nested = providerCredentialPath(item, `${path}[${index}]`);
+      if (nested !== undefined) return nested;
+    }
+    return undefined;
+  }
+  if (value === null || typeof value !== "object") return undefined;
+  for (const [key, item] of Object.entries(value)) {
+    const fieldPath = `${path}.${key}`;
+    if (inlineProviderCredentialKey(key)) return fieldPath;
+    const nested = providerCredentialPath(item, fieldPath);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+const ProviderConfiguration = JsonObject.superRefine((value, context) => {
+  const credentialPath = providerCredentialPath(value);
+  if (credentialPath !== undefined) {
+    context.addIssue({
+      code: "custom",
+      message: `${credentialPath} is not allowed. Configure provider authentication through the installed provider CLI or its host-owned credential store.`,
+    });
+  }
+});
+const HostId = z.string().min(1).max(512);
+const HostTaskId = z.string().min(1).max(512);
+const RecoveryBinding = z.object({ hostId: HostId, hostTaskId: HostTaskId, runId: Uuid }).strict();
+const RecoveryIntent = z.enum(["enabled", "stopped"]);
+const RecoveryOperation = z.object({
+  kind: z.enum(["create", "update", "pause", "remove"]),
+  arguments: JsonObject,
+  idempotencyKey: IdempotencyKey,
+}).strict();
+const RecoveryLifecycle = z.enum(["unchecked", "verified", "unavailable", "ambiguous", "paused", "removed"]);
 
 function containsSecretInput(value: JsonValue): boolean {
   if (Array.isArray(value)) return value.some(containsSecretInput);
@@ -85,6 +157,9 @@ const BuilderStreamQuery = {
 };
 
 const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
+  { name:"loomex_connection_view_create", rpcMethod:"connection.views.create", title:"Create connection view state", description:"Create local connection navigation and pending operation state; never changes authentication or organization selection.", inputSchema:z.object({kind:z.enum(["connection", "organizations"]), entityType:z.literal("catalog"), entityId:Uuid, state:JsonObject, idempotencyKey:IdempotencyKey}).strict(), mutating:true, destructive:false },
+  { name:"loomex_connection_view_get", rpcMethod:"connection.views.get", title:"Get connection view state", description:"Get local connection navigation and pending operation state; never changes authentication or organization selection.", inputSchema:z.object({viewSessionId:Uuid}).strict(), mutating:false, destructive:false },
+  { name:"loomex_connection_view_update", rpcMethod:"connection.views.update", title:"Update connection view state", description:"Update local connection navigation and pending operation state; never changes authentication or organization selection.", inputSchema:z.object({viewSessionId:Uuid, expectedRevision:z.number().int().nonnegative(), state:JsonObject, idempotencyKey:IdempotencyKey}).strict(), mutating:true, destructive:false },
   {
     name: "loomex_preparation_get", rpcMethod: "preparations.get", title: "Restore Loomex preparation",
     description: "Read an existing owner-bound preparation without preparing or starting again. Restore only a valid exact review; stale preparations require the returned recovery action. Reading never confirms execution.",
@@ -125,6 +200,61 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     mutating: true, destructive: false,
   },
   {
+    name: "loomex_recovery_get", rpcMethod: "recovery.get", title: "Read Loomex recovery coordination",
+    description: "Read the exact owner-bound recovery coordination record for a host task and run. This does not schedule, pause, or remove host recovery.",
+    inputSchema: z.object({ binding: RecoveryBinding }).strict(), mutating: false, destructive: false,
+  },
+  {
+    name: "loomex_recovery_update", rpcMethod: "recovery.update", title: "Update Loomex recovery coordination",
+    description: "Create or update local recovery intent and checkpoints at the exact binding and revision. This stores coordination only; it does not schedule or mutate a workflow.",
+    inputSchema: z.object({ binding: RecoveryBinding, expectedRevision: z.number().int().nonnegative(), initialization: z.string().min(1).max(512).optional(), monitoringIntent: RecoveryIntent.optional(), lastEventSequence: z.number().int().nonnegative().optional(), pendingRequestId: Uuid.nullable().optional(), presentationReference: z.string().min(1).max(512).optional(), cleanupStatus: z.string().min(1).max(512).optional(), diagnosticReason: z.string().min(1).max(1_024).optional(), idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true, destructive: false,
+  },
+  {
+    name: "loomex_recovery_operation_begin", rpcMethod: "recovery.operations.begin", title: "Journal Loomex recovery operation",
+    description: "Atomically journal an exact host-recovery operation and return whether this caller may attempt it. This tool does not invoke host scheduling.",
+    inputSchema: z.object({ binding: RecoveryBinding, expectedRevision: z.number().int().nonnegative(), operation: RecoveryOperation, idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true, destructive: false,
+  },
+  {
+    name: "loomex_recovery_operation_settle", rpcMethod: "recovery.operations.settle", title: "Settle Loomex recovery operation",
+    description: "Record an exact recovery operation outcome, any known host automation ID, and host-reported observation. This tool does not invoke or verify host scheduling itself.",
+    inputSchema: z.object({ binding: RecoveryBinding, expectedRevision: z.number().int().nonnegative(), operationId: Uuid, status: z.enum(["succeeded", "ambiguous"]), automationId: z.string().min(1).max(512).optional(), hostEvidence: JsonObject.optional(), lifecycle: RecoveryLifecycle.optional(), idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true, destructive: false,
+  },
+  {
+    name: "loomex_connection_get",
+    rpcMethod: "connection.get",
+    title: "Get Loomex connection",
+    description: "Read the current Loomex sign-in and organization connection state without starting, polling, or changing a login flow.",
+    inputSchema: Empty,
+    mutating: false,
+    destructive: false,
+  },
+  {
+    name: "loomex_connection_view",
+    rpcMethod: "connection.get",
+    uiUri: CONNECTION_UI_URI,
+    title: "View Loomex connection",
+    description: "Show the current Loomex connection, sign-in, and organization state. Opening or refreshing this view never starts or changes authentication.",
+    inputSchema: Empty,
+    mutating: false,
+    destructive: false,
+  },
+  {
+    // Keep organization management as its own UI entry point.  A command
+    // should not have to rely on an agent inferring that the more general
+    // connection card is the visual organization surface.
+    name: "loomex_organizations_view",
+    rpcMethod: "connection.get",
+    uiUri: ORGANIZATIONS_UI_URI,
+    title: "View Loomex organizations",
+    description: "Show the selected Loomex organization and available organizations in the focused organization picker. Opening this view never changes organization scope.",
+    inputSchema: Empty,
+    mutating: false,
+    destructive: false,
+  },
+  {
     name: "loomex_readiness",
     rpcMethod: "status.get",
     title: "Check Loomex readiness",
@@ -163,8 +293,8 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "auth.poll",
     title: "Poll Loomex authentication",
     description:
-      "Poll the active device flow. On success, the runner stores Loomex credentials in the user's Keychain and returns only non-secret IDs.",
-    inputSchema: z.object({ idempotencyKey: IdempotencyKey }).strict(),
+      "Poll one exact active device flow. On success, the runner stores Loomex credentials in the user's Keychain and returns only non-secret IDs.",
+    inputSchema: z.object({ flowId: z.string().min(1).max(160), idempotencyKey: IdempotencyKey }).strict(),
     mutating: true,
     destructive: false,
   },
@@ -260,7 +390,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     uiUri: BROWSER_UI_URI,
     rpcMethod: "workflows.list",
     title: "Browse Loomex workflows",
-    description: "Show a compact workflow list for the user to browse, inspect, or prepare. For a local Codex task, pass its actual cwd as taskContext.cwd so a later Prepare action starts with that workspace; pass workspacePath only for an explicit user override. Reads the current authorized list for the supplied search and cursor. Use loomex_workflows_list for headless discovery; do not open this view when following an existing run.",
+    description: "Show a compact workflow list for the user to browse, inspect, or prepare. Always pass the calling Codex task's actual cwd as taskContext.cwd so later Prepare actions stay bound to this task; pass workspacePath only for an explicit user override. Missing task context is an input error because the plugin never infers a cwd. Reads the current authorized list for the supplied search and cursor. Use loomex_workflows_list for headless discovery; do not open this view when following an existing run.",
     inputSchema: z
       .object({
         query: z.string().optional(),
@@ -287,7 +417,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_workflow_view",
     rpcMethod: "workflows.get",
     title: "View Loomex workflow",
-    description: "Open a visual workflow detail view only when the user asks to inspect a workflow. For a local Codex task, pass its actual cwd as taskContext.cwd so the optional Prepare action starts with that workspace; pass workspacePath only for an explicit user override. Do not call this as a prerequisite to running; use loomex_run_setup instead.",
+    description: "Open a visual workflow detail view only when the user asks to inspect a workflow. Always pass the calling Codex task's actual cwd as taskContext.cwd so the optional Prepare action stays bound to this task; pass workspacePath only for an explicit user override. Missing task context is an input error because the plugin never infers a cwd. Do not call this as a prerequisite to running; use loomex_run_setup instead.",
     inputSchema: z.object({ workflowId: Uuid, version: z.string().optional(), ...TaskWorkspaceInput }).strict(),
     mutating: false,
     destructive: false,
@@ -298,7 +428,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_run_setup",
     rpcMethod: "workflows.get",
     title: "Set up Loomex run",
-    description: "Start here when the user asks to run a workflow, including typed commands. For a local Codex task, pass its actual cwd as taskContext.cwd; setup uses it as the initial workspace. Pass workspacePath only when the user explicitly chose another workspace. Reads the exact workflow schema and opens one preparation flow. The UI automatically verifies/registers the selected workspace and prepares a review when no inputs are needed; otherwise it collects the missing setup first. Only an explicit Start commits execution. Without local task context or an explicit workspace, collect the workspace manually. Do not duplicate UI preparation calls in chat, silently omit inputs, or invent values.",
+    description: "Start here when the user asks to run a workflow, including typed commands. Always pass the calling Codex task's actual cwd as taskContext.cwd; setup uses it as the initial workspace. Pass workspacePath only when the user explicitly chose another workspace. Missing task context is an input error because the plugin never infers a cwd or lets UI state substitute one. Reads the exact workflow schema and opens one preparation flow. The UI automatically verifies/registers the selected workspace and prepares a review when no authored workflow inputs are needed; otherwise it collects those missing inputs. Only an explicit Start commits execution. Do not duplicate UI preparation calls in chat, silently omit inputs, or invent values.",
     inputSchema: z.object({ workflowId: Uuid, version: z.string().optional(), ...TaskWorkspaceInput }).strict(),
     mutating: false,
     destructive: false,
@@ -404,7 +534,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         prompt: z.string().min(1),
         model: z.string().min(1).optional(),
         workspacePath: AbsolutePath,
-        providerConfiguration: JsonObject.optional(),
+        providerConfiguration: ProviderConfiguration.optional(),
         context: JsonObject.optional(),
         idempotencyKey: IdempotencyKey,
       })
@@ -474,7 +604,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         prompt: z.string().min(1),
         model: z.string().min(1).optional(),
         workspacePath: AbsolutePath,
-        providerConfiguration: JsonObject.optional(),
+        providerConfiguration: ProviderConfiguration.optional(),
         context: JsonObject.optional(),
         idempotencyKey: IdempotencyKey,
       })
@@ -535,7 +665,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         versionId: Uuid,
         inputs: JsonObject.optional(),
         workspacePath: AbsolutePath,
-        providerConfiguration: JsonObject.optional(),
+        providerConfiguration: ProviderConfiguration.optional(),
         idempotencyKey: IdempotencyKey,
       })
       .strict(),
@@ -575,7 +705,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_run_get",
     rpcMethod: "runs.get",
     title: "Get Loomex run",
-    description: "Read current authoritative state for this exact existing run without opening a UI. For one-off status requests, report this snapshot only. An explicit $loomex-follow or accepted-interaction continuation must begin with this fresh read for the exact run; the acceptance receipt triggers verification but does not determine state. When explicitly asked to monitor or follow, use the returned live nextAction: inspect a pending interaction, retrieve terminal results, or long-poll this same run. Never list workflows or prepare another run to monitor it.",
+    description: RUN_GET_MONITORING_DESCRIPTION,
     inputSchema: z.object({ runId: Uuid, ...StreamQuery }).strict(),
     mutating: false,
     destructive: false,
@@ -594,8 +724,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_run_wait",
     rpcMethod: "runs.wait",
     title: "Wait for Loomex run change",
-    description:
-      "Wait for a runner-normalized long poll (currently at most 45 seconds) for a run revision, terminal state, or required interaction, then return a finite page. In an accepted-interaction continuation, call loomex_run_get first and follow its live nextAction before waiting. This does not limit run duration.",
+    description: RUN_WAIT_MONITORING_DESCRIPTION,
     inputSchema: z.object({ runId: Uuid, ...StreamQuery }).strict(),
     mutating: false,
     destructive: false,
@@ -653,18 +782,21 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_interactions_list",
     rpcMethod: "interactions.list",
     title: "List Loomex interactions",
-    description: "List typed human interaction requests, optionally filtered by run, status, or request type.",
+    description: "List typed human interaction requests, optionally filtered by run, status, or routing category. interactionCategory is the request route (human, approval, or plugin_agent); it is never an inputSpec.inputType such as long_text.",
     inputSchema: z
       .object({
         runId: Uuid.optional(),
         cursor: Cursor,
         limit: PageLimit,
         status: z.string().optional(),
-        requestType: z.string().optional(),
+        interactionCategory: z.enum(["human", "approval", "plugin_agent"]).optional().describe(
+          "Request routing category. Do not copy inputSpec.inputType into this field.",
+        ),
       })
       .strict(),
     mutating: false,
     destructive: false,
+    runnerInputAliases: { interactionCategory: "requestType" },
   },
   {
     name: "loomex_interaction_get",
@@ -715,18 +847,18 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "interactions.respond",
     title: "Respond to Loomex interaction",
     description:
-      "Submit a structured answer matching the pending interaction's typed schema. Do not use this tool for approval decisions.",
+      "Submit a structured answer matching the pending interaction's typed schema. The exact requestId selects the route; do not send inputSpec.inputType or a request routing category. Do not use this tool for approval decisions.",
     inputSchema: z
       .object({
         requestId: Uuid,
         answer: JsonObject,
         expectedSchemaDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-        requestType: z.string().optional(),
         idempotencyKey: IdempotencyKey,
       })
       .strict(),
     mutating: true,
     destructive: true,
+    omittedRunnerInputKeys: ["requestType"],
   },
   {
     name: "loomex_interaction_decide",
@@ -817,6 +949,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = BASE_TOOL_DEFINITIONS
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((definition) => definition.name);
 
 export const APP_CALLABLE_TOOLS = new Set([
+  "loomex_connection_view_create", "loomex_connection_view_get", "loomex_connection_view_update",
+  "loomex_connection_get",
+  "loomex_auth_start", "loomex_auth_poll", "loomex_auth_logout", "loomex_organizations_list", "loomex_organization_select",
   "loomex_preparation_get",
   "loomex_view_session_create", "loomex_view_session_get", "loomex_view_session_update", "loomex_view_session_delete",
   "loomex_view_operation_get", "loomex_view_operation_settle",
@@ -830,10 +965,12 @@ export const APP_CALLABLE_TOOLS = new Set([
 
 const SEMANTIC_CAPABILITIES = [
   "presentation.sessions/v1",
+  RECOVERY_COORDINATION_CAPABILITY,
   "interactions.drafts/v1",
   "execution.host_user/v1",
   "authorization.prepare-commit/v1",
   "auth.device-v2/v1",
+  "connection.projection/v1",
   "transfer.chunked/v1",
   VALIDATION_ERRORS_CAPABILITY,
 ] as const;

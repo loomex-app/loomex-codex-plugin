@@ -8,10 +8,16 @@ See [architecture](docs/architecture.md) for component ownership and trust
 boundaries, and [development](docs/development.md) for contract synchronization,
 testing, and packaging rules.
 
+The installed plugin also contains a reviewed-and-trusted Codex lifecycle-hook
+bridge for durable follow sessions. See [lifecycle hooks](docs/lifecycle-hooks.md)
+for its socket boundary, exact event payloads, and hook-trust activation steps.
+
 ## Command skills
 
-Use focused skills to browse, author, run, follow, answer, and retrieve results.
-See [the command guide](docs/commands.md) for all 15 entry points and examples.
+Use focused skills to connect, choose an organization, browse, author, run,
+follow, answer, and retrieve results. See [the command guide](docs/commands.md)
+for the entry points and examples. Connection details and browser device-flow
+safety are documented in [connection](docs/connection.md).
 Natural-language access remains available.
 
 ## Development

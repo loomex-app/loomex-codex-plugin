@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd -P)"; fixture="$(mktemp -d)"; trap 'rm -rf "$fixture"' EXIT
+(cd "$repo" && npm run build && npm run test:compile)
 lock="$repo/scripts/node-runtime.lock.json"
 version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$lock")"
 url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$lock")"
@@ -14,4 +15,8 @@ actual="$($fixture/node/bin/node --version)"
   # A stdio MCP process may exit when its input closes, but must start under the pinned runtime.
   ! grep -Eq 'SyntaxError|ERR_MODULE_NOT_FOUND|bad CPU type' "$fixture/server.stderr"
 }
+(
+  cd "$repo"
+  "$fixture/node/bin/node" --test .test-dist/hooks.test.js
+)
 echo "pinned Node runtime $actual verified"

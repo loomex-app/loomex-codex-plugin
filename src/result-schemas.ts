@@ -78,16 +78,62 @@ const InteractionResolutionResult = z
   .strict();
 
 const ViewSession = z.object({
-  viewSessionId: z.uuid(), kind: z.enum(["browser", "authoring", "prepare", "monitor", "interaction"]),
+  viewSessionId: z.uuid(), kind: z.enum(["browser", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]),
   entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation"]), entityId: z.uuid(),
   revision: NonNegativeInteger, state: JsonObject, status: z.string(), createdAt: NonNegativeInteger, updatedAt: NonNegativeInteger,
   details: Details, expiresAt: NonNegativeInteger.nullable(), operation: z.object({operationId:z.uuid(),status:z.string()}).strict().nullable(),
 }).strict();
 
+const RecoveryBinding = z.object({
+  organizationId: z.string().min(1).max(512), installationId: z.string().min(1).max(512),
+  hostId: z.string().min(1).max(512), hostTaskId: z.string().min(1).max(512),
+  runId: z.uuid(), marker: z.string().min(1).max(1_024),
+}).strict();
+const RecoveryOperation = z.object({
+  operationId: z.uuid(), kind: z.enum(["create", "update", "pause", "remove"]), arguments: JsonObject,
+  operationKey: z.uuid(), status: z.enum(["in_flight", "succeeded", "ambiguous"]),
+  result: JsonObject.nullable(), createdAt: NonNegativeInteger, updatedAt: NonNegativeInteger,
+}).strict();
+const RecoveryRecord = z.object({
+  recoveryId: z.uuid(), schemaVersion: NonNegativeInteger, binding: RecoveryBinding, revision: NonNegativeInteger,
+  monitoringIntent: z.enum(["enabled", "stopped"]),
+  initialization: NullableString,
+  registrationState: z.enum(["not_attempted", "attempt_in_flight", "registered", "ambiguous", "removed"]),
+  lifecycle: z.enum(["unchecked", "verified", "unavailable", "ambiguous", "paused", "removed"]),
+  automationId: NullableString, hostEvidence: JsonObject.nullable(), observedAt: NonNegativeInteger.nullable(),
+  lastEventSequence: NonNegativeInteger.nullable(), pendingRequestId: NullableString,
+  presentationReference: NullableString, cleanupStatus: NullableString, diagnosticReason: NullableString,
+  currentOperationId: NullableString, operation: RecoveryOperation.nullable(), createdAt: NonNegativeInteger,
+  updatedAt: NonNegativeInteger, expiresAt: NonNegativeInteger.nullable(),
+}).strict();
+
+const ConnectionOrganization = z.object({
+  status: z.enum(["organization_required", "connected"]),
+  selected: z.object({ id: z.uuid(), name: z.string().nullable() }).strict().nullable(),
+}).strict();
+const ConnectionProjection = z.object({
+  webAppUrl: z.string().url().nullable().optional(),
+  schemaVersion: z.literal("loomex.runner.connection/v1"),
+  state: z.enum(["signed_out", "verification_pending", "verification_expired", "authenticated", "recovery_pending", "logout_pending", "credential_store_unavailable"]),
+  organization: ConnectionOrganization,
+  organizations: z.array(z.object({ id: z.uuid(), name: z.string().nullable(), enrolled: z.boolean() }).strict()),
+  activeWork: NonNegativeInteger,
+  actions: z.array(z.enum(["auth.login", "auth.poll", "auth.logout", "organizations.list", "organizations.select"])),
+  login: z.object({
+    flowId: z.string().min(1).max(128), verificationUri: z.string().url(), userCode: z.string().min(1).max(256),
+    expiresAt: NonNegativeInteger, intervalSeconds: NonNegativeInteger, retryAfterSeconds: NonNegativeInteger,
+  }).strict().nullable(),
+  details: Details,
+}).strict();
+
 const primarySchemas = {
+  "connection.get": ConnectionProjection,
+  "connection.views.create": ViewSession,
+  "connection.views.get": ViewSession,
+  "connection.views.update": ViewSession,
   "preparations.get": z.union([
     z.object({status:z.literal("valid"),operation:z.enum(["runs.prepare","builder.prepare","editor.prepare"]),preparation:z.object({preparationId:z.string(),bindingDigest:z.string(),binding:JsonObject,limits:JsonObject,expiresAt:z.null(),confirmationKey:z.string(),details:Details}).strict(),details:Details}).strict(),
-    z.object({status:z.literal("stale"),operation:z.enum(["runs.prepare","builder.prepare","editor.prepare"]),preparationId:z.string(),reason:z.enum(["workspace_changed","provider_changed","expired","commit_started","record_invalid"]),nextAction:z.enum(["prepare_again","reconcile_operation"]),details:Details}).strict(),
+    z.object({status:z.literal("stale"),operation:z.enum(["runs.prepare","builder.prepare","editor.prepare"]),preparationId:z.string(),reason:z.enum(["workspace_changed","provider_changed","expired","commit_started","record_invalid"]),nextAction:z.enum(["prepare_again","reconcile_operation"]),executionId:NullableString.optional(),details:Details}).strict(),
   ]),
   "presentation.sessions.create": ViewSession,
   "presentation.sessions.get": ViewSession,
@@ -95,6 +141,17 @@ const primarySchemas = {
   "presentation.sessions.delete": z.object({viewSessionId:z.uuid(),deleted:z.boolean(),details:Details}).strict(),
   "presentation.operations.get": z.object({operationId:z.uuid(),viewSessionId:z.uuid(),method:z.string(),params:JsonObject,idempotencyKey:z.uuid(),reconciliation:z.union([z.object({method:z.string(),params:JsonObject}).strict(),z.object({}).strict()]),status:z.string(),createdAt:NonNegativeInteger,updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
   "presentation.operations.settle": z.object({operationId:z.uuid(),viewSessionId:z.uuid(),status:z.enum(["completed","ambiguous"]),updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
+  "recovery.get": z.union([
+    z.object({ found: z.literal(true), recovery: RecoveryRecord }).strict(),
+    z.object({ found: z.literal(false), binding: RecoveryBinding }).strict(),
+  ]),
+  "recovery.update": z.object({ recovery: RecoveryRecord }).strict(),
+  "recovery.operations.begin": z.object({
+    recovery: RecoveryRecord, operation: RecoveryOperation, attemptPermitted: z.boolean(), reconciliationRequired: z.boolean().optional(),
+  }).strict(),
+  "recovery.operations.settle": z.object({
+    recovery: RecoveryRecord, operation: RecoveryOperation,
+  }).strict(),
   "status.get": z
     .object({
       version: z.string(),
@@ -121,6 +178,7 @@ const primarySchemas = {
       status: z.string(),
       pending: z.boolean().optional(),
       authenticated: z.boolean().optional(),
+      flowId: z.string().min(1).max(160).optional(),
       userCode: NullableString.optional(),
       verificationUri: NullableString.optional(),
       expiresAt: NonNegativeInteger.optional(),

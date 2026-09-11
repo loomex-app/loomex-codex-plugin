@@ -27,11 +27,13 @@ with a shell command, provider CLI, raw backend request or a hand-written
 rendering.
 
 Preserve the MCP result's `content`, `structuredContent`, and `_meta` when
-passing it through the host. In particular, retain the visual resource
-metadata, `loomex/taskWorkspace`, preparation review metadata and any other
-hydration data. Keep the originating visual tool name and the exact stable
-workflow, version, run or request identity. Do not flatten the result into
-text and then claim that the card opened.
+passing it through the host. Visual results expose bounded model projections
+in `content` and `structuredContent`; their canonical runner response is
+component-only hydration data under `_meta["loomex/uiData"]`. In particular,
+retain the visual resource metadata, `loomex/taskWorkspace`, preparation
+review metadata and any other hydration data. Keep the originating visual tool
+name and the exact stable workflow, version, run or request identity. Do not
+flatten the result into text and then claim that the card opened.
 
 A returned result or a descriptor containing a resource URI proves that the
 tool was called and that a view may be available. It does not by itself prove
@@ -94,11 +96,11 @@ metadata. This is host configuration: the plugin can advertise its visual
 tools but cannot enable or enforce the host setting.
 
 Installed transport checks can verify that the packaged skill links resolve,
-the MCP server advertises the intended visual resource metadata, the paired
-tools return the canonical `content` and `structuredContent`, and the cached
-HTML resource renders in a browser harness. Those checks verify transport and
-resource behavior. They do not establish that a real Codex host rendered a
-native card in a conversation.
+the MCP server advertises the intended visual resource metadata, visual tools
+return bounded model projections plus canonical component-only hydration data,
+and the cached HTML resource renders in a browser harness. Those checks verify
+transport and resource behavior. They do not establish that a real Codex host rendered
+a native card in a conversation.
 
 Record native rendering only from an authorized host observation that includes
 the relevant tool identity and rendered surface. Keep that observation

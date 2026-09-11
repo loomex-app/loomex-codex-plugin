@@ -144,8 +144,9 @@
     .workflow-search { display: flex; align-items: center; gap: var(--loomex-space-2); }
     .workflow-search input { flex: 1; }
     .workflow-search-actions { flex-wrap: nowrap; }
-    .ui-data-table-pagination { min-width: 0; }
-    .ui-data-table-pagination-actions { min-width: 0; flex-wrap: wrap; }
+    .ui-data-table-pagination { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--loomex-space-2); overflow-x: auto; }
+    .ui-data-table-pagination-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ui-data-table-pagination-actions { min-width: max-content; flex-wrap: nowrap; }
     .workflow-page-size { width: auto; max-width: 100%; min-width: 8.25rem; min-height: var(--loomex-control-height); }
     .workflow-loading-host { position: relative; isolation: isolate; }
     .workflow-loading-host > :not(.workflow-skeleton, .workflow-loading-status) { visibility: hidden; }
@@ -171,10 +172,22 @@
     }
     @media (pointer: coarse) { :root { --loomex-control-height: 44px; } }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+    main { position: relative; }
+    #restore-loading { display: none; }
+    main[data-restoring="true"] { min-height: 240px; }
+    main[data-restoring="true"] #restore-loading { display: grid; gap: var(--loomex-space-3); position: absolute; inset: 58px 16px auto; }
+    main[data-restoring="true"] .app-body, main[data-restoring="true"] .app-footer { visibility: hidden; pointer-events: none; }
+    main[data-restoring="true"] .header-tools { visibility: hidden; }
   </style>
 </head>
 <body data-mode="__LOOMEX_MODE__" data-theme-app="workspace" data-theme-mode="dark" data-theme-name="neutral">
-<main>
+<main data-restoring="true" aria-busy="true">
+  <section id="restore-loading" role="status" aria-live="polite" aria-label="Restoring saved view">
+    <span class="sr-only">Restoring saved view…</span>
+    <div class="skeleton-line" aria-hidden="true"></div>
+    <div class="skeleton-row" aria-hidden="true"></div>
+    <div class="skeleton-row" aria-hidden="true"></div>
+  </section>
   <header class="app-header">
     <div class="header-identity">
       <h1 id="title">Workflow</h1>
@@ -210,7 +223,10 @@ __LOOMEX_PERSISTENCE__
 <script>
 (() => {
   "use strict";
+  const formatFollowContinuationMarkdown = __LOOMEX_FOLLOW_FORMATTER__;
+  const formatFollowContinuationContext = __LOOMEX_FOLLOW_CONTEXT_FORMATTER__;
   let mode = document.body.dataset.mode;
+  let viewRestoring = true;
   const connection = document.getElementById("connection");
   const summary = document.getElementById("summary");
   const context = document.getElementById("context");
@@ -254,8 +270,25 @@ __LOOMEX_PERSISTENCE__
   let backendDraftAttempt = null;
   let backendDraftPromise = null;
   let backendDraftChangeVersion = 0;
+  // Draft RPCs can outlive a notification that replaces this card. Keep their
+  // local state bound to the exact saved presentation, request, and schema so
+  // a late completion cannot become state for the next card.
+  let backendDraftScope = null;
   let lastRadioNavigationKey = null;
   let persistenceConflict = false;
+  let reopenedInteraction = null;
+  // Connection is intentionally an ephemeral projection. It has no durable
+  // presentation session because an organization must never be inferred or
+  // scoped before the runner has authenticated the owner.
+  const isConnectionView = ["connection", "organizations"].includes(mode);
+  const connectionState = { page: mode === "organizations" ? "organizations" : "connection", candidate: "", query: "", pageIndex: 0, busy: false, pending: null, projection: null, list: [], listState: "idle", listGeneration: 0, viewSession: null, hydrated: false, saveChain: Promise.resolve(), action: null, secondaryAction: null, fallbackUrl: "", structure: "" };
+  let connectionGeneration = 0;
+  let connectionPollTimer = null;
+  let connectionPollFlowId = "";
+  // Organization names are a separately refreshable remote read.  The
+  // connection projection stays local so that an unavailable organization
+  // endpoint never changes the authentication state shown to the user.
+  const refreshedInteractionViews = new Set();
   const followedViewSessions = new Set();
   const completedViewStatuses = new Set();
   const VIEW_SESSION_TOOLS = {
@@ -284,7 +317,7 @@ __LOOMEX_PERSISTENCE__
   });
 
   function resultData(result) {
-    const envelope = result?.structuredContent || result;
+    const envelope = result?._meta?.["loomex/uiData"] || result?.structuredContent || result;
     return envelope?.ok === true && envelope.data && typeof envelope.data === "object" ? envelope.data : envelope;
   }
 
@@ -398,6 +431,18 @@ __LOOMEX_PERSISTENCE__
     });
   }
 
+  // Reading position is presentation state, scoped by both session and screen.
+  // Restore only after authoritative hydration and its final render complete.
+  function restoreReadingPosition(state, epoch) {
+    const position = state?.readingPosition;
+    const screen = runFlow?.stage || (browserSelected ? "detail" : mode);
+    if (state?.screen !== screen || !position || !Number.isFinite(position.top) || !Number.isFinite(position.left)) return;
+    requestAnimationFrame(() => {
+      if (epoch !== viewHydrationEpoch || !mutationHydrationReady()) return;
+      window.scrollTo({ top: Math.max(0, position.top), left: Math.max(0, position.left), behavior: "instant" });
+    });
+  }
+
   function captureControls(scope = form) {
     const controls = {};
     for (const control of scope.querySelectorAll("input[id], textarea[id], select[id]")) {
@@ -423,7 +468,7 @@ __LOOMEX_PERSISTENCE__
   }
 
   function captureViewState() {
-    const base = { schemaVersion: 1, screen: runFlow?.stage || (browserSelected ? "detail" : mode), disclosures: disclosureState() };
+    const base = { schemaVersion: 1, screen: runFlow?.stage || (browserSelected ? "detail" : mode), disclosures: disclosureState(), readingPosition: { top: window.scrollY, left: window.scrollX } };
     if (mode === "browser" && !runFlow) return {
       ...base,
       browser: {
@@ -454,8 +499,6 @@ __LOOMEX_PERSISTENCE__
       executionId: executionId(runFlow.result),
       latestSequence: runSequence(runFlow.result) ?? null,
       currentRequestId: runFlow.currentRequestId || null,
-      cancelReason: runFlow.cancelReasonDraft || "",
-      cancelDetailsOpen: Boolean(runFlow.cancelDetailsOpen),
       acceptedRequestId: safeText(runFlow.acceptedRequest?.id, 64) || null,
       returnBrowserViewSessionId: runFlow.returnViewSessionId || null,
     };
@@ -569,13 +612,20 @@ __LOOMEX_PERSISTENCE__
     authoring: "Authoring review",
     prepare: "Review run",
     monitor: "Run monitor",
-    interaction: "Your response"
+    interaction: "Your response",
+    connection: "Connection",
+    organizations: "Organizations"
   };
   title.textContent = labels[mode] || "Workflow";
 
   // Presentation helpers never determine mutation arguments or execution authority.
   const activeRequests = new Map();
   const iconPaths = {
+    copy: "M9 9h12v12H9Z M15 9V3H3v12h6",
+    external: "M14 3h7v7 M21 3 10 14 M10 3H3v18h18v-7",
+    logout: "M9 3H3v18h6 M10 12h11 m-5-5 5 5-5 5",
+    connection: "M8 3v5 M16 3v5 M6 8h12v3a6 6 0 0 1-12 0Z M12 17v4",
+    organization: "M5 21V3h14v18 M2 21h20 M9 7h1 m4 0h1 M9 11h1 m4 0h1 M10 21v-6h4v6",
     info: "M12 17v-5m0-4h.01 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
     play: "m8 5 11 7-11 7Z", refresh: "M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-1l2 6 M4 12l2 6a7 7 0 0 0 12-1",
     search: "M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
@@ -596,6 +646,11 @@ __LOOMEX_PERSISTENCE__
     return svg;
   }
   function actionIcon(label) {
+    if (/^copy/i.test(label)) return "copy";
+    if (/open browser|open web app/i.test(label)) return "external";
+    if (/sign out/i.test(label)) return "logout";
+    if (/^connection$/i.test(label)) return "connection";
+    if (/organization/i.test(label)) return "organization";
     if (/information|limits|timing/i.test(label)) return "info";
     if (/retry|refresh|check runner/i.test(label)) return "refresh";
     if (/back|previous/i.test(label)) return "back";
@@ -632,8 +687,10 @@ __LOOMEX_PERSISTENCE__
   function setAction(button, label) {
     delete button.dataset.businessMutation;
     delete button.dataset.hydrationDisabled;
+    delete button.dataset.interactionAction;
+    delete button.dataset.answerIntent;
     applyButtonStyle(button);
-    const showLabel = /^(Review|Submit) answers?$|^Start run$/.test(label);
+    const showLabel = /^(Review|Submit) answers?$|^Start run$/.test(label) || (isConnectionView && button === primary);
     button.classList.toggle("icon-button", !showLabel);
     button.classList.toggle("ui-button-icon", !showLabel);
     button.classList.toggle("action-with-label", showLabel);
@@ -645,6 +702,15 @@ __LOOMEX_PERSISTENCE__
   function setMutationAction(button, label) {
     setAction(button, label);
     button.dataset.businessMutation = "true";
+  }
+  function setInteractionAction(button, action, label) {
+    setMutationAction(button, label);
+    button.dataset.interactionAction = action;
+  }
+  function setAnswerAction(button, intent, label, mutation = false) {
+    if (mutation) setMutationAction(button, label);
+    else setAction(button, label);
+    button.dataset.answerIntent = intent;
   }
   function infoButton(label, description) {
     const button = element("button", { type: "button", className: "secondary info-button" }, label);
@@ -711,8 +777,13 @@ __LOOMEX_PERSISTENCE__
     const text = tool ? descriptions[tool] || "Updating…" : "";
     if (activity.textContent !== text) activity.textContent = text;
     const contextOwnsActivity = Boolean(tool && context.classList.contains("workflow-loading-host"));
-    activity.hidden = !tool || contextOwnsActivity;
-    summary.dataset.suppressed = String(Boolean(tool) && !summary.classList.contains("error"));
+    const automaticSetupOwnsActivity = Boolean(tool && runFlow?.stage === "setup" && runFlow.autoPreparation === "started" &&
+      ["loomex_workspace_grant", "loomex_run_prepare"].includes(tool));
+    activity.hidden = !tool || contextOwnsActivity || automaticSetupOwnsActivity;
+    // Activity is independent of status. Hiding and restoring the status line
+    // on every quiet draft save changed the document height and made checkbox
+    // selections appear to jump.
+    summary.dataset.suppressed = "false";
   }
   function updateClock() {
     const clock = document.getElementById("run-clock");
@@ -736,10 +807,21 @@ __LOOMEX_PERSISTENCE__
     if (runFlow) return ({ setup: "Run setup", review: "Review run", monitor: request ? "Your response" : "Run monitor" }[runFlow.stage]);
     if (mode === "browser" && browserSelected) return "Workflow details";
     if (mode === "authoring" && !builderSessionId(latest || {}) && Boolean(latest?.workflow)) return "Workflow details";
+    if (isConnectionView) return connectionState.page === "organizations" ? "Organizations" : "Connection";
     return labels[mode] || "Workflow";
   }
 
+  function syncRestorationVisibility() {
+    const root = document.querySelector("main");
+    root.dataset.restoring = String(viewRestoring);
+    root.setAttribute("aria-busy", String(viewRestoring));
+    for (const selector of [".app-body", ".app-footer", ".header-tools"]) {
+      document.querySelector(selector).inert = viewRestoring;
+    }
+  }
+
   function syncChrome() {
+    syncRestorationVisibility();
     if (tooltipTarget && (!tooltipTarget.isConnected || tooltipTarget.disabled)) hideTooltip();
     const request = headerRequest();
     const presentation = humanPresentation(request);
@@ -749,7 +831,9 @@ __LOOMEX_PERSISTENCE__
     headerStage.textContent = stageLabel || "";
     headerStage.setAttribute("aria-label", stageLabel ? `Current stage: ${stageLabel}` : "Current stage");
     const execution = request?.execution || runFlow?.result?.execution || latest?.execution;
-    const status = formatStatus(execution?.status);
+    const status = isConnectionView
+      ? ({ authenticated: "Signed in", signed_out: "Signed out", verification_pending: "Verification pending", verification_expired: "Expired", logout_pending: "Signing out", recovery_pending: "Recovery required", credential_store_unavailable: "Unavailable" }[connectionState.projection?.state] || "")
+      : formatStatus(execution?.status);
     headerStatus.hidden = !status;
     headerStatus.textContent = status || "";
     headerStatus.setAttribute("aria-label", status ? `Current status: ${status}` : "Current status");
@@ -821,14 +905,23 @@ __LOOMEX_PERSISTENCE__
     throw new Error("This host cannot generate a safe idempotency UUID.");
   }
 
+  function credentialLikeReviewKey(key) {
+    const normalized = String(key).replace(/[^a-z0-9]/gi, "").toLowerCase();
+    return normalized === "password" || normalized === "authorization" ||
+      normalized === "credential" || normalized === "credentials" ||
+      normalized === "token" || normalized === "key" || normalized.endsWith("secret") ||
+      /(?:api|access|refresh|bearer|auth)token$/.test(normalized) ||
+      /(?:api|access|private|secret|signing|client)key$/.test(normalized);
+  }
+
   // Render only the deliberately selected review fields, never the transport envelope.
   function reviewValue(value, key = "") {
-    if (/secret|token|credential|authorization|confirmationkey/i.test(key)) return element("span", {}, "Sensitive value hidden");
+    if (credentialLikeReviewKey(key) || /confirmationkey/i.test(key)) return element("span", {}, "Sensitive value hidden");
     if (value === null || value === undefined) return element("span", {}, "Not specified");
     if (typeof value !== "object") return element("span", {}, typeof value === "boolean" ? (value ? "Yes" : "No") : String(value));
     const entries = Object.entries(value);
     if (!entries.length) return element("span", {}, "None");
-    const list = element("dl", { className: "review-list" });
+    const list = element("dl", { className: "answer-review-list" });
     for (const [key, item] of entries) {
       list.append(element("dt", {}, Array.isArray(value) ? `Item ${Number(key) + 1}` : key.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ")));
       const detail = element("dd");
@@ -989,7 +1082,7 @@ __LOOMEX_PERSISTENCE__
     if (stage) meta.append(element("span", {}, stage));
     if (step && step !== stage) meta.append(element("span", {}, step));
     const dates = [["Started", formatDateTime(run.startedAt)], ["Completed", formatDateTime(run.completedAt)]].filter(([, value]) => value);
-    if (dates.length) meta.append(infoButton("Run timing", dates.map(([label, value]) => `${label}: ${value}`).join(". ")));
+    for (const [label, value] of dates) meta.append(element("span", { className: "ui-caption" }, `${label}: ${value}`));
     if (meta.childElementCount) hero.append(meta);
     context.className = "ui-stack";
     context.replaceChildren(hero);
@@ -1008,15 +1101,6 @@ __LOOMEX_PERSISTENCE__
       appendTextList(context, "Verification", presentation.verification);
       appendTextList(context, "Limitations", presentation.limitations);
       appendTextList(context, "Artifacts", presentation.artifacts);
-    }
-    const references = element("details", { className: "ui-disclosure" });
-    references.append(element("summary", {}, "Execution references"));
-    const ids = [["Run", run.id], ["Current step", run.currentNodeId]].filter(([, value]) => safeText(value));
-    if (ids.length) {
-      const list = element("dl", { className: "review-list" });
-      for (const [label, value] of ids) list.append(element("dt", {}, label), element("dd", {}, value));
-      references.append(list);
-      context.append(references);
     }
   }
 
@@ -1090,12 +1174,14 @@ __LOOMEX_PERSISTENCE__
       authoring.append(element("h3", { className: "ui-label" }, "Authoring request"), reviewValue(binding.authoring));
       review.append(authoring);
     }
-    const access = element("section", { className: "ui-callout" });
-    access.append(element("h3", {}, "Permissions"));
-    access.append(element("p", {}, "Runs as you. It can read and change files and run commands. The workspace is its starting folder, not a sandbox."));
-    review.append(access);
     context.replaceChildren(review);
     context.hidden = false;
+  }
+
+  function observePreparationReview(result, prepared) {
+    const supplied = result?._meta?.["loomex/preparationReview"];
+    if (supplied !== undefined) preparationPresentation = presentationMatches(supplied, prepared || {}) ? supplied : null;
+    else if (!presentationMatches(preparationPresentation, prepared || {})) preparationPresentation = null;
   }
 
   function preparationReviewable(output) {
@@ -1502,7 +1588,10 @@ __LOOMEX_PERSISTENCE__
     if (runFlow?.baselineRequired) return undefined;
     const request = humanRequest(data);
     const runId = executionId(data);
-    if (!request || !runId || request?.execution?.id !== runId || humanRequestResolved(request) || runFlow?.resolvedRequestIds?.has(request.id)) return undefined;
+    const organizationIds = [runFlow?.organizationId, data?.execution?.organizationId, request?.organizationId, request?.execution?.organizationId]
+      .filter((value) => typeof value === "string" && value.length > 0);
+    const organizationVerified = organizationIds.length > 0 && organizationIds.every(workflowIdValid) && new Set(organizationIds).size === 1;
+    if (!request || !runId || request?.execution?.id !== runId || !organizationVerified || humanRequestResolved(request) || runFlow?.resolvedRequestIds?.has(request.id)) return undefined;
     return String(request.status || "").toLowerCase() === "pending" ? request : undefined;
   }
 
@@ -1568,9 +1657,7 @@ __LOOMEX_PERSISTENCE__
     if (runFlow.currentRequestId === requestId) runFlow.humanMode = undefined;
     if (backendDraft?.requestId === requestId) {
       const draft = backendDraft;
-      backendDraft = null;
-      backendDraftDirty = false;
-      backendDraftAttempt = null;
+      detachInteractionDraft();
       void persistenceTool("loomex_interaction_draft_delete", {
         requestId,
         expectedRevision: draft.revision,
@@ -1616,6 +1703,12 @@ __LOOMEX_PERSISTENCE__
         throw new Error("The runner returned a human request for a different organization.");
       }
       if (!candidateOrganization && suppliedRequestOrganization) candidateOrganization = suppliedRequestOrganization;
+      const pendingOrganizationIds = [candidateOrganization, incomingOrganization, requestOrganization, requestExecutionOrganization]
+        .filter((value) => typeof value === "string" && value.length > 0);
+      if (!humanRequestResolved(request) && (pendingOrganizationIds.length === 0 ||
+          pendingOrganizationIds.some((value) => !workflowIdValid(value)) || new Set(pendingOrganizationIds).size !== 1)) {
+        throw new Error("The runner returned a pending human request without a verifiable organization identity.");
+      }
       const current = humanRequest(runFlow.result);
       const currentPending = current && current.id === runFlow.currentRequestId &&
         !humanRequestResolved(current) && !runFlow.resolvedRequestIds.has(current.id);
@@ -1695,24 +1788,49 @@ __LOOMEX_PERSISTENCE__
       !["resolved", "completed", "answered", "approved", "rejected"].includes(accepted?.status))) {
       throw new Error("The accepted interaction could not be verified for chat continuation.");
     }
+    const issued = event.followContinuation;
+    const issuedRunId = safeText(issued?.runId, 128);
+    const issuedReceipt = safeText(issued?.receipt, 2048);
+    if (issued && (issuedRunId !== runId || !issuedReceipt || !/^[A-Za-z0-9_-]{16,2048}$/.test(issuedReceipt))) {
+      throw new Error("The runner returned an invalid follow continuation receipt.");
+    }
     return immutableCopy({
       schema: "loomex/chat-continuation/v2", intent: "monitor_existing_run", runId,
       trigger: event.trigger === "interaction_accepted" ? "interaction_accepted" : event.trigger === "run_started" ? "run_started" : "follow_requested",
       ...(event.trigger === "interaction_accepted" ? { acceptedInteraction: { requestId: accepted.requestId, status: accepted.status } } : {}),
+      ...(issuedReceipt ? { followContinuation: { schemaVersion: "loomex.follow-session.continuation/v1", source: "generated_markdown", runId, receipt: issuedReceipt } } : {}),
       state: "requires_fresh_read",
     });
   }
 
-  function chatResumeCommand(runId, continuation = {}) {
-    const receipt = continuation.acceptedInteraction;
-    const transition = receipt
-      ? `Loomex accepted my response to request ${receipt.requestId} (${receipt.status}). The previously displayed form is finished; do not ask me to submit it again.`
-      : continuation.trigger === "run_started" ? "Loomex accepted the start of this run." : "Continue following this existing run.";
-    return `$loomex-follow ${runId}\n${transition}\nCall loomex_run_get for this exact runId before replying about its state. Follow the fresh nextAction, using loomex_run_wait with timeoutSeconds 30 while active and draining event pages. Show the next pending interaction once with loomex_interaction_view, or retrieve the terminal result. Never start another run or replay a submitted answer.`;
+  // Keep the manual copy and acknowledged host message byte-for-byte aligned.
+  // The first line is intentionally a bare command so the host can route it;
+  // the remainder is compact Markdown and contains only the facts needed to
+  // resume this exact run.
+  function formatChatContinuationMarkdown(runId, continuation = {}) {
+    const receipt = continuation.followContinuation?.receipt;
+    if (!receipt) return `To continue monitoring this exact Loomex run, submit \`$loomex-follow ${runId}\`.`;
+    return formatFollowContinuationMarkdown(runId, receipt);
   }
 
   function chatCapability(name) {
     return Boolean(hostCapabilities && hostCapabilities[name] && hostCapabilities[name].text);
+  }
+
+  function renderSubmittedInteraction(request) {
+    form.hidden = true;
+    form.replaceChildren();
+    primary.hidden = true;
+    secondary.hidden = true;
+    context.className = "ui-stack";
+    context.replaceChildren();
+    if (humanRequestResolved(request)) context.append(submittedAnswerReview(request));
+    context.hidden = false;
+    summary.classList.remove("error");
+    summary.setAttribute("role", "status");
+    summary.textContent = "Response received. This request is complete.";
+    refresh.hidden = false;
+    refresh.disabled = !connected;
   }
 
   function renderChatHandoffState() {
@@ -1721,6 +1839,13 @@ __LOOMEX_PERSISTENCE__
     form.replaceChildren();
     primary.hidden = true;
     secondary.hidden = true;
+    // Once the handoff was delivered, the accepted response is the complete
+    // card state. Do not leave a second successful-handoff card beside it.
+    if (!runFlow && ["sending", "sent"].includes(chatHandoff.status)) {
+      renderSubmittedInteraction(humanRequest(latest || {}));
+      return;
+    }
+    context.querySelectorAll('[aria-label="Chat handoff"]').forEach((item) => item.remove());
     const callout = element("section", { className: "ui-callout", "aria-label": "Chat handoff", role: chatHandoff.status === "failed" ? "alert" : "status" });
     const statusCopy = chatHandoff.status === "sent"
       ? "Continue there for updates."
@@ -1734,7 +1859,7 @@ __LOOMEX_PERSISTENCE__
     if (["manual", "failed"].includes(chatHandoff.status)) {
       const instructions = element("details", { className: "ui-disclosure", open: true });
       instructions.append(element("summary", {}, "Manual monitoring instructions"));
-      const command = element("p", { className: "workspace-path" }, chatResumeCommand(chatHandoff.runId, chatHandoff.continuation));
+      const command = element("p", { className: "workspace-path" }, formatChatContinuationMarkdown(chatHandoff.runId, chatHandoff.continuation));
       command.setAttribute("aria-label", "Read-only resume command");
       instructions.append(command);
       callout.append(instructions);
@@ -1766,14 +1891,22 @@ __LOOMEX_PERSISTENCE__
     chatHandoff = { runId: safeRunId, status: "sending", continuation };
     if (runFlow) renderIntegratedRunFlow();
     else renderChatHandoffState();
+    // Generated Markdown is accepted by the lifecycle hook only when the
+    // runner issued an opaque receipt. Without one, keep the copyable manual
+    // instruction in the card and do not send an activatable follow message.
+    if (!continuation.followContinuation?.receipt) {
+      chatHandoff.status = "manual";
+      if (runFlow) renderIntegratedRunFlow(); else renderChatHandoffState();
+      return;
+    }
     if (!chatCapability("updateModelContext") || !chatCapability("message")) {
       chatHandoff.status = "manual";
       if (runFlow) renderIntegratedRunFlow(); else renderChatHandoffState();
       return;
     }
-    const text = chatResumeCommand(safeRunId, continuation);
+    const text = formatChatContinuationMarkdown(safeRunId, continuation);
     try {
-      const contextResult = await send("ui/update-model-context", { content: [{ type: "text", text: JSON.stringify(continuation) }] });
+      const contextResult = await send("ui/update-model-context", { content: [{ type: "text", text: formatFollowContinuationContext(continuation) }] });
       if (contextResult?.isError === true) throw new Error("The host rejected the model context update.");
       const messageResult = await send("ui/message", { role: "user", content: [{ type: "text", text }] });
       if (messageResult?.isError === true) throw new Error("The host rejected the chat message.");
@@ -1796,7 +1929,7 @@ __LOOMEX_PERSISTENCE__
     const runId = returnedRunId || requestRunId;
     if (runId) await handoffRunToChat(runId, { trigger: "interaction_accepted", acceptedInteraction: {
       requestId: resultData.requestId, status: String(resultData.requestStatus).toLowerCase(),
-    } });
+    }, followContinuation: resultData.details?.followContinuation });
   }
 
   async function handoffLongQuestionToChat() {
@@ -1845,8 +1978,8 @@ __LOOMEX_PERSISTENCE__
         setMutationAction(primary, operation.arguments.decision === "reject" ? "Retry exact rejection" : "Retry exact approval");
         secondary.hidden = true;
       } else {
-        setMutationAction(primary, "Approve");
-        setMutationAction(secondary, "Reject");
+        setInteractionAction(primary, "approve", "Approve");
+        setInteractionAction(secondary, "reject", "Reject");
       }
       primary.disabled = !connected || runFlow.busy || !requestId;
       secondary.disabled = !connected || runFlow.busy || !requestId;
@@ -1883,58 +2016,28 @@ __LOOMEX_PERSISTENCE__
       if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
       return;
     }
-    if (runFlow.cancellationRequested && !terminalRun(runFlow.result.execution || {})) {
-      renderRun(runFlow.result.execution || {});
-      context.setAttribute("aria-busy", String(runFlow.busy));
-      summary.classList.remove("error"); summary.setAttribute("role", "status");
-      summary.textContent = "Stopping was requested. Refresh to load the runner’s current state.";
-      if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
-      return;
-    }
-    if (chatHandoff?.runId === executionId(runFlow.result)) {
-      renderRun(runFlow.result.execution || {});
-      if (runFlow.acceptedRequest) context.append(submittedAnswerReview(runFlow.acceptedRequest));
-      renderChatHandoffState();
-      return;
-    }
-    const request = runHumanRequest();
-    if (request) {
-      renderRunHumanRequest(request);
-      context.setAttribute("aria-busy", String(runFlow.busy));
-      if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
-      return;
-    }
+    // Chat monitoring is dispatched separately. This card remains a stable,
+    // read-only view of the selected run instead of becoming a second chat
+    // control surface after the run starts, even if a later snapshot includes
+    // a pending interaction.
     renderRun(runFlow.result.execution || {});
     if (runFlow.acceptedRequest) context.append(submittedAnswerReview(runFlow.acceptedRequest));
     context.setAttribute("aria-busy", String(runFlow.busy));
     summary.classList.remove("error"); summary.setAttribute("role", "status");
     const terminal = terminalRun(runFlow.result.execution || {});
+    const waitingForResponse = Boolean(runHumanRequest());
     summary.textContent = terminal ? `${formatStatus(runFlow.result.execution.status)}. Review the result below.`
+      : chatHandoff?.status === "sending"
+        ? "Run started. Opening monitoring in chat…"
+      : chatHandoff?.status === "sent"
+        ? "Sent to chat."
+      : ["manual", "failed"].includes(chatHandoff?.status)
+        ? "Run started. The chat continuation could not be opened automatically."
+      : waitingForResponse
+        ? "This run needs a response in chat."
       : /waiting|queued|pending|paused/i.test(runFlow.result.execution.status || "")
-        ? "This run is waiting. Follow it in chat or refresh this snapshot."
-        : "This run is active. Follow it in chat or refresh this snapshot.";
-    if (!terminal) {
-      const runId = executionId(runFlow.result);
-      const operation = runFlow.operations.values().next().value;
-      secondary.hidden = false; setAction(secondary, "Follow in chat"); secondary.disabled = !connected || runFlow.busy || !runId || Boolean(operation);
-      primary.hidden = false; primary.className = "danger"; setMutationAction(primary, operation ? "Retry exact cancellation" : "Cancel run");
-      primary.disabled = !connected || runFlow.busy || !runId;
-      typedForm({ properties: { reason: { type: "string" } } }, {});
-      const cancellationDetails = element("details", { className: "ui-disclosure", open: Boolean(operation) || Boolean(runFlow.cancelDetailsOpen), id: "cancellation-details" });
-      cancellationDetails.append(element("summary", {}, "Cancellation reason (optional)"));
-      cancellationDetails.append(...form.childNodes);
-      form.append(cancellationDetails);
-      cancellationDetails.addEventListener("toggle", () => { if (cancellationDetails.isConnected) runFlow.cancelDetailsOpen = cancellationDetails.open; });
-      const reasonDraft = form.querySelector("input");
-      if (reasonDraft && !operation) {
-        reasonDraft.value = runFlow.cancelReasonDraft || "";
-        reasonDraft.addEventListener("input", () => { runFlow.cancelReasonDraft = reasonDraft.value; });
-      }
-      if (operation) {
-        const reason = form.querySelector("input");
-        if (reason) { reason.value = operation.arguments.reason; reason.disabled = true; }
-      }
-    }
+        ? "This run is waiting. Its current summary is shown here."
+        : "This run is active. Its current summary is shown here.";
     if (runFlow.errorMessage) runFlowError(runFlow.errorMessage);
   }
 
@@ -2354,42 +2457,7 @@ __LOOMEX_PERSISTENCE__
       return;
     }
     if (runFlow.stage === "monitor") {
-      const runId = executionId(runFlow.result);
-      if (!runId || terminalRun(runFlow.result.execution || {})) throw new Error("This run is already complete.");
-      if (runFlow.cancellationRequested) throw new Error("Cancellation has already been requested for this run.");
-      const request = runHumanRequest();
-      const retained = runFlow.operations.values().next().value;
-      if (request && runFlow.humanMode !== "cancel") {
-        const requestId = request.id;
-        if (retained) {
-          await runFlowMutation(retained.name, retained.slot, retained.label, {}, acceptHumanResolution);
-        } else if (request.type === "approval" || runFlow.result.decisionRequired === true) {
-          await runFlowMutation("loomex_interaction_decide", `interaction:approve:${requestId}`, "approval", {
-            requestId, decision: "approve",
-          }, acceptHumanResolution);
-        } else {
-          if (form.dataset.answerPhase !== "review") {
-            if (!await flushCurrentPersistence()) return;
-            if (beginAnswerReview()) { scheduleCurrentPersistence(); await flushCurrentPersistence(); return; }
-          }
-          captureRunHumanDraft();
-          const schemaDigest = requestSchemaDigest(request);
-          if (!schemaDigest) throw new Error("The current question schema could not be verified. Refresh this request before submitting.");
-          await runFlowMutation("loomex_interaction_respond", `interaction:respond:${requestId}`, "response", {
-            requestId, answer: collectAnswer(),
-            expectedSchemaDigest: schemaDigest,
-          }, acceptHumanResolution);
-        }
-        return;
-      }
-      const slot = `run:cancel:${runId}`;
-      if (runFlow.operations.has(slot)) {
-        await runFlowMutation("loomex_run_cancel", slot, "cancellation", {}, acceptRunStatus);
-        return;
-      }
-      const answer = collectAnswer();
-      if (!answer.reason) throw new Error("Enter a cancellation reason.");
-      await runFlowMutation("loomex_run_cancel", slot, "cancellation", { runId, reason: answer.reason }, acceptRunStatus);
+      return;
     }
   }
 
@@ -2448,7 +2516,7 @@ __LOOMEX_PERSISTENCE__
     const { data, runId } = validateRunCommitResult(result, request);
     initializeRunMonitor(data, runFlow, { acceptedCommit: true });
     runFlow.baselineRequired = false;
-    return () => handoffRunToChat(runId, { trigger: "run_started" });
+    return () => handoffRunToChat(runId, { trigger: "run_started", followContinuation: data.details?.followContinuation });
   }
 
   async function acceptRunStatus(result, request) {
@@ -2482,9 +2550,7 @@ __LOOMEX_PERSISTENCE__
     latest = runFlow.result;
     if (backendDraft?.requestId === request.requestId) {
       const draft = backendDraft;
-      backendDraft = null;
-      backendDraftDirty = false;
-      backendDraftAttempt = null;
+      detachInteractionDraft();
       void persistenceTool("loomex_interaction_draft_delete", {
         requestId: request.requestId,
         expectedRevision: draft.revision,
@@ -2492,7 +2558,7 @@ __LOOMEX_PERSISTENCE__
         idempotencyKey: uuid(),
       }).catch(() => {});
     }
-    return () => handoffRunToChat(data.executionId, { trigger: "interaction_accepted", acceptedInteraction: { requestId: data.requestId, status } });
+    return () => handoffRunToChat(data.executionId, { trigger: "interaction_accepted", acceptedInteraction: { requestId: data.requestId, status }, followContinuation: data.details?.followContinuation });
   }
 
   async function readRunSnapshot(toolName = "loomex_run_get") {
@@ -2534,6 +2600,10 @@ __LOOMEX_PERSISTENCE__
   }
 
   function dataOf(result) {
+    const componentData = result?._meta?.["loomex/uiData"];
+    if (componentData && typeof componentData === "object") {
+      return componentData.ok === true ? componentData.data : undefined;
+    }
     const hasStructuredContent = Boolean(result && typeof result === "object" && result.structuredContent);
     const structured = hasStructuredContent ? result.structuredContent : result;
     if (!structured || typeof structured !== "object") return undefined;
@@ -2655,6 +2725,380 @@ __LOOMEX_PERSISTENCE__
     }
     errorDetails.append(heading, list);
     errorDetails.hidden = false;
+  }
+
+  function clearConnectionPoll() {
+    if (connectionPollTimer !== null) clearTimeout(connectionPollTimer);
+    connectionPollTimer = null;
+    connectionPollFlowId = "";
+  }
+
+  function publicHttpUrl(value) {
+    if (!safeText(value, 4096)) return undefined;
+    try {
+      const url = new URL(value);
+      return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : undefined;
+    } catch { return undefined; }
+  }
+
+  function normalizedConnection(data) {
+    if (!data || typeof data !== "object" || Array.isArray(data) || data.schemaVersion !== "loomex.runner.connection/v1") return undefined;
+    const state = safeText(data.state, 64);
+    const allowedStates = new Set(["signed_out", "verification_pending", "verification_expired", "authenticated", "recovery_pending", "logout_pending", "credential_store_unavailable"]);
+    if (!state || !allowedStates.has(state) || !Number.isSafeInteger(data.activeWork) || data.activeWork < 0 || data.activeWork > 1_000_000) return undefined;
+    const actions = safeTextList(data.actions, 8, 80);
+    const allowedActions = new Set(["auth.login", "auth.poll", "auth.logout", "organizations.list", "organizations.select"]);
+    if (!actions || new Set(actions).size !== actions.length || actions.some((action) => !allowedActions.has(action))) return undefined;
+    const organization = data.organization;
+    if (!organization || typeof organization !== "object" || Array.isArray(organization) || !["organization_required", "connected"].includes(organization.status)) return undefined;
+    const selected = organization.selected;
+    const selectedValid = selected === null || (selected && typeof selected === "object" && !Array.isArray(selected) &&
+      workflowIdValid(selected.id) && (selected.name === null || safeText(selected.name, 240)));
+    if (!selectedValid || (organization.status === "connected" && selected === null)) return undefined;
+    const organizations = data.organizations;
+    if (!Array.isArray(organizations)) return undefined;
+    const ids = new Set();
+    const normalizedOrganizations = [];
+    for (const entry of organizations) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry) || !workflowIdValid(entry.id) ||
+        (entry.name !== null && !safeText(entry.name, 240)) || typeof entry.enrolled !== "boolean" || ids.has(entry.id)) return undefined;
+      ids.add(entry.id);
+      normalizedOrganizations.push({ id: entry.id, name: safeText(entry.name, 240) || "Unnamed organization" });
+    }
+    let login = null;
+    if (data.login !== null) {
+      const candidate = data.login;
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || !safeText(candidate.flowId, 128) ||
+        !publicHttpUrl(candidate.verificationUri) || !safeText(candidate.userCode, 256) ||
+        !Number.isSafeInteger(candidate.expiresAt) || candidate.expiresAt < 0 ||
+        !Number.isSafeInteger(candidate.intervalSeconds) || candidate.intervalSeconds < 1 || candidate.intervalSeconds > 3600 ||
+        !Number.isSafeInteger(candidate.retryAfterSeconds) || candidate.retryAfterSeconds < 0 || candidate.retryAfterSeconds > 3600) return undefined;
+      login = { flowId: candidate.flowId, verificationUri: publicHttpUrl(candidate.verificationUri), userCode: candidate.userCode,
+        expiresAt: candidate.expiresAt, intervalSeconds: candidate.intervalSeconds, retryAfterSeconds: candidate.retryAfterSeconds };
+    }
+    if (state === "verification_pending" && !login) return undefined;
+    return { webAppUrl: publicHttpUrl(data.webAppUrl), state, activeWork: data.activeWork, actions: new Set(actions), organization: { status: organization.status, selected: selected === null ? null : { id: selected.id, name: safeText(selected.name, 240) || "Unnamed organization" } }, organizations: normalizedOrganizations, login };
+  }
+
+  function hostCanOpenExternalLink() {
+    const capability = hostCapabilities?.openLink || hostCapabilities?.["open-link"];
+    return Boolean(capability && (capability.url || capability.href || capability === true));
+  }
+
+  async function openExternalLink(url) {
+    if (!hostCanOpenExternalLink()) throw new Error("This host cannot open an external link. Copy the displayed URL into your browser.");
+    await send("ui/open-link", { url }, true, { activity: false });
+  }
+
+  async function saveConnectionView() {
+    if (!connectionState.persistence) return;
+    if (!await connectionState.persistence.flush({ page: connectionState.page, pending: connectionState.pending })) {
+      throw new Error("The connection view could not be saved. Retry before continuing.");
+    }
+  }
+
+  async function hydrateConnectionView(result) {
+    if (connectionState.hydrating) return connectionState.hydrating;
+    connectionState.hydrating = restoreConnectionView(result);
+    try { await connectionState.hydrating; } finally { connectionState.hydrating = null; }
+  }
+
+  async function restoreConnectionView(result) {
+    const session = result?._meta?.["loomex/viewSession"];
+    if (session && !connectionState.hydrated) {
+      context.setAttribute("aria-busy", "true");
+      const restored = connectionData(await callTool("loomex_connection_view_get", { viewSessionId: session.viewSessionId }, false, false));
+      if (restored.viewSessionId !== session.viewSessionId || !["connection", "organizations"].includes(restored.kind)) throw new Error("The saved connection view could not be verified.");
+      connectionState.viewSession = restored;
+      connectionState.persistence = LoomexViewPersistence.create({
+        read: async id => connectionData(await callTool("loomex_connection_view_get", { viewSessionId: id }, false, false)),
+        write: async (id, revision, state, key) => connectionData(await callTool("loomex_connection_view_update", { viewSessionId: id, expectedRevision: revision, state, idempotencyKey: key }, false, false)),
+      });
+      connectionState.persistence.configure(restored);
+      if (["connection", "organizations"].includes(restored.state?.page)) connectionState.page = restored.state.page;
+      const pending = restored.state?.pending;
+      if (pending && ["loomex_auth_start", "loomex_auth_logout", "loomex_organization_select"].includes(pending.name) && workflowIdValid(pending.key)) connectionState.pending = pending;
+    }
+    connectionState.hydrated = true;
+    // A remount reads current state instead of trusting the original tool card.
+    if (session) await refreshConnection(); else renderConnectionResult(result);
+  }
+
+  function connectionButton(label, action, disabled = false, className = "secondary") {
+    const button = element("button", { type: "button", className, disabled: disabled || !connected });
+    setAction(button, label);
+    button.connectionAction = action;
+    button.addEventListener("click", () => { void Promise.resolve().then(button.connectionAction).catch(setError); });
+    return button;
+  }
+
+  function connectionData(result) {
+    if (result?.isError || result?.structuredContent?.ok === false) {
+      throw new Error(result?.structuredContent?.error?.message || "This action could not be completed. Try again.");
+    }
+    return dataOf(result);
+  }
+
+  async function connectionMutation(name, args) {
+    if (connectionState.busy) return;
+    const pending = connectionState.pending;
+    if (pending && (pending.name !== name || JSON.stringify(pending.args) !== JSON.stringify(args))) {
+      throw new Error("An earlier action still needs to be reconciled. Retry that action first.");
+    }
+    const attempt = pending || { name, args: immutableCopy(args), key: uuid() };
+    connectionState.pending = attempt;
+    connectionState.busy = true;
+    renderConnectionPage();
+    try {
+      await saveConnectionView();
+      let reconciled = false;
+      if (pending) {
+        const current = normalizedConnection(connectionData(await callTool("loomex_connection_get", {}, false, false)));
+        if (!current) throw new Error("The earlier action could not be verified. Try again.");
+        reconciled = (name === "loomex_organization_select" && current.organization?.selected?.id === attempt.args.organizationId)
+          || (name === "loomex_auth_logout" && current.state === "signed_out")
+          || (name === "loomex_auth_start" && current.state === "verification_pending");
+      }
+      if (!reconciled) connectionData(await callTool(name, { ...attempt.args, idempotencyKey: attempt.key }, false, false));
+      connectionState.pending = null;
+      await saveConnectionView();
+      ++connectionGeneration;
+      await refreshConnection(connectionGeneration);
+    } finally {
+      connectionState.busy = false;
+      renderConnectionPage();
+    }
+  }
+
+  async function refreshConnection(expectedGeneration = ++connectionGeneration) {
+    context.setAttribute("aria-busy", "true");
+    try {
+      const result = await callTool("loomex_connection_get", {}, false, false);
+      if (expectedGeneration !== connectionGeneration) return;
+      connectionData(result);
+      renderConnectionResult(result, false);
+      if (connectionState.page === "organizations" && connectionState.projection?.state === "authenticated") {
+        await loadConnectionOrganizations();
+      }
+    } catch (error) {
+      if (expectedGeneration === connectionGeneration) {
+        setError(error);
+        if (connectionState.page === "organizations") connectionState.listState = "failed";
+        renderConnectionPage();
+        scheduleConnectionPoll(connectionState.projection);
+      }
+    } finally {
+      if (expectedGeneration === connectionGeneration) context.setAttribute("aria-busy", "false");
+    }
+  }
+
+  async function loadConnectionOrganizations() {
+    if (connectionState.listState === "loading") return;
+    const generation = ++connectionState.listGeneration;
+    connectionState.listState = "loading";
+    renderConnectionPage();
+    try {
+      const data = connectionData(await callTool("loomex_organizations_list", {}, false, false));
+      if (generation !== connectionState.listGeneration || connectionState.projection?.state !== "authenticated") return;
+      if (!Array.isArray(data.organizations) || data.nextCursor || data.responseRef) throw new Error("The complete organization list could not be loaded. Refresh to retry.");
+      const ids = new Set();
+      connectionState.list = data.organizations.map(entry => {
+        if (!workflowIdValid(entry.id) || ids.has(entry.id) || typeof entry.enrolled !== "boolean") throw new Error("The organization list could not be verified.");
+        ids.add(entry.id);
+        return { id: entry.id, name: safeText(entry.name, 240) || "Unnamed organization", slug: safeText(entry.slug, 240) };
+      });
+      connectionState.listState = "loaded";
+      if (!ids.has(connectionState.candidate)) connectionState.candidate = "";
+    } catch (error) {
+      if (generation === connectionState.listGeneration) { connectionState.listState = "failed"; setError(error); }
+    }
+    if (generation === connectionState.listGeneration) renderConnectionPage();
+  }
+
+  async function navigateConnection(page) {
+    connectionState.page = page;
+    await saveConnectionView();
+    connectionState.structure = "";
+    renderConnectionPage();
+    title.focus?.();
+    if (page === "organizations" && connectionState.projection?.state === "authenticated") void loadConnectionOrganizations();
+  }
+
+  function scheduleConnectionPoll(projection) {
+    const login = projection?.login;
+    if (projection?.state !== "verification_pending" || !login || !projection.actions.has("auth.poll") || document.visibilityState !== "visible") { clearConnectionPoll(); return; }
+    if (connectionPollTimer !== null && connectionPollFlowId === login.flowId) return;
+    clearConnectionPoll();
+    connectionPollFlowId = login.flowId;
+    connectionPollTimer = setTimeout(async () => {
+      connectionPollTimer = null;
+      if (connectionPollFlowId !== login.flowId || document.visibilityState !== "visible") return;
+      try {
+        connectionData(await callTool("loomex_auth_poll", { flowId: login.flowId, idempotencyKey: uuid() }, false, false));
+        if (connectionPollFlowId === login.flowId) await refreshConnection();
+      } catch (error) {
+        if (connectionPollFlowId === login.flowId) { setError(error); scheduleConnectionPoll(projection); }
+      }
+    }, Math.max(1, login.retryAfterSeconds, login.intervalSeconds) * 1000);
+  }
+
+  function renderConnectionResult(result, hydrateOrganizations = true) {
+    const projection = normalizedConnection(connectionData(result));
+    if (!projection) { setError(new Error("The connection state could not be verified. Refresh to retry.")); return; }
+    if (projection.state !== "authenticated") {
+      connectionState.listGeneration++;
+      connectionState.list = []; connectionState.listState = "idle"; connectionState.candidate = "";
+    }
+    connectionState.projection = projection;
+    latest = dataOf(result);
+    authoritativeStateStale = false;
+    viewRestoring = false;
+    renderConnectionPage();
+    scheduleConnectionPoll(projection);
+    if (hydrateOrganizations && connectionState.page === "organizations" && projection.state === "authenticated" && connectionState.listState === "idle") void loadConnectionOrganizations();
+  }
+
+  // Reconcile the connection body without detaching focused controls. Event
+  // handlers on keyed inputs retain their local element; button actions refresh.
+  function patchConnectionChildren(parent, source) {
+    const identity = node => node.nodeType === 1
+      ? `${node.tagName}:${node.id || node.getAttribute("aria-label") || node.getAttribute("role") || ""}`
+      : `text:${node.nodeType}`;
+    let cursor = parent.firstChild;
+    for (const next of [...source.childNodes]) {
+      let current = cursor;
+      while (current && identity(current) !== identity(next)) current = current.nextSibling;
+      if (!current) { parent.insertBefore(next, cursor); continue; }
+      if (current !== cursor) parent.insertBefore(current, cursor);
+      if (current.nodeType === 1) {
+        for (const attr of [...current.attributes]) if (!next.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+        for (const attr of [...next.attributes]) if (current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+        for (const property of ["checked", "disabled", "hidden"]) if (property in next) current[property] = next[property];
+        if ("value" in next && current.value !== next.value) current.value = next.value;
+        if (next.connectionAction) current.connectionAction = next.connectionAction;
+        patchConnectionChildren(current, next);
+      } else if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+      cursor = current.nextSibling;
+    }
+    while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
+  }
+
+  function renderConnectionPage() {
+    const p = connectionState.projection;
+    if (!p) return;
+    renderCount++;
+    title.textContent = connectionState.page === "organizations" ? "Organizations" : "Connection";
+    headerStage.hidden = true;
+    headerStatus.hidden = false;
+    headerStatus.setAttribute("role", "status");
+    title.setAttribute("tabindex", "-1");
+    headerStatus.textContent = p.state === "authenticated" ? "Signed in" : ({ signed_out: "Signed out", verification_pending: "Verification pending", verification_expired: "Expired", logout_pending: "Signing out", recovery_pending: "Recovery required", credential_store_unavailable: "Unavailable" }[p.state]);
+    form.hidden = true; form.replaceChildren();
+    refresh.hidden = false; refresh.disabled = !connected || connectionState.busy;
+    primary.hidden = true; secondary.hidden = true;
+    connectionState.action = null; connectionState.secondaryAction = null;
+    context.hidden = false; context.className = "ui-stack";
+    summary.textContent = "";
+    const focus = document.activeElement;
+    const focusId = focus?.id;
+    const scroll = window.scrollY;
+    // The verification screen remains mounted across polls, preserving focus.
+    const structure = `${connectionState.page}:${p.state}:${p.login?.flowId || ""}`;
+    const stableVerification = structure === connectionState.structure && p.state === "verification_pending";
+    const preserveBody = structure === connectionState.structure;
+    const contentTarget = stableVerification ? context : document.createDocumentFragment();
+    connectionState.structure = structure;
+    const primaryAction = (label, action, disabled = false) => {
+      primary.hidden = false; setAction(primary, label); primary.disabled = disabled || !connected || connectionState.busy;
+      connectionState.action = action;
+    };
+    const secondaryAction = (label, action) => {
+      secondary.hidden = false; setAction(secondary, label); secondary.disabled = !connected || connectionState.busy;
+      connectionState.secondaryAction = action;
+    };
+    if (connectionState.page === "organizations") {
+      if (p.state !== "authenticated") {
+        contentTarget.append(element("p", { className: "ui-caption" }, "Sign in to choose an organization."));
+        primaryAction("Sign in", () => navigateConnection("connection"));
+      } else {
+        contentTarget.append(element("p", { className: "ui-caption" }, "Used for subsequent operations on this machine."));
+        const listState = connectionState.listState;
+        const all = connectionState.list;
+        if (all.length > 5) {
+          const input = element("input", { id: "organization-search", type: "search", value: connectionState.query, placeholder: "Search organizations", "aria-label": "Search organizations" });
+          input.addEventListener("input", () => { connectionState.query = input.value; connectionState.pageIndex = 0; renderConnectionPage(); });
+          contentTarget.append(input);
+        }
+        const filtered = all.filter(entry => entry.name.toLocaleLowerCase().includes(connectionState.query.toLocaleLowerCase()));
+        const pageCount = Math.max(1, Math.ceil(filtered.length / 5));
+        connectionState.pageIndex = Math.min(connectionState.pageIndex, pageCount - 1);
+        const list = element("div", { className: "ui-stack", role: "radiogroup", "aria-label": "Choose organization", "aria-busy": listState === "loading" });
+        for (const entry of filtered.slice(connectionState.pageIndex * 5, connectionState.pageIndex * 5 + 5)) {
+          const row = element("label", { className: "ui-organization-row" });
+          const radio = element("input", { id: `organization-${entry.id}`, type: "radio", name: "organization", value: entry.id, checked: connectionState.candidate === entry.id, disabled: listState !== "loaded" || connectionState.busy });
+          radio.addEventListener("change", () => { connectionState.candidate = entry.id; renderConnectionPage(); });
+          row.append(radio, element("span", { className: "ui-value" }, entry.name));
+          if (entry.id === p.organization.selected?.id) row.append(element("span", { className: "ui-badge" }, "Current"));
+          list.append(row);
+        }
+        if (listState === "loading" && !all.length) for (let i = 0; i < 3; i++) list.append(element("div", { className: "ui-organization-skeleton", "aria-hidden": "true" }));
+        contentTarget.append(list);
+        if (listState === "failed") contentTarget.append(element("p", { role: "status", className: "ui-caption" }, "Organizations could not be refreshed. Refresh to retry; your sign-in is unchanged."));
+        if (listState === "loaded" && !filtered.length) {
+          contentTarget.append(element("p", { className: "ui-caption" }, all.length ? "No matching organizations." : "No organizations are available for this account."));
+          if (!all.length && p.webAppUrl) contentTarget.append(connectionButton("Open web app", () => openExternalLink(p.webAppUrl)));
+        }
+        if (filtered.length > 5) {
+          const nav = element("nav", { className: "ui-data-table-pagination ui-data-table-pagination-compact", "aria-label": "Organization pages" });
+          nav.append(element("output", { className: "ui-data-table-pagination-summary" }, `Page ${connectionState.pageIndex + 1} of ${pageCount}`));
+          const buttons = element("div", { className: "ui-data-table-pagination-actions" });
+          buttons.append(connectionButton("Previous", () => { connectionState.pageIndex--; renderConnectionPage(); }, connectionState.pageIndex === 0), connectionButton("Next", () => { connectionState.pageIndex++; renderConnectionPage(); }, connectionState.pageIndex + 1 === pageCount));
+          nav.append(buttons); contentTarget.append(nav);
+        }
+        primaryAction(p.organization.selected ? "Switch organization" : "Use organization", async () => {
+          await connectionMutation("loomex_organization_select", { organizationId: connectionState.candidate });
+        }, listState !== "loaded" || !connectionState.candidate || connectionState.candidate === p.organization.selected?.id);
+      }
+      secondaryAction("Connection", () => navigateConnection("connection"));
+    } else if (["signed_out", "verification_expired"].includes(p.state)) {
+      contentTarget.append(element("p", { className: "ui-caption" }, p.state === "signed_out" ? "Sign in securely in your browser." : "Verification expired. Start again when you are ready."));
+      primaryAction(p.state === "signed_out" ? "Sign in" : "Start again", () => connectionMutation("loomex_auth_start", {}), !p.actions.has("auth.login"));
+    } else if (p.state === "verification_pending") {
+      if (!stableVerification) {
+        contentTarget.append(element("p", { className: "ui-caption" }, "Enter this code in your browser to finish signing in."));
+        const row = element("div", { className: "ui-organization-row" });
+        row.append(element("code", { className: "ui-value" }, p.login.userCode), connectionButton("Copy code", async () => {
+          try { await navigator.clipboard.writeText(p.login.userCode); } catch { throw new Error("Copy is unavailable. Select the displayed code and copy it."); }
+        }));
+        contentTarget.append(row, element("p", { className: "ui-caption" }, `Expires ${new Date(p.login.expiresAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`), element("p", { className: "ui-caption", role: "status" }, "Waiting for verification…"));
+      }
+      const showUrl = () => {
+        if (!document.getElementById("verification-url") && !contentTarget.querySelector?.("#verification-url")) (connectionState.structure === structure && stableVerification ? context : contentTarget).append(element("p", { id: "verification-url", className: "workspace-path" }, p.login.verificationUri));
+      };
+      if (!hostCanOpenExternalLink() || connectionState.fallbackUrl === p.login.flowId) showUrl();
+      else document.getElementById("verification-url")?.remove();
+      primaryAction("Open browser", async () => { try { await openExternalLink(p.login.verificationUri); } catch (e) { connectionState.fallbackUrl = p.login.flowId; if (!document.getElementById("verification-url")) context.append(element("p", { id: "verification-url", className: "workspace-path" }, p.login.verificationUri)); throw e; } }, !hostCanOpenExternalLink());
+      if (p.actions.has("auth.logout")) secondaryAction("Cancel sign-in", () => connectionMutation("loomex_auth_logout", {}));
+    } else if (p.state === "authenticated") {
+      const row = element("div", { className: "ui-organization-row" });
+      row.append(element("span", { className: "ui-value" }, p.organization.selected?.name || "Choose an organization to get started."));
+      contentTarget.append(row);
+      primaryAction(p.organization.selected ? "Change organization" : "Choose organization", () => navigateConnection("organizations"));
+      if (p.actions.has("auth.logout")) secondaryAction("Sign out", () => connectionMutation("loomex_auth_logout", {}));
+    } else {
+      contentTarget.append(element("p", { className: "ui-caption" }, p.state === "credential_store_unavailable" ? "Unlock your credential store, then refresh." : "The previous connection operation needs recovery. Refresh to check its state."));
+      if (p.state === "logout_pending" && p.actions.has("auth.logout")) primaryAction("Retry sign out", () => connectionMutation("loomex_auth_logout", {}));
+    }
+    if (connectionState.pending && !connectionState.busy) {
+      primaryAction("Retry previous action", () => connectionMutation(connectionState.pending.name, connectionState.pending.args));
+    }
+    if (!stableVerification) {
+      if (preserveBody) patchConnectionChildren(context, contentTarget);
+      else context.replaceChildren(contentTarget);
+    }
+    if (focusId && !stableVerification) document.getElementById(focusId)?.focus({ preventScroll: true });
+    window.scrollTo({ top: scroll });
+    syncChrome();
   }
 
   function element(tag, attributes = {}, text = "") {
@@ -2974,6 +3418,8 @@ __LOOMEX_PERSISTENCE__
       : undefined;
     const normalizedQuestions = questions.map((question) => ({
       ...question,
+      // Single-question draft identity is defined by the backend node contract.
+      id: batch ? question.id : (safeText(request?.node?.id, 128) || "answer"),
       inputType: question.inputType || spec.inputType,
       acceptanceLabels: acceptance,
     }));
@@ -2984,21 +3430,14 @@ __LOOMEX_PERSISTENCE__
       const position = element("output", { "aria-live": "polite" });
       const next = element("button", { type: "button", className: "secondary" }, "Next question");
       previous.addEventListener("click", async () => {
-        if (!await flushCurrentPersistence()) return;
         showQuestionStep(Number(form.dataset.questionIndex || 0) - 1, true);
-        markViewDirty();
-        scheduleInteractionDraft();
-        await flushCurrentPersistence();
+        saveReviewNavigation();
       });
       next.addEventListener("click", async () => {
         const index = Number(form.dataset.questionIndex || 0);
-        if (index === form.querySelectorAll("fieldset[data-question-id]").length - 1) {
+        if (next.dataset.answerIntent === "review") {
           try {
-            collectAnswer();
-            if (!await flushCurrentPersistence()) return;
-            beginAnswerReview();
-            scheduleCurrentPersistence();
-            await flushCurrentPersistence();
+            if (!await openAnswerReview()) return;
           } catch (error) { setError(error); }
           return;
         }
@@ -3009,10 +3448,8 @@ __LOOMEX_PERSISTENCE__
           summary.classList.remove("error");
           summary.setAttribute("role", "status");
           summary.textContent = "";
-          if (!await flushCurrentPersistence()) return;
           showQuestionStep(index + 1, true);
-          scheduleCurrentPersistence();
-          await flushCurrentPersistence();
+          saveReviewNavigation();
         } catch (error) { setError(error); }
       });
       stepper.append(previous, position, next);
@@ -3146,7 +3583,7 @@ __LOOMEX_PERSISTENCE__
       const [previous, position, next] = stepper.children;
       previous.disabled = current === 0;
       const reviewing = current === fields.length - 1;
-      setAction(next, reviewing ? answerActionLabel("Review") : "Next question");
+      setAnswerAction(next, reviewing ? "review" : "next", reviewing ? answerActionLabel("Review") : "Next question");
       next.disabled = reviewing && (!connected || authoritativeStateStale);
       position.textContent = `Question ${current + 1} of ${fields.length}`;
       primary.hidden = true;
@@ -3164,19 +3601,14 @@ __LOOMEX_PERSISTENCE__
     if (form.dataset.autoAdvancing === "true") return;
     form.dataset.autoAdvancing = "true";
     try {
-      scheduleCurrentPersistence();
-      if (!await flushCurrentPersistence()) return;
       const fields = [...form.querySelectorAll("fieldset[data-question-id]")];
       const index = fields.indexOf(fieldset);
       if (index < 0) return;
       if (index === fields.length - 1) {
-        beginAnswerReview();
-        scheduleCurrentPersistence();
-        await flushCurrentPersistence();
+        if (!await openAnswerReview()) return;
       } else {
         showQuestionStep(index + 1, true);
-        scheduleCurrentPersistence();
-        await flushCurrentPersistence();
+        saveReviewNavigation();
       }
     } catch (error) { setError(error); }
     finally { delete form.dataset.autoAdvancing; }
@@ -3218,6 +3650,8 @@ __LOOMEX_PERSISTENCE__
   function submittedAnswerReview(request, answer = request?.answer) {
     const spec = request?.inputSpec && typeof request.inputSpec === "object" ? request.inputSpec : {};
     const questions = Array.isArray(spec.questions) ? spec.questions : [spec];
+    const acceptanceReview = humanPresentation(request)?.kind === "review" && questions.length === 1 &&
+      normalizeInputType(questions[0]?.inputType || spec.inputType) === "boolean";
     const answers = Array.isArray(answer?.answers) ? answer.answers : null;
     const review = element("section", { className: "answer-review accepted-answer-review", "aria-label": "Submitted answers" });
     const heading = element("div", { className: "answer-review-heading" });
@@ -3230,11 +3664,19 @@ __LOOMEX_PERSISTENCE__
       if (!question || typeof question !== "object") continue;
       const questionId = String(question.id || `question_${index + 1}`);
       const value = answers ? answers.find((item) => item && String(item.questionId) === questionId) : answer;
-      list.append(element("dt", {}, safeText(question.question) || "Answer"));
-      list.append(element("dd", {}, answerText(question, value || {})));
+      const displayQuestion = acceptanceReview ? { ...question, acceptanceLabels: true } : question;
+      const item = element("div", { className: "answer-review-item glass-panel" });
+      const copy = element("div", { className: "answer-review-copy" });
+      copy.append(element("dt", {}, safeText(displayQuestion.question) || "Answer"));
+      copy.append(element("dd", {}, answerText(displayQuestion, value || {})));
+      item.append(copy);
+      list.append(item);
     }
     if (!list.childElementCount && answer !== undefined) {
-      list.append(element("dt", {}, "Response"), element("dd", {}, reviewValue(answer)));
+      const item = element("div", { className: "answer-review-item glass-panel" });
+      const copy = element("div", { className: "answer-review-copy" });
+      copy.append(element("dt", {}, "Response"), element("dd", {}, reviewValue(answer)));
+      item.append(copy); list.append(item);
     }
     review.append(list);
     return review;
@@ -3266,7 +3708,7 @@ __LOOMEX_PERSISTENCE__
       primary.hidden = true;
       primary.disabled = true;
     } else {
-      setAction(primary, answerActionLabel("Review"));
+      setAnswerAction(primary, "review", answerActionLabel("Review"));
       primary.hidden = false;
       primary.disabled = !connected || authoritativeStateStale;
     }
@@ -3312,10 +3754,10 @@ __LOOMEX_PERSISTENCE__
     review.append(heading, list);
     form.append(review);
     form.dataset.answerPhase = "review";
-    setAction(secondary, "Back to answers");
+    setAnswerAction(secondary, "back", "Back to answers");
     secondary.hidden = false;
     secondary.disabled = false;
-    setMutationAction(primary, answerActionLabel("Submit"));
+    setAnswerAction(primary, "submit", answerActionLabel("Submit"), true);
     primary.hidden = false;
     primary.disabled = !connected || authoritativeStateStale;
     summary.classList.remove("error");
@@ -3459,6 +3901,58 @@ __LOOMEX_PERSISTENCE__
       : undefined;
   }
 
+  function interactionDraftIdentity(request, sessionId = viewPersistence.session?.viewSessionId) {
+    const requestId = safeText(request?.id, 64);
+    const schemaDigest = requestSchemaDigest(request);
+    if (!workflowIdValid(sessionId) || !workflowIdValid(requestId) || !schemaDigest) return null;
+    return { sessionId, requestId, schemaDigest, key: `${sessionId}:${requestId}:${schemaDigest}` };
+  }
+
+  function currentInteractionDraftIdentity() {
+    return interactionDraftIdentity(draftRequest());
+  }
+
+  function sameInteractionDraftIdentity(left, right) {
+    return Boolean(left && right && left.key === right.key);
+  }
+
+  function detachInteractionDraft() {
+    clearTimeout(backendDraftTimer);
+    backendDraftTimer = null;
+    // Do not cancel the RPC itself: the persistence layer still owns its
+    // idempotency receipt. Detaching makes every late handler a no-op here.
+    backendDraftScope = null;
+    backendDraft = null;
+    backendDraftBusy = false;
+    backendDraftDirty = false;
+    backendDraftAttempt = null;
+    backendDraftPromise = null;
+    backendDraftChangeVersion = 0;
+  }
+
+  function ensureInteractionDraftScope(identity = currentInteractionDraftIdentity()) {
+    if (!identity) {
+      detachInteractionDraft();
+      return null;
+    }
+    if (!backendDraftScope || !sameInteractionDraftIdentity(backendDraftScope.identity, identity)) {
+      detachInteractionDraft();
+      backendDraftScope = { identity };
+    }
+    return backendDraftScope;
+  }
+
+  function draftScopeCurrent(scope) {
+    return backendDraftScope === scope &&
+      sameInteractionDraftIdentity(scope?.identity, currentInteractionDraftIdentity());
+  }
+
+  function synchronizeInteractionDraftScope() {
+    const identity = currentInteractionDraftIdentity();
+    if (!identity) detachInteractionDraft();
+    else ensureInteractionDraftScope(identity);
+  }
+
   function questionAnswersById() {
     const answers = {};
     for (const fieldset of form.querySelectorAll("fieldset[data-question-id]")) {
@@ -3527,16 +4021,20 @@ __LOOMEX_PERSISTENCE__
   }
 
   async function loadInteractionDraft(request, epoch = viewHydrationEpoch) {
-    if (!request?.id || backendDraftBusy || !inputSpecSupported(request.inputSpec)) return true;
+    if (!request?.id || !inputSpecSupported(request.inputSpec)) return true;
     const authoritativeDigest = requestSchemaDigest(request);
     if (!authoritativeDigest) {
       persistenceStatus("load_failed");
       return false;
     }
+    const identity = interactionDraftIdentity(request);
+    if (!identity || !sameInteractionDraftIdentity(identity, currentInteractionDraftIdentity())) return false;
+    const scope = ensureInteractionDraftScope(identity);
+    if (!scope || backendDraftBusy) return true;
     backendDraftBusy = true;
     try {
       const data = await persistenceTool("loomex_interaction_draft_get", { requestId: request.id });
-      if (epoch !== viewHydrationEpoch || draftRequest()?.id !== request.id) return false;
+      if (!draftScopeCurrent(scope) || epoch !== viewHydrationEpoch) return false;
       if (data?.draft && data.draft.schemaDigest !== authoritativeDigest) {
         persistenceStatus("load_failed");
         return false;
@@ -3568,21 +4066,47 @@ __LOOMEX_PERSISTENCE__
       persistenceStatus("saved");
       return true;
     } catch (error) {
-      persistenceStatus("load_failed", error);
+      if (draftScopeCurrent(scope) && epoch === viewHydrationEpoch) persistenceStatus("load_failed", error);
       return false;
     } finally {
-      backendDraftBusy = false;
+      if (backendDraftScope === scope) backendDraftBusy = false;
     }
+  }
+
+  async function refreshReopenedInteraction(reopen, viewSessionId, epoch) {
+    if (!reopen || reopen.viewSessionId !== viewSessionId || !workflowIdValid(reopen.requestId)) {
+      throw new Error("The reopened request is not bound to this saved interaction view.");
+    }
+    const requestId = reopen.requestId;
+    const refreshKey = `${viewSessionId}:${requestId}`;
+    if (refreshedInteractionViews.has(refreshKey)) return true;
+    const result = await callTool("loomex_interaction_get", { requestId }, false, false);
+    const data = dataOf(result);
+    const request = humanRequest(data);
+    if (result?.isError || result?.structuredContent?.ok === false || !request || request.id !== requestId) {
+      throw new Error("The reopened request could not be verified.");
+    }
+    if (epoch !== viewHydrationEpoch || viewPersistence.session?.viewSessionId !== viewSessionId) return false;
+    refreshedInteractionViews.add(refreshKey);
+    latest = data;
+    // Preserve the existing presentation session while replacing the stale
+    // notification payload with the request's authoritative current state.
+    render({ structuredContent: { ok: true, data } });
+    return true;
   }
 
   function scheduleInteractionDraft() {
     const request = draftRequest();
     if (!mutationHydrationReady() || !request || !inputSpecSupported(request.inputSpec) || !requestSchemaDigest(request)) return;
+    const scope = ensureInteractionDraftScope(interactionDraftIdentity(request));
+    if (!scope) return;
     backendDraftDirty = true;
     backendDraftChangeVersion += 1;
     persistenceStatus("dirty");
     clearTimeout(backendDraftTimer);
-    backendDraftTimer = setTimeout(() => { void flushInteractionDraft(); }, 350);
+    backendDraftTimer = setTimeout(() => {
+      if (draftScopeCurrent(scope)) void flushInteractionDraft();
+    }, 350);
   }
 
   async function flushInteractionDraft() {
@@ -3594,12 +4118,38 @@ __LOOMEX_PERSISTENCE__
       persistenceStatus("save_failed");
       return false;
     }
+    const identity = interactionDraftIdentity(request);
+    const scope = ensureInteractionDraftScope(identity);
+    if (!scope || !draftScopeCurrent(scope)) return false;
     if (backendDraftPromise) {
       try { await backendDraftPromise; }
-      catch (error) { persistenceStatus("save_failed", error); return false; }
+      catch (error) {
+        if (draftScopeCurrent(scope)) persistenceStatus("save_failed", error);
+        return false;
+      }
+      if (!draftScopeCurrent(scope)) return false;
       if (!backendDraftDirty) return true;
     }
-    if (backendDraftBusy) return false;
+    if (backendDraftBusy) {
+      // Navigation can queue a second save while the first delayed write is
+      // still in flight. Treat that as one serialized save sequence so a
+      // follower does not turn the temporary overlap into a visible failure.
+      const inFlight = backendDraftPromise;
+      if (!inFlight) {
+        await Promise.resolve();
+        if (!draftScopeCurrent(scope)) return false;
+        if (backendDraftBusy) return false;
+      } else {
+        try { await inFlight; }
+        catch (error) {
+          if (draftScopeCurrent(scope)) persistenceStatus("save_failed", error);
+          return false;
+        }
+        if (!draftScopeCurrent(scope)) return false;
+        if (!backendDraftDirty) return true;
+        return flushInteractionDraft();
+      }
+    }
     clearTimeout(backendDraftTimer);
     backendDraftTimer = null;
     backendDraftBusy = true;
@@ -3618,21 +4168,25 @@ __LOOMEX_PERSISTENCE__
     try {
       backendDraftPromise = persistenceTool("loomex_interaction_draft_update", immutableCopy(attempt.payload));
       const data = await backendDraftPromise;
-      if (draftRequest()?.id !== requestId) return false;
+      if (!draftScopeCurrent(scope) || backendDraftAttempt !== attempt) return false;
       backendDraft = data?.draft || data;
       if (backendDraftChangeVersion === attempt.version) backendDraftDirty = false;
       backendDraftAttempt = null;
       persistenceStatus("saved");
       saved = true;
     } catch (error) {
-      backendDraftDirty = true;
-      persistenceStatus("save_failed", error);
+      if (draftScopeCurrent(scope) && backendDraftAttempt === attempt) {
+        backendDraftDirty = true;
+        persistenceStatus("save_failed", error);
+      }
     } finally {
-      backendDraftPromise = null;
-      backendDraftBusy = false;
+      if (backendDraftScope === scope) {
+        backendDraftPromise = null;
+        backendDraftBusy = false;
+      }
     }
     if (!saved) return false;
-    if (backendDraftDirty) return flushInteractionDraft();
+    if (draftScopeCurrent(scope) && backendDraftDirty) return flushInteractionDraft();
     return true;
   }
 
@@ -3643,12 +4197,51 @@ __LOOMEX_PERSISTENCE__
   }
 
   async function flushCurrentPersistence() {
-    if (persistenceBlocked()) return false;
-    if (viewPersistence.session && !mutationHydrationReady()) return false;
+    if (persistenceBlocked()) {
+      setError(new Error("This action needs saved view storage, but it is currently unavailable. Try again after the view reconnects."));
+      return false;
+    }
+    if (viewPersistence.session && !mutationHydrationReady()) {
+      setError(new Error("The saved view is still restoring. Wait for it to finish, then try this action again."));
+      return false;
+    }
+    const scope = backendDraftScope;
     const draftSaved = await flushInteractionDraft();
+    if (scope && !draftScopeCurrent(scope)) return false;
     const viewSaved = await viewPersistence.flush(captureViewState());
-    if (!draftSaved || !viewSaved) persistenceStatus("save_failed");
+    if (!draftSaved || !viewSaved) {
+      persistenceStatus("save_failed");
+      setError(new Error("Your changes could not be saved, so this action was not sent. Try again after saving succeeds."));
+    }
     return draftSaved && viewSaved;
+  }
+
+  function openAnswerReview() {
+    // Review changes presentation only. Save the reviewed state in the same
+    // serialized autosave path as navigation; Submit awaits durable storage.
+    if (!beginAnswerReview()) throw new Error("The answer preview could not be opened.");
+    saveReviewNavigation();
+    return true;
+  }
+
+  function saveReviewNavigation() {
+    // Moving between answer and review is local navigation. Keep that local
+    // state usable if its follow-up save is unavailable; submitting still
+    // performs the mandatory durable flush below.
+    scheduleCurrentPersistence();
+    const scope = backendDraftScope;
+    void (async () => {
+      const draftSaved = await flushInteractionDraft();
+      if (scope && !draftScopeCurrent(scope)) return;
+      const viewSaved = await viewPersistence.flush(captureViewState());
+      if ((!draftSaved || !viewSaved) && (!scope || draftScopeCurrent(scope))) persistenceStatus("save_failed");
+    })().catch((error) => {
+      if (!scope || draftScopeCurrent(scope)) persistenceStatus("save_failed", error);
+    });
+  }
+
+  function restoreReviewNavigationControls(button) {
+    button.dataset.reviewNavigation = "true";
   }
 
   async function restoreViewState(state) {
@@ -3678,7 +4271,9 @@ __LOOMEX_PERSISTENCE__
       }
       const args = browser.arguments && typeof browser.arguments === "object" ? browser.arguments : null;
       const history = Array.isArray(browser.history) ? browser.history : [];
-      if (args && !exactJsonEqual(args, browserArgs)) {
+      // A fresh browser card starts with default arguments but no trusted page.
+      // Fetch the saved page even when its arguments happen to equal those defaults.
+      if (args && (!exactJsonEqual(args, browserArgs) || !workflowPageData(browserPage))) {
         await loadBrowserPage(args, history);
       } else browserHistory = history;
       if (workflowIdValid(browser.selectedWorkflowId) && browserSelected?.workflow?.id !== browser.selectedWorkflowId) {
@@ -3702,8 +4297,6 @@ __LOOMEX_PERSISTENCE__
       if (workflowIdValid(state.setupViewSessionId)) runFlow.setupViewSessionId = state.setupViewSessionId;
       if (Number.isSafeInteger(state.workflowVersion) && state.workflowVersion > 0) runFlow.editWorkflowVersion = state.workflowVersion;
     } else if (runFlow?.stage === "monitor" && state.executionId === executionId(runFlow.result)) {
-      runFlow.cancelReasonDraft = typeof state.cancelReason === "string" ? state.cancelReason : "";
-      runFlow.cancelDetailsOpen = Boolean(state.cancelDetailsOpen);
       const acceptedRequestId = safeText(state.acceptedRequestId, 64);
       if (workflowIdValid(acceptedRequestId)) {
         const result = await callTool("loomex_interaction_get", { requestId: acceptedRequestId }, false);
@@ -3778,11 +4371,29 @@ __LOOMEX_PERSISTENCE__
     if (forward.kind === "prepare" && forward.entityType === "preparation") {
       const result = await callTool("loomex_preparation_get", { preparationId: forward.entityId }, false);
       const restored = dataOf(result);
+      // The commit sealed this preparation. A durable commit result gives us a
+      // verified execution identity, so follow that identity rather than
+      // presenting a sealed review as an expired local draft.
+      const committedRunId = safeText(restored?.executionId, 64);
+      if (restored?.status === "stale" && restored?.reason === "commit_started" && workflowIdValid(committedRunId)) {
+        const snapshot = await callTool("loomex_run_get", { runId: committedRunId }, false);
+        const run = dataOf(snapshot);
+        if (snapshot?.isError || snapshot?.structuredContent?.ok === false || executionId(run) !== committedRunId) {
+          throw new Error("The committed run could not be verified while restoring this view.");
+        }
+        initializeRunMonitor(run, null);
+        runFlow.returnToBrowser = Boolean(returnBrowserViewSessionId);
+        runFlow.returnViewSessionId = returnBrowserViewSessionId;
+        observeViewPersistence({ _meta: { "loomex/viewSession": target } });
+        renderIntegratedRunFlow();
+        return true;
+      }
       if (result?.isError || result?.structuredContent?.ok === false || restored?.status !== "valid" || restored?.operation !== "runs.prepare" ||
           restored?.preparation?.preparationId !== forward.entityId) {
         throw new Error("The saved preparation is no longer available. Return to setup and prepare it again.");
       }
       latest = restored.preparation;
+      observePreparationReview(result, restored.preparation);
       initializePreparedRunReview(restored.preparation);
       runFlow.returnToBrowser = Boolean(returnBrowserViewSessionId);
       runFlow.returnViewSessionId = returnBrowserViewSessionId;
@@ -3942,15 +4553,25 @@ __LOOMEX_PERSISTENCE__
   function observeViewPersistence(result) {
     if (result?._meta?.["loomex/viewPersistence"]?.status === "unavailable") {
       viewPersistenceUnavailable = true;
+      viewRestoring = false;
+      syncRestorationVisibility();
       hydratedReadySessionId = "";
       persistenceStatus("save_failed");
       return;
     }
     const supplied = viewSessionProjection(result);
-    if (!supplied) return;
+    if (!supplied) {
+      if (!viewPersistence.session) { viewRestoring = false; syncRestorationVisibility(); }
+      return;
+    }
+    viewRestoring = true;
+    syncRestorationVisibility();
     viewPersistenceUnavailable = false;
     const changedSession = viewPersistence.configure(supplied);
-    if (changedSession) persistenceConflict = false;
+    if (changedSession) {
+      persistenceConflict = false;
+      detachInteractionDraft();
+    }
     hydratedReadySessionId = "";
     if (["inactive", "resolved"].includes(supplied.status)) completedViewStatuses.add(`${supplied.viewSessionId}:${supplied.status}`);
     const epoch = ++viewHydrationEpoch;
@@ -3959,7 +4580,35 @@ __LOOMEX_PERSISTENCE__
       let ready = false;
       try {
         const projection = await viewPersistence.hydrate();
-        if (!projection || epoch !== viewHydrationEpoch || !viewEntityMatches(projection)) return;
+        if (!projection || epoch !== viewHydrationEpoch) return;
+        const reopen = mode === "interaction" ? (reopenedInteraction || {
+          viewSessionId: projection.viewSessionId,
+          requestId: interactionId(latest || {}),
+        }) : null;
+        if (reopen && (reopen.viewSessionId !== projection.viewSessionId || !workflowIdValid(reopen.requestId) ||
+            projection.kind !== "interaction" || projection.entityType !== "request" || projection.entityId !== reopen.requestId)) {
+          throw new Error("The reopened request does not match this saved interaction view.");
+        }
+        if (reopen && (projection.status === "resolved" || projection.revision > 0 || reopenedInteraction) && hydratedSessionId !== projection.viewSessionId && viewPersistence.changeVersion === localChangeVersion) {
+          if (!await refreshReopenedInteraction(reopen, projection.viewSessionId, epoch)) return;
+        }
+        if (!viewEntityMatches(projection)) return;
+        // A resolved monitor session is only a restoration hint. Re-read the
+        // exact execution once before restoring a completed card so an old
+        // notification cannot make an active run look finished (or vice versa).
+        if (mode === "monitor" && projection.status === "resolved" && hydratedSessionId !== projection.viewSessionId &&
+            viewPersistence.changeVersion === localChangeVersion && runFlow?.stage === "monitor") {
+          const runId = executionId(runFlow.result) || safeText(projection.entityId, 64);
+          if (!workflowIdValid(runId)) throw new Error("The resolved monitor view is missing its run identity.");
+          const refreshed = await callTool("loomex_run_get", { runId }, false);
+          const refreshedData = dataOf(refreshed);
+          if (refreshed?.isError || refreshed?.structuredContent?.ok === false || executionId(refreshedData) !== runId) {
+            throw new Error("The resolved run could not be verified.");
+          }
+          acceptRunSnapshot(refreshedData, runId);
+          latest = refreshedData;
+          render({ structuredContent: { ok: true, data: refreshedData } });
+        }
         if (hydratedSessionId !== projection.viewSessionId && viewPersistence.changeVersion === localChangeVersion) {
           if (await restoreViewState(projection.state)) return;
           const request = draftRequest();
@@ -3977,8 +4626,20 @@ __LOOMEX_PERSISTENCE__
         if (epoch === viewHydrationEpoch && viewEntityMatches(projection)) {
           hydratedReadySessionId = projection.viewSessionId;
           delete refresh.dataset.retryViewHydration;
-          if (runFlow?.stage === "setup") renderIntegratedRunFlow();
+          // The first preparation render can occur before the host connection
+          // and durable session finish initializing. Re-render setup and
+          // review cards so Start derives from the authoritative lifecycle
+          // rather than a previously-disabled DOM node. Monitor cards retain
+          // their restored cancellation controls without another DOM reset.
+          if (["setup", "review"].includes(runFlow?.stage)) renderIntegratedRunFlow();
           else syncChrome();
+          restoreDisclosures(projection.state?.disclosures);
+          restoreReadingPosition(projection.state, epoch);
+          // Terminal and resolved cards are read-only projections. Persist the
+          // lifecycle status after authoritative hydration so a remount can
+          // request the current domain state before restoring that card.
+          const completedStatus = desiredViewStatus();
+          if (completedStatus) void markCurrentViewStatus(completedStatus);
           ready = true;
         }
       } catch (error) {
@@ -3991,15 +4652,21 @@ __LOOMEX_PERSISTENCE__
         setAction(refresh, "Retry restore");
         refresh.disabled = !connected;
       } finally {
+        // A forwarded session owns its own loader. A stale hydration must not
+        // reveal content while the destination is still restoring.
+        if (epoch === viewHydrationEpoch) {
+          viewRestoring = false;
+          syncRestorationVisibility();
+        }
         resolve(ready);
       }
     }));
   }
 
   // Browsing only reads metadata. Execution preparation stays in the conversation.
-  const WORKFLOW_PAGE_SIZES = [10, 20, 50];
+  const WORKFLOW_PAGE_SIZE = 5;
   let browserPage = null;
-  let browserArgs = { limit: 20 };
+  let browserArgs = { limit: WORKFLOW_PAGE_SIZE };
   let browserHistory = [];
   let browserSelected = null;
   let browserDetailResponse = null;
@@ -4383,31 +5050,11 @@ __LOOMEX_PERSISTENCE__
       row.append(copy, actions); rows.append(row);
     }
     context.append(rows);
-    const nav = element("nav", { className: "ui-data-table-pagination", "aria-label": "Workflow pages" });
+    const nav = element("nav", { className: "ui-data-table-pagination ui-data-table-pagination-compact", "aria-label": "Workflow pages" });
     const pageNumber = browserHistory.length + 1;
     const pageSummary = `Page ${pageNumber} · ${workflows.length} workflow${workflows.length === 1 ? "" : "s"}`;
     nav.append(element("output", { id: "workflow-page-info", className: "ui-data-table-pagination-summary", "aria-live": "polite" }, pageSummary));
     const paginationActions = element("div", { className: "ui-data-table-pagination-actions" });
-    const pageSize = element("select", {
-      id: "workflow-page-size",
-      className: "ui-select-trigger workflow-page-size",
-      "aria-label": "Workflows per page",
-      disabled: !connected || browserBusy,
-    });
-    const suppliedPageSize = Number(browserArgs.limit);
-    const currentPageSize = Number.isSafeInteger(suppliedPageSize) && suppliedPageSize > 0 ? suppliedPageSize : 20;
-    const pageSizes = [...new Set([currentPageSize, ...WORKFLOW_PAGE_SIZES])].sort((left, right) => left - right);
-    for (const size of pageSizes) pageSize.append(element("option", { value: String(size) }, `${size} / page`));
-    pageSize.value = String(currentPageSize);
-    pageSize.addEventListener("change", async () => {
-      const limit = Number(pageSize.value);
-      if (!pageSizes.includes(limit)) return;
-      if (!await flushCurrentPersistence()) return;
-      const args = { ...browserArgs, limit };
-      delete args.cursor;
-      await loadBrowserPage(args, []);
-    });
-    paginationActions.append(pageSize);
     if (browserArgs.query) paginationActions.append(browserButton("Reset search", () => {
       const args = { ...browserArgs };
       delete args.query;
@@ -4427,6 +5074,10 @@ __LOOMEX_PERSISTENCE__
   }
 
   function renderContent(result, options = {}) {
+    if (isConnectionView) {
+      void hydrateConnectionView(result).catch(error => { viewRestoring = false; syncRestorationVisibility(); setError(error); });
+      return;
+    }
     if (runFlow?.stage === "monitor") captureRunHumanDraft();
     const workspaceMetadataSupplied = hasTaskWorkspaceResult(result);
     latestAnswerChannel = safeText(result?._meta?.answerChannel || result?._meta?.["loomex/answerChannel"], 40) || "";
@@ -4435,11 +5086,12 @@ __LOOMEX_PERSISTENCE__
     if (mode === "browser" && !runFlow) {
       browserEpoch += 1; browserBusy = false;
       const args = result?._meta?.["loomex/workflowListQuery"];
-      if (args) { browserArgs = { ...args, limit: args.limit || 20 }; browserHistory = []; }
+      if (args) { browserArgs = { ...args, limit: WORKFLOW_PAGE_SIZE }; browserHistory = []; }
     }
     latestMethod = methodOf(result) || latestMethod;
     const failed = Boolean(result && (result.isError || result.structuredContent?.ok === false));
-    if (!failed) observeViewPersistence(result);
+    if (failed) viewRestoring = false;
+    else observeViewPersistence(result);
     const incoming = dataOf(result);
     const sourceIdentity = setupRequestIdentity(result);
     const incomingSetup = !failed && mode === "prepare" && selectedWorkflowVersion(incoming) && !incoming?.preparationId;
@@ -4454,9 +5106,8 @@ __LOOMEX_PERSISTENCE__
     if (!failed) {
       authoritativeStateStale = false;
       latest = incoming;
-      const supplied = result && result._meta && result._meta["loomex/preparationReview"];
-      if (supplied !== undefined) preparationPresentation = presentationMatches(supplied, incoming || {}) ? supplied : null;
-      else if (!presentationMatches(preparationPresentation, incoming || {})) preparationPresentation = null;
+      synchronizeInteractionDraftScope();
+      observePreparationReview(result, incoming);
     }
     const output = latest || {};
     summary.classList.toggle("error", failed);
@@ -4560,17 +5211,14 @@ __LOOMEX_PERSISTENCE__
       const schema = request.responseSchema || request.outputSchema;
       renderHumanPresentation(request, request.inputSpec);
       if (humanRequestResolved(request)) {
-        context.className = "ui-stack";
-        context.append(submittedAnswerReview(request));
-        context.hidden = false;
-        summary.textContent = "Response received. This request is complete.";
+        renderSubmittedInteraction(request);
       } else if (requestType === "approval" || output.decisionRequired === true) {
         appendRequestCopy(request, request.inputSpec);
         form.hidden = false;
-        setMutationAction(secondary, "Reject");
+        setInteractionAction(secondary, "reject", "Reject");
         secondary.hidden = false;
         secondary.disabled = !connected || !requestId;
-        setMutationAction(primary, "Approve");
+        setInteractionAction(primary, "approve", "Approve");
         primary.hidden = false;
         primary.disabled = !connected || !requestId;
       } else {
@@ -4579,7 +5227,8 @@ __LOOMEX_PERSISTENCE__
           ? retained.arguments.answer
           : request.answer;
         const formReady = typedForm(schema, initial, request.inputSpec, request);
-        setAction(primary, form.dataset.formKind === "chat-answer" ? "Continue in conversation" : answerActionLabel("Review"));
+        if (form.dataset.formKind === "chat-answer") setAction(primary, "Continue in conversation");
+        else setAnswerAction(primary, "review", answerActionLabel("Review"));
         primary.hidden = false;
         primary.disabled = !connected || !requestId || (!formReady && form.dataset.formKind !== "chat-answer");
         if (form.dataset.formKind !== "chat-answer" && !requestSchemaDigest(request)) {
@@ -4601,7 +5250,8 @@ __LOOMEX_PERSISTENCE__
           ? retained.arguments.response
           : request.answer || {};
         const formReady = typedForm(schema, initial, request.inputSpec, request);
-        setAction(primary, form.dataset.formKind === "chat-answer" ? "Continue in conversation" : answerActionLabel("Review"));
+        if (form.dataset.formKind === "chat-answer") setAction(primary, "Continue in conversation");
+        else setAnswerAction(primary, "review", answerActionLabel("Review"));
         primary.hidden = false;
         primary.disabled = !connected || (!formReady && form.dataset.formKind !== "chat-answer");
         if (request.id && form.dataset.formKind !== "chat-answer" && !requestSchemaDigest(request)) {
@@ -4862,8 +5512,8 @@ __LOOMEX_PERSISTENCE__
     if (operation.name === "loomex_interaction_respond" || operation.name === "loomex_builder_respond") setMutationAction(primary, "Continue");
     else if (operation.name === "loomex_run_cancel") setMutationAction(primary, "Cancel run");
     else if (operation.name === "loomex_interaction_decide") {
-      setMutationAction(primary, "Approve");
-      setMutationAction(secondary, "Reject");
+      setInteractionAction(primary, "approve", "Approve");
+      setInteractionAction(secondary, "reject", "Reject");
       secondary.disabled = !connected;
     }
   }
@@ -4890,7 +5540,7 @@ __LOOMEX_PERSISTENCE__
     if (originalRunId && returnedRunId && originalRunId !== returnedRunId) return undefined;
     const runId = returnedRunId || originalRunId;
     if (runId && !workflowIdValid(runId)) return undefined;
-    return { runId, acceptedInteraction: { requestId: request.id, status } };
+    return { runId, acceptedInteraction: { requestId: request.id, status }, followContinuation: data?.details?.followContinuation };
   }
 
   function operationReconciled(operation, data, authoritativeData) {
@@ -4921,7 +5571,11 @@ __LOOMEX_PERSISTENCE__
       summary.textContent = mode === "interaction"
         ? "Response received. The uncertain submission was reconciled and no retry is needed."
         : "Server state reconciled. This request no longer needs the pending retry.";
-      if (interactionResolution?.runId) await handoffRunToChat(interactionResolution.runId, { trigger: "interaction_accepted", acceptedInteraction: interactionResolution.acceptedInteraction });
+      if (interactionResolution?.runId) await handoffRunToChat(interactionResolution.runId, {
+        trigger: "interaction_accepted",
+        acceptedInteraction: interactionResolution.acceptedInteraction,
+        followContinuation: interactionResolution.followContinuation,
+      });
       return;
     }
     latestMethod = methodOf(result) || latestMethod;
@@ -5047,9 +5701,7 @@ __LOOMEX_PERSISTENCE__
     clearMutationOperation(operation);
     if (backendDraft?.requestId === operation.arguments.requestId) {
       const draft = backendDraft;
-      backendDraft = null;
-      backendDraftDirty = false;
-      backendDraftAttempt = null;
+      detachInteractionDraft();
       void persistenceTool("loomex_interaction_draft_delete", {
         requestId: operation.arguments.requestId,
         expectedRevision: draft.revision,
@@ -5082,6 +5734,16 @@ __LOOMEX_PERSISTENCE__
       button.removeAttribute("aria-busy");
       if (renderCount === previousRenderCount && !authoritativeStateStale) {
         actionButtons.forEach((candidate, index) => { candidate.disabled = previousDisabled[index]; });
+      }
+      if (button.dataset.reviewNavigation === "true") {
+        delete button.dataset.reviewNavigation;
+        if (form.dataset.answerPhase === "review" && !authoritativeStateStale) {
+          primary.disabled = !connected;
+          secondary.disabled = !connected;
+        } else if (form.dataset.answerPhase === "answer" && !authoritativeStateStale) {
+          primary.disabled = !connected;
+          secondary.disabled = true;
+        }
       }
       const retainedOperation = currentMutationOperation();
       if (retainedOperation && retainedOperation.uncertain) {
@@ -5130,9 +5792,7 @@ __LOOMEX_PERSISTENCE__
   useSavedVersion.addEventListener("click", () => withPending(useSavedVersion, async () => {
     try {
       const request = draftRequest();
-      backendDraftAttempt = null;
-      backendDraftDirty = false;
-      backendDraftChangeVersion = 0;
+      detachInteractionDraft();
       const epoch = ++viewHydrationEpoch;
       const projection = await viewPersistence.useSavedVersion();
       if (!projection || !viewEntityMatches(projection)) throw new Error("The saved view could not be verified.");
@@ -5169,6 +5829,10 @@ __LOOMEX_PERSISTENCE__
   refresh.addEventListener("click", () => withPending(refresh, async () => {
     let authoringWorkflowRead = false;
     try {
+      if (isConnectionView) {
+        await refreshConnection();
+        return;
+      }
       if (refresh.dataset.retryViewHydration === "true") {
         const sessionId = viewPersistence.session?.viewSessionId;
         if (!workflowIdValid(sessionId)) throw new Error("The saved view session is unavailable.");
@@ -5182,11 +5846,22 @@ __LOOMEX_PERSISTENCE__
       if (!await flushCurrentPersistence()) return;
       if (runFlow) {
         if (runFlow.stage === "review") {
-          const readiness = await callTool("loomex_readiness", {}, false);
-          if (readiness?.isError || readiness?.structuredContent?.ok === false) throw new Error("The runner could not be reached. The prepared run remains unchanged.");
-          runFlow.errorMessage = "";
-          summary.classList.remove("error"); summary.setAttribute("role", "status");
-          summary.textContent = "Runner status checked. Your prepared operation is unchanged.";
+          const preparationId = safeText(runFlow.prepared?.preparationId, 64);
+          if (!workflowIdValid(preparationId)) throw new Error("This prepared run has no verifiable identity.");
+          const refreshed = await callTool("loomex_preparation_get", { preparationId }, false);
+          const state = dataOf(refreshed);
+          if (refreshed?.isError || refreshed?.structuredContent?.ok === false) throw new Error("The prepared run could not be verified.");
+          if (state?.status === "valid" && state?.preparation?.preparationId === preparationId) {
+            latest = state.preparation;
+            initializePreparedRunReview(state.preparation);
+            runFlow.errorMessage = "";
+            summary.textContent = "";
+          } else if (state?.reason === "commit_started" && workflowIdValid(safeText(state.executionId, 64))) {
+            const snapshot = await callTool("loomex_run_get", { runId: state.executionId }, false);
+            if (snapshot?.isError || executionId(dataOf(snapshot)) !== state.executionId) throw new Error("The committed run could not be verified.");
+            initializeRunMonitor(dataOf(snapshot), null);
+            summary.textContent = "";
+          } else throw new Error("This preparation changed and needs a fresh review before it can be started.");
         } else if (runFlow.stage === "monitor") {
           if (chatHandoff?.runId === executionId(runFlow.result)) chatHandoff = null;
           await readRunSnapshot("loomex_run_get");
@@ -5201,13 +5876,15 @@ __LOOMEX_PERSISTENCE__
         return;
       }
       if (mode === "prepare") {
-        const readiness = await callTool("loomex_readiness", {}, false);
-        if (readiness && readiness.isError) setError(new Error("The runner could not be reached. Check its status in the conversation."));
-        else {
-          summary.classList.remove("error");
-          summary.setAttribute("role", "status");
-          summary.textContent = "Runner status checked. Your prepared operation is unchanged.";
+        const preparationId = safeText(latest?.preparationId, 64);
+        if (!workflowIdValid(preparationId)) return;
+        const refreshed = await callTool("loomex_preparation_get", { preparationId }, false);
+        if (refreshed?.isError || refreshed?.structuredContent?.ok === false) throw new Error("The prepared run could not be verified.");
+        const state = dataOf(refreshed);
+        if (state?.status !== "valid" || state?.preparation?.preparationId !== preparationId) {
+          throw new Error("This preparation changed and needs a fresh review before it can be started.");
         }
+        render({ structuredContent: { ok: true, data: state.preparation }, _meta: refreshed._meta });
         return;
       }
       authoringWorkflowRead = mode === "authoring" && !builderSessionId(data) && Boolean(data.workflow);
@@ -5252,10 +5929,12 @@ __LOOMEX_PERSISTENCE__
 
   secondary.addEventListener("click", () => withPending(secondary, async () => {
     try {
-      if (form.dataset.answerPhase === "review") {
-        if (!await flushCurrentPersistence()) return;
+      if (isConnectionView) { await connectionState.secondaryAction?.(); return; }
+      if (secondary.dataset.answerIntent === "back") {
+        if (form.dataset.answerPhase !== "review") throw new Error("The answer preview is no longer available.");
         exitAnswerReview();
-        scheduleCurrentPersistence();
+        restoreReviewNavigationControls(secondary);
+        saveReviewNavigation();
         return;
       }
       if (runFlow?.stage === "review" && runFlow.setup && runFlow.operations.size === 0) {
@@ -5272,26 +5951,6 @@ __LOOMEX_PERSISTENCE__
         return;
       }
       if (runFlow?.stage === "monitor") {
-        const runId = executionId(runFlow.result);
-        if (!runId || terminalRun(runFlow.result.execution || {})) return;
-        if (runFlow.cancellationRequested) return;
-        const request = runHumanRequest();
-        if (request && runFlow.humanMode === "cancel") {
-          if (!await flushCurrentPersistence()) return;
-          runFlow.humanMode = undefined;
-          runFlow.errorMessage = "";
-          renderIntegratedRunFlow();
-          scheduleCurrentPersistence();
-          return;
-        }
-        if (request && (request.type === "approval" || runFlow.result.decisionRequired === true)) {
-          const requestId = request.id;
-          await runFlowMutation("loomex_interaction_decide", `interaction:reject:${requestId}`, "rejection", {
-            requestId, decision: "reject",
-          }, acceptHumanResolution);
-          return;
-        }
-        if (!request) await handoffRunToChat(runId);
         return;
       }
       const retainedOperation = currentMutationOperation();
@@ -5314,11 +5973,12 @@ __LOOMEX_PERSISTENCE__
 
   primary.addEventListener("click", () => withPending(primary, async () => {
     try {
+      if (isConnectionView) { await connectionState.action?.(); return; }
       if (form.dataset.formKind === "chat-answer") {
         await handoffLongQuestionToChat();
         return;
       }
-      if (chatHandoff?.status === "failed") {
+      if (!runFlow && chatHandoff?.status === "failed") {
         await handoffRunToChat(chatHandoff.runId, chatHandoff.continuation);
         return;
       }
@@ -5363,7 +6023,7 @@ __LOOMEX_PERSISTENCE__
           runId, reason: answer.reason
         });
       } else if (mode === "interaction") {
-        const approval = primary.textContent === "Approve";
+        const approval = primary.dataset.interactionAction === "approve";
         if (approval) {
           const requestId = interactionId(data);
           const outcome = await callVerifiedInteractionMutation("loomex_interaction_decide", `interaction:approve:${requestId}`, {
@@ -5371,24 +6031,32 @@ __LOOMEX_PERSISTENCE__
           }, data);
           if (outcome.accepted) await handoffAcceptedInteraction(data, outcome.result);
         } else {
-          if (form.dataset.answerPhase !== "review") {
-            if (!await flushCurrentPersistence()) return;
-            if (beginAnswerReview()) { scheduleCurrentPersistence(); await flushCurrentPersistence(); return; }
+          const answerIntent = primary.dataset.answerIntent;
+          if (answerIntent === "review") {
+            if (!await openAnswerReview()) return;
+            restoreReviewNavigationControls(primary);
+            return;
           }
+          if (answerIntent !== "submit") throw new Error("Choose Review before submitting an answer.");
+          if (!await flushCurrentPersistence()) return;
           const requestId = interactionId(data);
           const schemaDigest = requestSchemaDigest(humanRequest(data));
           if (!schemaDigest) throw new Error("The current question schema could not be verified. Refresh this request before submitting.");
+          const answer = immutableCopy(collectAnswer());
           const outcome = await callVerifiedInteractionMutation("loomex_interaction_respond", `interaction:respond:${requestId}`, {
-            requestId, answer: collectAnswer(),
+            requestId, answer,
             expectedSchemaDigest: schemaDigest,
           }, data);
           if (outcome.accepted) await handoffAcceptedInteraction(data, outcome.result);
         }
       } else if (mode === "authoring") {
-        if (form.dataset.answerPhase !== "review") {
-          if (!await flushCurrentPersistence()) return;
-          if (beginAnswerReview()) { scheduleCurrentPersistence(); await flushCurrentPersistence(); return; }
+        const answerIntent = primary.dataset.answerIntent;
+        if (answerIntent === "review") {
+          if (!await openAnswerReview()) return;
+          restoreReviewNavigationControls(primary);
+          return;
         }
+        if (answerIntent !== "submit") throw new Error("Choose Review before submitting an answer.");
         const sessionId = builderSessionId(data);
         await callMutation("loomex_builder_respond", `builder:respond:${sessionId}`, {
           sessionId, response: collectAnswer()
@@ -5396,6 +6064,18 @@ __LOOMEX_PERSISTENCE__
       }
     } catch (error) { setError(error); }
   }));
+
+  // Save while the document is still alive; pagehide is best effort, never an
+  // acknowledgement that an in-flight write reached durable storage.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && mutationHydrationReady()) void flushCurrentPersistence();
+  });
+  window.addEventListener("pagehide", () => {
+    if (mutationHydrationReady()) void flushCurrentPersistence();
+  });
+  window.addEventListener("scroll", () => {
+    if (mutationHydrationReady()) markViewDirty();
+  }, { passive: true });
 
   document.addEventListener("input", (event) => {
     if (event.isTrusted && event.target.matches?.("input, textarea, select")) scheduleCurrentPersistence();
@@ -5432,6 +6112,12 @@ __LOOMEX_PERSISTENCE__
     void autoAdvanceChoice(control);
   });
 
+  document.addEventListener("visibilitychange", () => {
+    if (!isConnectionView || document.visibilityState !== "visible") return;
+    const projection = normalizedConnection(latest);
+    if (projection) scheduleConnectionPoll(projection, connectionGeneration);
+  });
+
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
     const message = event.data;
@@ -5445,11 +6131,24 @@ __LOOMEX_PERSISTENCE__
     }
     if (message.method === "ui/notifications/tool-input") {
       const toolName = message.params && (message.params.name || message.params.toolName);
-      if (typeof toolName === "string") latestToolName = toolName;
+      if (typeof toolName === "string") {
+        latestToolName = toolName;
+        const viewSessionId = safeText(message.params?.arguments?.viewSessionId, 64);
+        const requestId = safeText(message.params?.arguments?.requestId, 64);
+        reopenedInteraction = toolName === "loomex_interaction_view" && workflowIdValid(viewSessionId)
+          ? { viewSessionId, requestId }
+          : null;
+        if (reopenedInteraction && viewPersistence.session?.viewSessionId === viewSessionId) {
+          // A host can deliver tool input after an initial result. Require the
+          // following result/hydration to reconcile this exact request instead
+          // of treating the already-hydrated card as current.
+          hydratedSessionId = "";
+        }
+      }
       if (TASK_WORKSPACE_TOOLS.has(toolName)) taskWorkspace = taskWorkspaceFrom(message.params?.arguments);
       if (mode === "browser" && message.params?.arguments) {
         const args = message.params.arguments;
-        browserArgs = { limit: Number.isInteger(args.limit) ? args.limit : 20, ...(typeof args.query === "string" ? { query: args.query } : {}), ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}), ...(typeof args.systemKey === "string" ? { systemKey: args.systemKey } : {}) };
+        browserArgs = { limit: WORKFLOW_PAGE_SIZE, ...(typeof args.query === "string" ? { query: args.query } : {}), ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}), ...(typeof args.systemKey === "string" ? { systemKey: args.systemKey } : {}) };
         browserHistory = [];
       }
     }
@@ -5463,7 +6162,7 @@ __LOOMEX_PERSISTENCE__
 
   const handshake = send("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: "0.12.0" },
+    appInfo: { name: "loomex", version: "0.13.3" },
     appCapabilities: { availableDisplayModes: ["inline"] }
   });
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000));

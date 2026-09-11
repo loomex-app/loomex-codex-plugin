@@ -10,6 +10,8 @@ import {
   INTERACTION_UI_URI,
   MONITOR_UI_URI,
   PREPARE_UI_URI,
+  CONNECTION_UI_URI,
+  ORGANIZATIONS_UI_URI,
 } from "./tool-catalog.js";
 
 const RESOURCES = [
@@ -18,6 +20,8 @@ const RESOURCES = [
   { name: "loomex-prepare", uri: PREPARE_UI_URI, mode: "prepare" },
   { name: "loomex-monitor", uri: MONITOR_UI_URI, mode: "monitor" },
   { name: "loomex-interaction", uri: INTERACTION_UI_URI, mode: "interaction" },
+  { name: "loomex-organizations", uri: ORGANIZATIONS_UI_URI, mode: "organizations" },
+  { name: "loomex-connection", uri: CONNECTION_UI_URI, mode: "connection" },
 ] as const;
 
 // Stable resource identities avoid retaining a deleted release URI in a host task.
@@ -47,7 +51,7 @@ export function registerUiResources(server: McpServer): void {
   }, async (uri, variables) => {
     const view = variables.view;
     const version = variables.version;
-    const resource = typeof view === "string" ? RESOURCES.find((item) => item.mode === view) : undefined;
+    const resource = typeof view === "string" && view !== "connection" ? RESOURCES.find((item) => item.mode === view) : undefined;
     if (!resource || typeof version !== "string" || (!CACHED_RELEASES.has(version) || (view === "browser" && version !== "0.2.7"))) {
       throw new McpError(ErrorCode.InvalidParams, "Unsupported Loomex UI resource");
     }

@@ -1,13 +1,17 @@
 import * as assert from "node:assert/strict";
 import { test } from "node:test";
 import { runSummary } from "../src/run-summary.js";
+import { monitoringContract } from "../src/monitoring-contract.js";
 
 const runId = "adc7b3ba-1979-47d2-ac14-638ed91c5f82";
 const requestId = "8081f734-5175-492b-b412-b1d88d8e3a7d";
+const organizationId = "dd6244ea-2f21-48bd-a9da-4d2ac161882a";
 const data = {
   execution: { id: runId, status: "waiting", workflowName: "Idea to Implementation", currentNodeName: "Describe Your Idea",
+    organizationId,
     input: { _loomexRunner: { id: "internal-runner", confirmationKey: "private-confirmation" } } },
   humanRequest: { id: requestId, status: "pending", type: "long_text", execution: { id: runId },
+    organizationId,
     inputSpec: { inputType: "long_text", question: "What would you like to build?" },
     prompt: "private-prompt", answer: "private-answer" },
   waitState: "human_action_required", runner: { id: "runner-id", status: "online", name: "Runner name" },
@@ -75,7 +79,7 @@ test("resolution and spool summaries retain read-only continuation without secre
 });
 
 test("chat continuation advances the exact run through baseline, bounded waits, question and result", () => {
-  const active = { execution: { id: runId, status: "running" }, latestSequence: 23, timedOut: true };
+  const active = { execution: { id: runId, status: "running", organizationId }, latestSequence: 23, timedOut: true };
   assert.deepEqual(runSummary("runs.commit", active)?.nextAction, { tool: "loomex_run_get", arguments: { runId } });
   for (const method of ["runs.get", "runs.wait"]) {
     assert.deepEqual(runSummary(method, active)?.nextAction, { tool: "loomex_run_wait", arguments: { runId, timeoutSeconds: 30, afterSequence: 23 } });
@@ -109,9 +113,24 @@ test("invalid question identities and organization substitutions pause chat cont
     assert.equal(runSummary("interactions.get", { ...data, humanRequest })?.presentationAction, undefined);
   }
   for (const latestSequence of [-1, 1.5, "23", Number.MAX_SAFE_INTEGER + 1]) {
-    assert.deepEqual(runSummary("runs.wait", { execution: { id: runId, status: "running" }, latestSequence })?.nextAction,
+    assert.deepEqual(runSummary("runs.wait", { execution: { id: runId, status: "running", organizationId }, latestSequence })?.nextAction,
       { tool: "loomex_run_wait", arguments: { runId, timeoutSeconds: 30 } });
   }
+});
+
+test("missing organization identities never produce monitoring or human-answer actions", () => {
+  const unscopedExecution = { id: runId, status: "waiting" };
+  const unscopedRequest = { id: requestId, status: "pending", execution: { id: runId } };
+  for (const method of ["runs.get", "runs.wait", "runs.events"]) {
+    const result = runSummary(method, { execution: unscopedExecution, humanRequest: unscopedRequest });
+    assert.equal(result?.nextAction, undefined);
+    assert.equal(result?.requiresUserInput, undefined);
+    assert.equal(result?.stateNeedsVerification, true);
+    assert.deepEqual(result?.monitoring, monitoringContract({ state: "needs_attention" }));
+  }
+  const interactionResult = runSummary("interactions.get", { humanRequest: unscopedRequest });
+  assert.equal(interactionResult?.awaitingUserAnswer, undefined);
+  assert.equal(interactionResult?.requiresUserInput, undefined);
 });
 
 
@@ -159,8 +178,8 @@ test("truncated event pages cannot advance beyond the authoritative sequence", (
 });
 
 test("monitoring remains active across quiet waits until a new question arrives", () => {
-  const quiet = { execution: { id: runId, status: "RUNNING" }, latestSequence: 23, timedOut: true };
-  const activeMonitoring = { state: "active", recoveryAction: "ensure", continuePolling: true };
+  const quiet = { execution: { id: runId, status: "RUNNING", organizationId }, latestSequence: 23, timedOut: true };
+  const activeMonitoring = monitoringContract({ state: "active", observation: "quiet_timeout" });
   for (let poll = 0; poll < 7; poll += 1) {
     const result = runSummary("runs.wait", quiet);
     assert.deepEqual(result?.monitoring, activeMonitoring);
@@ -169,29 +188,29 @@ test("monitoring remains active across quiet waits until a new question arrives"
 
   const newQuestion = { ...quiet, execution: { ...quiet.execution, status: "WAITING" }, humanRequest: data.humanRequest };
   const result = runSummary("runs.wait", newQuestion);
-  assert.deepEqual(result?.monitoring, { state: "needs_input", recoveryAction: "pause", continuePolling: false });
+  assert.deepEqual(result?.monitoring, monitoringContract({ state: "needs_input" }));
   assert.deepEqual(result?.nextAction, { tool: "loomex_interaction_view", arguments: { requestId } });
 });
 
 test("monitoring lifecycle follows pagination, verified actions and terminal state", () => {
   const pageResult = runSummary("runs.get", {
-    execution: { id: runId, status: "COMPLETED" },
+    execution: { id: runId, status: "COMPLETED", organizationId },
     humanRequest: data.humanRequest,
     events: [{ sequence: 4 }], latestSequence: 5, hasMoreEvents: true,
   });
-  assert.deepEqual(pageResult?.monitoring, { state: "active", recoveryAction: "ensure", continuePolling: true });
+  assert.deepEqual(pageResult?.monitoring, monitoringContract({ state: "active", eventPagesPending: true, observation: "event_pages_pending" }));
   assert.deepEqual(pageResult?.nextAction, { tool: "loomex_run_events", arguments: { runId, afterSequence: 4 } });
 
   for (const status of ["COMPLETED", "FAILED", "CANCELED", "DELETED"]) {
-    const result = runSummary("runs.wait", { execution: { id: runId, status }, timedOut: true });
-    assert.deepEqual(result?.monitoring, { state: "terminal", recoveryAction: "remove", continuePolling: false });
+    const result = runSummary("runs.wait", { execution: { id: runId, status, organizationId }, timedOut: true });
+    assert.deepEqual(result?.monitoring, monitoringContract({ state: "terminal", resultPending: status !== "DELETED" }));
     assert.deepEqual(result?.nextAction, status === "DELETED" ? undefined : { tool: "loomex_run_result", arguments: { runId } });
   }
 
   const actionable = runSummary("runs.get", {
     execution: { id: runId, status: "WAITING" }, humanRequest: { status: "pending" }, waitState: "human_action_required",
   });
-  assert.deepEqual(actionable?.monitoring, { state: "needs_attention", recoveryAction: "pause", continuePolling: false });
+  assert.deepEqual(actionable?.monitoring, monitoringContract({ state: "needs_attention" }));
   assert.equal(actionable?.nextAction, undefined);
 });
 
@@ -202,7 +221,7 @@ test("monitoring does not call malformed identities terminal", () => {
   const invalidOrganization = runSummary("runs.get", {
     execution: { id: runId, status: "COMPLETED", organizationId: "invalid" },
   });
-  assert.deepEqual(invalidOrganization?.monitoring, { state: "needs_attention", recoveryAction: "pause", continuePolling: false });
+  assert.deepEqual(invalidOrganization?.monitoring, monitoringContract({ state: "needs_attention" }));
   assert.equal(invalidOrganization?.nextAction, undefined);
   assert.equal(invalidOrganization?.stateNeedsVerification, true);
   for (const status of ["RUNNING", "WAITING"]) {
@@ -212,7 +231,7 @@ test("monitoring does not call malformed identities terminal", () => {
       events: [{ sequence: 4 }], latestSequence: 5, hasMoreEvents: true,
     });
     assert.equal(invalid?.nextAction, undefined);
-    assert.deepEqual(invalid?.monitoring, { state: "needs_attention", recoveryAction: "pause", continuePolling: false });
+    assert.deepEqual(invalid?.monitoring, monitoringContract({ state: "needs_attention" }));
   }
 });
 
@@ -221,7 +240,7 @@ test("authoritative chat questions route headlessly and retain submission contex
   const humanRequest = { ...data.humanRequest, answerChannel: "chat", schemaDigest: "a".repeat(64), responseSchema };
   const result = runSummary("runs.wait", { ...data, humanRequest });
   assert.deepEqual(result?.nextAction, { tool: "loomex_interaction_get", arguments: { requestId } });
-  assert.deepEqual(result?.monitoring, { state: "needs_input", recoveryAction: "pause", continuePolling: false });
+  assert.deepEqual(result?.monitoring, monitoringContract({ state: "needs_input" }));
   const question = runSummary("interactions.get", { humanRequest });
   assert.equal(question?.answerChannel, "chat");
   assert.equal(question?.question, "What would you like to build?");

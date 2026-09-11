@@ -503,7 +503,7 @@ test("MCP attaches review metadata only to a successful preparation result", asy
       idempotencyKey: "63909d1e-c99d-4fb0-af11-a28b0f5be5fb",
     },
   });
-  assert.deepEqual(result.structuredContent, output("runs.prepare", {
+  assert.deepEqual(result._meta?.["loomex/uiData"], output("runs.prepare", {
     preparationId: binding.preparationId,
     bindingDigest: binding.bindingDigest,
     binding: preparedBinding,

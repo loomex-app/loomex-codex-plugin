@@ -27,6 +27,7 @@ export const RpcErrorCodeSchema = z.string().min(1).max(120);
 export type RpcErrorCode = z.infer<typeof RpcErrorCodeSchema>;
 export const VALIDATION_ISSUE_VERSION = "v1" as const;
 export const VALIDATION_ERRORS_CAPABILITY = "error.validation-issues/v1" as const;
+export const RECOVERY_COORDINATION_CAPABILITY = "recovery.coordination/v1" as const;
 
 function validationIssueSchema(
   code: string,
@@ -203,6 +204,17 @@ const SAFE_MESSAGES: Readonly<Record<string, string>> = {
   OPERATION_PENDING: "A previous operation still needs reconciliation. Check its outcome before continuing.",
   OPERATION_NOT_FOUND: "The saved operation could not be found. Refresh the authoritative state.",
   OPERATION_SETTLED: "This operation has already finished. Refresh to see its outcome.",
+  RECOVERY_NOT_FOUND: "No recovery coordination record exists for this task and run.",
+  RECOVERY_BINDING_CONFLICT: "This recovery record belongs to a different task or run.",
+  RECOVERY_OPERATION_PENDING: "A recovery operation still needs reconciliation before another one can begin.",
+  RECOVERY_OPERATION_NOT_FOUND: "The recovery operation could not be found. Refresh the recovery record.",
+  RECOVERY_OPERATION_SETTLED: "This recovery operation has already finished. Refresh the recovery record.",
+  RECOVERY_AMBIGUOUS: "Recovery has an unresolved host operation. Reconcile it before trying another schedule change.",
+  RECOVERY_STOPPED: "Recovery monitoring has been stopped for this task and run.",
+  RECOVERY_REGISTRATION_EXISTS: "Recovery registration already exists for this task and run.",
+  RECOVERY_REGISTRATION_REQUIRED: "Recovery needs a known host automation before this operation can proceed.",
+  AUTOMATION_ID_REQUIRED: "A successful recovery registration must include the returned host automation ID.",
+  OPERATION_NOT_PENDING: "This recovery operation is no longer awaiting settlement. Refresh the recovery record.",
   INVALID_REQUEST: "The local runner rejected the request shape.",
   INVALID_RESPONSE: "The local runner returned an invalid response.",
   PROTOCOL_MISMATCH: "The plugin and local runner protocol versions are incompatible.",

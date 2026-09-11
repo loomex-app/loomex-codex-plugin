@@ -46,11 +46,12 @@ if [[ "$mode" == "--production" ]]; then
 fi
 (cd "$build_root" && npm ci && npm run typecheck && npm test)
 payload="$temporary/payload"
-mkdir -p "$payload/plugin/.codex-plugin" "$payload/plugin/assets" "$payload/runtime/bin"
+mkdir -p "$payload/plugin/.codex-plugin" "$payload/plugin/assets" "$payload/plugin/hooks" "$payload/plugin/runtime/bin"
 cp "$build_root/.codex-plugin/plugin.json" "$payload/plugin/.codex-plugin/plugin.json"
 cp "$build_root/scripts/mcp.template.json" "$payload/plugin/.mcp.template.json"
 cp "$build_root/package.json" "$payload/plugin/package.json"
 cp -R "$build_root/assets/." "$payload/plugin/assets/"
+cp -R "$build_root/hooks/." "$payload/plugin/hooks/"
 [[ ! -d "$build_root/contracts" ]] || cp -R "$build_root/contracts" "$payload/plugin/contracts"
 [[ ! -d "$build_root/skills" ]] || cp -R "$build_root/skills" "$payload/plugin/skills"
 mkdir -p "$payload/plugin/dist"
@@ -63,9 +64,9 @@ if [[ -z "${LOOMEX_NODE_ARCHIVE:-}" ]]; then curl --fail --show-error --location
 echo "$runtime_sha  $runtime_archive" | shasum -a 256 -c -
 mkdir -p "$temporary/node"
 tar -xzf "$runtime_archive" -C "$temporary/node" --strip-components=1
-cp "$temporary/node/bin/node" "$payload/runtime/bin/node"
-chmod 0755 "$payload/runtime/bin/node"
-cp "$temporary/node/LICENSE" "$payload/runtime/LICENSE"
+cp "$temporary/node/bin/node" "$payload/plugin/runtime/bin/node"
+chmod 0755 "$payload/plugin/runtime/bin/node"
+cp "$temporary/node/LICENSE" "$payload/plugin/runtime/LICENSE"
 mkdir -p "$payload/.agents/plugins"
 python3 - "$version" "$payload/.agents/plugins/marketplace.json" <<'PY'
 import json,sys
@@ -77,8 +78,8 @@ PY
 python3 "$build_root/scripts/validate_package.py" "$payload" --template --expected-version "$version"
 
 if [[ "$mode" == "--production" ]]; then
-  codesign --force --timestamp --options runtime --entitlements "$build_root/scripts/node.entitlements.plist" --sign "$LOOMEX_CODESIGN_IDENTITY" "$payload/runtime/bin/node"
-  "$payload/runtime/bin/node" -e 'if (new Function("return 42")() !== 42) process.exit(1)'
+  codesign --force --timestamp --options runtime --entitlements "$build_root/scripts/node.entitlements.plist" --sign "$LOOMEX_CODESIGN_IDENTITY" "$payload/plugin/runtime/bin/node"
+  "$payload/plugin/runtime/bin/node" -e 'if (new Function("return 42")() !== 42) process.exit(1)'
 else
   echo "WARNING: building unsigned development artifact for isolated testing only" >&2
 fi
@@ -103,8 +104,8 @@ if [[ "$mode" == "--production" ]]; then
   ditto -c -k --keepParent "$payload" "$temporary/notary.zip"
   xcrun notarytool submit "$temporary/notary.zip" --keychain-profile "$LOOMEX_NOTARY_PROFILE" --wait --output-format json > "$temporary/notary.json"
   python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"]=="Accepted"' "$temporary/notary.json"
-  codesign --verify --deep --strict --verbose=2 "$payload/runtime/bin/node"
-  spctl --assess --type execute --verbose=2 "$payload/runtime/bin/node"
+  codesign --verify --deep --strict --verbose=2 "$payload/plugin/runtime/bin/node"
+  spctl --assess --type execute --verbose=2 "$payload/plugin/runtime/bin/node"
 fi
 [[ ! -e "$output" ]] || { echo "output appeared during build; refusing to replace it: $output" >&2; exit 1; }
 mkdir -p "$(dirname "$output")"

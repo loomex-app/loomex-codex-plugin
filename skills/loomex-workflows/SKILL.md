@@ -27,8 +27,10 @@ For `loomex/chat-continuation/v2` with intent `monitor_existing_run`, its
 separate explicit `$loomex-follow ${runId}` message, or an older v1 handoff
 with an exact run ID, read [Follow Loomex Run](../loomex-follow/SKILL.md) and
 use that run ID even if the host's message is generic. V2 is factual context
-with `state: "requires_fresh_read"`; its compact accepted receipt requires a
-fresh `loomex_run_get`, and the snapshot's live `nextAction`, rather than prior
+with `state: "requires_fresh_read"`; its compact receipt requires a fresh
+`loomex_run_get`, event draining before cursor advancement, and—while the run
+is active—recovery capability/binding reconciliation and verification before
+serial waits. The snapshot's live `nextAction`, rather than prior
 displayed/pending request memory, controls continuation. Never answer such a
 handoff with a stale workflow list or start a duplicate run.
 

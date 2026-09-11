@@ -13,6 +13,9 @@ const nil = "00000000-0000-0000-0000-000000000000";
 export async function viewSessionMeta(client: PreparationReviewClient, definition: ToolDefinition,
   input: Record<string, JsonValue>, output: ToolOutput, signal?: AbortSignal): Promise<Record<string, JsonValue>> {
   if (!definition.uiUri || !output.ok || !output.data || output.data.responseRef) return {};
+  // Connection navigation is owner-local and available before authentication;
+  // domain state is always re-read and never restored as authority.
+  const connectionView = ["connection.html", "organizations.html"].some(view => definition.uiUri!.endsWith(view));
   const data = output.data;
   const request = object(data.humanRequest);
   const kind = definition.uiUri.split("/").at(-1)?.replace(".html", "");
@@ -30,7 +33,7 @@ export async function viewSessionMeta(client: PreparationReviewClient, definitio
   if (!kind || !z.uuid().safeParse(entityId).success) return { "loomex/viewPersistence": { status: "unavailable" } };
   try {
     const restoring = typeof input.viewSessionId === "string";
-    const session = await client.call(restoring ? "presentation.sessions.get" : "presentation.sessions.create",
+    const session = await client.call(connectionView ? (restoring ? "connection.views.get" : "connection.views.create") : (restoring ? "presentation.sessions.get" : "presentation.sessions.create"),
       restoring ? { viewSessionId: input.viewSessionId! } : {
         kind, entityType, entityId, state: {}, idempotencyKey: randomUUID(),
       }, { mutating: !restoring, ...(signal ? {signal} : {}), timeoutMs: 5000 });

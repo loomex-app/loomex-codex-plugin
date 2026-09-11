@@ -20,7 +20,7 @@ Canonical Loomex backend
 Codex / Claude / Gemini CLI and command processes
 ```
 
-The backend remains authoritative for identities, organizations, workflow graphs and immutable versions, prepared execution bindings, executions, interactions, events, leases, artifacts, retention, and deletion policy. The runner owns local credentials, workspace grants, provider discovery, execution, process control, recovery journals, output spools, artifact transfer, and the local socket. The plugin owns MCP discovery, strict tool inputs and outputs, safe text projections, optional local task-context routing, and optional MCP Apps resources.
+The backend remains authoritative for identities, organizations, workflow graphs and immutable versions, prepared execution bindings, executions, interactions, events, leases, artifacts, retention, and deletion policy. The runner owns browser device authentication, local credentials, the runner-wide selected organization, workspace grants, provider discovery, execution, process control, recovery journals, output spools, artifact transfer, and the local socket. The plugin owns MCP discovery, strict tool inputs and outputs, safe text projections, optional local task-context routing, and optional MCP Apps resources.
 
 ## Trust boundaries
 
@@ -47,7 +47,7 @@ The checked-in build script packages the plugin's vendored copies. It does not f
 
 ## MCP tools and results
 
-The catalog covers readiness, authentication, organization selection, workspace grants, workflow authoring and publication, builder and editor sessions, preparation and commit, run monitoring, complete results, events, interactions, cancellation, deletion, artifacts, and large-response paging.
+The catalog covers readiness, connection/authentication, organization selection, workspace grants, workflow authoring and publication, builder and editor sessions, preparation and commit, run monitoring, complete results, events, interactions, cancellation, deletion, artifacts, and large-response paging. The intended connection surface names are `loomex_connection_get` for the headless state read and `loomex_connection_view` for the focused interactive view; the runner and UI worker remain authoritative for their exact availability and result shape.
 
 Every socket connection first negotiates `loomex.local-control/v2`, the complete public method capability set, the four semantic capabilities, and the exact frame bound. The runner version in that result is informational. The action is sent on that same connection only after the negotiation succeeds, and negotiation state is never cached across connections. A different runner release remains compatible when its protocol, capabilities, and frame bound match.
 
@@ -61,7 +61,7 @@ Results too large for one local frame become immutable spool references. `respon
 
 ## Headless behavior and optional UI
 
-All lifecycle operations are registered MCP tools and remain usable when a host does not render resources. The plugin registers five stable optional resources for workflow browsing, authoring, prepare review, monitoring, and interactions. They are five modes of one bundled HTML template and advertise only the inline display mode.
+All lifecycle operations are registered MCP tools and remain usable when a host does not render resources. The plugin registers five stable optional resources for workflow browsing, authoring, prepare review, monitoring, and interactions. Connection and organization scope retain a headless tool path even when their focused view cannot render. They are five modes of one bundled HTML template and advertise only the inline display mode.
 
 The resources use `ui/initialize`, tool result notifications, and `tools/call` through `window.parent.postMessage`. They do not depend on `window.openai`. The embedded CSP denies all external connections, resources, frames, forms, and images; no HTTP URL is present in the resource. Sensitive-looking fields such as tokens, credentials, authorization material, and confirmation keys are masked in the display. If the portable bridge does not initialize within three seconds, the resource reports that headless tools remain available.
 
@@ -81,23 +81,23 @@ The current authority is the clean-slate plan, especially the [baseline](../../p
 
 This document describes current source behavior and intended trust boundaries. It does not establish production readiness. Apple signing and notarization, an actually signed installed LaunchAgent lifecycle, deployed backend migrations, real Desktop UI behavior, the three-provider matrix, and confirmation of historical remote credential revocation remain open in the [release gates](../../planning/plugin-runner-clean-slate/release-gates.md).
 
-Workflow discovery through `loomex_workflows_list` is headless; `loomex_workflows_view` deliberately opens the browser. Search and cursor navigation use read-only list calls; workflow details use `loomex_workflow_get`. Original query parameters are carried in result metadata for remounts. Workflow names and descriptions are rendered as text. Prepare run enters the integrated setup form using the read-only `loomex_run_setup` tool. `loomex_workflow_get` is a quiet data lookup; `loomex_workflow_view` explicitly renders details. The view and setup tools accept optional local-only `taskContext.cwd` plus a user-selected `workspacePath` override. The server validates those fields, removes them before local-control RPC, and returns them in `loomex/taskWorkspace` result metadata so browse, detail, refresh, pagination, and Prepare actions retain one task selection. Absence means manual workspace entry; the plugin never guesses from its process cwd, environment, earlier task state, or an iframe host API. The path remains a suggestion until the normal workspace grant and preparation checks return the canonical binding.
+Workflow discovery through `loomex_workflows_list` is headless; `loomex_workflows_view` deliberately opens the browser. Search and cursor navigation use read-only list calls; workflow details use `loomex_workflow_get`. Original query parameters are carried in result metadata for remounts. Workflow names and descriptions are rendered as text. Prepare run enters the integrated setup form using the read-only `loomex_run_setup` tool. `loomex_workflow_get` is a quiet data lookup; `loomex_workflow_view` explicitly renders details. The three view/setup tools require local-only `taskContext.cwd` from the calling Codex task and accept a user-selected `workspacePath` override only alongside it. The server validates those fields, removes them before local-control RPC, and returns them in `loomex/taskWorkspace` result metadata so browse, detail, refresh, pagination, and Prepare actions retain one task selection. Missing context fails input validation; the plugin never guesses from its process cwd, environment, earlier task state, saved view, or an iframe host API. The path remains a suggestion until the normal workspace grant and preparation checks return the canonical binding.
 
 Both typed run requests and browser actions use setup to collect required workflow inputs before preparing. New workflow definitions keep workspace selection outside their input schema. The UI still reads legacy `settings.workspaceInputField` mappings and binds them to the runner-confirmed canonical workspace for old stored versions. An accepted Start consumes the sealed mutation and hands the exact execution back to chat. Failed reads lock actions until recovery succeeds.
 
 UI addresses are stable (`ui://loomex/authoring.html`, etc.) so a product update does not invalidate a task’s tool metadata. A resource template serves the current view for allowlisted cached 0.2.3–0.2.7 addresses, including `ui://loomex/authoring-0.2.3.html`. Unknown views/releases remain errors. Compatibility changes resource lookup only; it does not recover or authorize old preparation state.
 
-Run and interaction text summaries use method-aware, namespaced projections. Execution status is read only from `data.execution`; runner connectivity cannot overwrite it. Pending request identifiers and bounded authored input-spec question previews support headless continuation, while full typed schemas, the authoritative `answerChannel`, and chat-question revision stay in structuredContent. Progress distinguishes observed runner facts from reported user-facing detail: it reports only meaningful stage changes and never exposes private reasoning, traces, or invented percentages. Summaries exclude execution inputs, internal runner bindings, answers, prompts and arbitrary details.
+Run and interaction text summaries use method-aware, namespaced projections. Routine workflow listings, run status/wait reads, and interaction reads use bounded projections in model-facing structured content, so accumulated node history and previous outputs do not enter the conversation on every poll. Complete event/result pages remain available from their focused headless reads; chat interaction projections preserve the exact singular question, response schema, answer channel, and schema digest required to answer. Visual tools put the canonical runner response only in component hydration metadata and expose bounded projections to the model. Execution status is read only from `data.execution`; runner connectivity cannot overwrite it. Pending request identifiers and bounded authored input-spec question previews support headless continuation. Progress distinguishes observed runner facts from reported user-facing detail: it reports only meaningful stage changes and never exposes private reasoning, traces, or invented percentages. Summaries exclude execution inputs, internal runner bindings, answers, prompts and arbitrary details.
 
 Run execution belongs to the runner; monitoring belongs to an active chat turn. A one-off status request reads once. An explicit monitor request or accepted `monitor_existing_run` continuation reads the exact execution and follows serial, bounded 30-second waits. Event pages drain from their last returned sequence before advancing to the global cursor. Invalid identities or inconsistent projections stop continuation. Normalized provider activity is persisted as an event and wakes the backend wait; dispatch recovery, user input, terminal state and the deadline also do.
 
 `loomex_run_get`, `loomex_run_wait` and `loomex_interaction_get` are headless. Separate `loomex_run_view` and `loomex_interaction_view` render intentional snapshots/forms. A pending request's authoritative `answerChannel` selects the path: `chat` gives the exact singular long-text question, schema and revision to the headless read, while `ui` gives the focused form view. `unsupported` surfaces the authoritative compatibility error and pauses without a fallback form. The UI has no scheduled run reads or waits; explicit Refresh reads once. UI forms display one question at a time, retain drafts during navigation, and show an editable answer preview before final submission.
 
-An accepted Start or human response cannot be replayed by handoff recovery. The UI sends factual lifecycle context in an acknowledged `ui/update-model-context` request and then a separate `$loomex-follow` command through `ui/message`, detecting both capabilities independently. A rejected or ambiguous handoff offers read-only continuation, while a host acknowledgement means only receipt. It does not establish that a model turn ran or that monitoring continues after chat becomes inactive. Full headless continuation remains available through the same tools. Large accepted results are recovered from immutable response pages with checksum verification, never by repeating their originating mutation.
+An accepted Start or human response cannot be replayed by handoff recovery. The UI sends factual lifecycle context as a labelled fenced JSON block in an acknowledged `ui/update-model-context` request and then a separate `$loomex-follow` command through `ui/message`, detecting both capabilities independently. A rejected or ambiguous handoff offers read-only continuation, while a host acknowledgement means only receipt. It does not establish that a model turn ran or that monitoring continues after chat becomes inactive. Full headless continuation remains available through the same tools. Large accepted results are recovered from immutable response pages with checksum verification, never by repeating their originating mutation.
 
 ## Command entry points
 
-Fifteen focused plugin skills expose user operations through the same 61 MCP tools. The existing `loomex-workflows` skill routes help and multi-operation requests. Shared packaged references own identity resolution, exact execution review, monitoring and human continuation, avoiding duplicated lifecycle rules across commands. Commands use the tool contracts and runner policy directly. Skill invocation is model-guided; it does not bypass confirmation or act as a deterministic shell command. See [command guide](commands.md).
+Sixteen focused plugin skills expose user operations through the same MCP tools. The existing `loomex-workflows` skill routes help and multi-operation requests. Shared packaged references own identity resolution, exact execution review, monitoring and human continuation, avoiding duplicated lifecycle rules across commands. Commands use the tool contracts and runner policy directly. Skill invocation is model-guided; it does not bypass confirmation or act as a deterministic shell command. See [command guide](commands.md).
 
 
 ## Presentation and chat continuation
@@ -125,14 +125,43 @@ Setup notifications cannot replace the owner of an in-flight or uncertain mutati
 
 ## Accepted interaction handoff
 
-The model-context update contains a compact `loomex/chat-continuation/v2` lifecycle record: exact run, trigger, and verified request ID/status after an accepted interaction. It contains no answer or authored workflow text. A separate `$loomex-follow` message requests a fresh run read before reporting state. Start, follow and accepted-answer handoffs are distinct; retries and manual fallback preserve the original accepted receipt. The UI does not poll or infer the next pending question.
+The model-context update contains a compact `loomex/chat-continuation/v2`
+lifecycle record: exact run, trigger, and verified request ID/status after an
+accepted interaction. It contains no answer or authored workflow text. A
+separate `$loomex-follow` message requires a fresh run read, event draining
+before cursor advancement, and active-run recovery initialization before live
+waits. Start, follow and accepted-answer handoffs are distinct; retries and
+manual fallback preserve the original accepted receipt. The UI does not poll or
+infer the next pending question.
 
 An accepted receipt invalidates the previous pending-card assumption, but does not establish the current run state. Chat must read the exact run and follow its current `nextAction`. Host acknowledgement means the message was accepted, not that the model has performed that read. Agent routing and regression tests harden this boundary without claiming control over a host model's compliance.
 
 ## Monitoring recovery
 
-Explicit follow requests use two host-level paths: serial 30-second live waits and a same-task heartbeat for recovery if the model turn ends. The runner and backend continue to own execution. The plugin does not call private Codex APIs or schedule from an iframe. `runs.get/wait/events` text projections expose advisory `monitoring.state`, `recoveryAction` and `continuePolling` derived from the same verified state as `nextAction`. Event pages take precedence; quiet timeouts remain active. One-off status reads do not opt into recovery.
+Explicit follow requests begin with a fresh exact-run read and required event
+page draining. While the run is active, the host resolves scheduling capability
+and current task binding, uses a known heartbeat ID and reads the resulting
+record back before serial 30-second live waits begin. A run-start continuation
+may create the first heartbeat and must read it back. A later follow with a
+lost or ambiguous ID cannot find it again by marker on the installed host, so
+it leaves recovery ambiguous rather than creating another heartbeat. Recovery state
+is host evidence: `unchecked`, `verified`, `unavailable`, `ambiguous`,
+`paused`, or `removed`. The runner and backend continue to own execution. The
+plugin does not call private Codex APIs or schedule from an iframe. Runner
+projections intentionally remain `unchecked`; verified, unavailable, ambiguous,
+paused, and removed are host-orchestration observations and diagnostic evidence,
+not runner facts. The fresh run snapshot's `nextAction` remains the workflow
+directive; host recovery state cannot replace event draining, input delivery, or
+result retrieval. Event pages take precedence; quiet timeouts remain active.
+One-off status reads do not opt into recovery.
 
-The packaged [recovery contract](../skills/loomex-workflows/references/recovery.md) owns host capability discovery, exact task/run schedule reuse, verification after mutations, and lifecycle handling. A recovery wake performs a bounded fresh check and returns quietly on unchanged automated work. Questions pause recovery; accepted answers read fresh state before re-enabling it. Terminal state or stopping removes the matching schedule. Unavailable scheduling is disclosed and live following remains usable.
+The packaged [recovery contract](../skills/loomex-workflows/references/recovery.md)
+owns host capability discovery, exact task/run schedule reuse, record
+verification after mutations, and lifecycle handling. A recovery wake performs
+a bounded fresh check and returns quietly on unchanged automated work. Questions
+pause recovery before their exact request is presented; accepted answers discard
+the old request state and read the run fresh before recovery resumes. After a
+terminal result is retrieved, cleanup removes the matching schedule. Unavailable
+or ambiguous scheduling is disclosed while live following remains usable.
 
 Host scheduling is model-mediated: the documented API has no atomic uniqueness key or exclusive monitor lease, and delivery depends on host availability. Shared task context deduplicates already displayed request IDs but cannot guarantee exactly-once presentation during concurrent turns. Do not describe this as an always-running or exactly-once notification service. Stronger delivery would require a supported host coordination/event API; no backend execution changes can provide that host guarantee.

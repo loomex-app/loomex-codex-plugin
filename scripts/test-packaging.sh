@@ -7,7 +7,7 @@ mkdir "$fixture/existing-output"
 if "$repo/scripts/build-release.sh" --unsigned-development --output "$fixture/existing-output" >/dev/null 2>&1; then echo "build replaced an existing output directory" >&2; exit 1; fi
 payload="$fixture/payload"
 base="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$fixture/install")"; root="$base/versions/0.1.0"
-mkdir -p "$payload/plugin/.codex-plugin" "$payload/plugin/dist" "$payload/plugin/skills/a" "$payload/runtime/bin"
+mkdir -p "$payload/plugin/.codex-plugin" "$payload/plugin/dist" "$payload/plugin/skills/a" "$payload/plugin/hooks" "$payload/plugin/runtime/bin" "$payload/plugin/assets"
 cp "$repo/.codex-plugin/plugin.json" "$payload/plugin/.codex-plugin/plugin.json"
 # The upgrade fixture uses two fixed synthetic versions, independent of the release under test.
 python3 - "$payload/plugin/.codex-plugin/plugin.json" <<'PYFIXTURE'
@@ -17,8 +17,12 @@ path=Path(sys.argv[1]); manifest=json.loads(path.read_text()); manifest['version
 path.write_text(json.dumps(manifest)+'\n')
 PYFIXTURE
 printf '# test\n' > "$payload/plugin/skills/a/SKILL.md"
+cp "$repo/hooks/hooks.json" "$payload/plugin/hooks/hooks.json"
+cp "$repo/hooks/lifecycle-adapter.mjs" "$payload/plugin/hooks/lifecycle-adapter.mjs"
+cp -R "$repo/assets/." "$payload/plugin/assets/"
 printf 'console.log("test")\n' > "$payload/plugin/dist/server.js"
-printf '#!/bin/sh\n' > "$payload/runtime/bin/node"; chmod 0755 "$payload/runtime/bin/node"
+cp "$(command -v node)" "$payload/plugin/runtime/bin/node"; chmod 0755 "$payload/plugin/runtime/bin/node"
+cp "$repo/dist/server.js" "$payload/plugin/dist/server.js"
 cp "$repo/scripts/mcp.template.json" "$payload/plugin/.mcp.template.json"
 mkdir -p "$payload/.agents/plugins"
 printf '%s\n' '{"name":"loomex-private","plugins":[{"name":"loomex","version":"0.1.0","source":{"source":"local","path":"./plugin"}}]}' > "$payload/.agents/plugins/marketplace.json"
@@ -35,6 +39,13 @@ mkdir "$fixture/extract-existing"; printf preserve > "$fixture/extract-existing/
 if python3 "$repo/scripts/artifact.py" extract --release "$release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development --extract "$fixture/extract-existing" 2>/dev/null; then echo "artifact extract overwrote an existing destination" >&2; exit 1; fi
 test "$(cat "$fixture/extract-existing/sentinel")" = preserve
 python3 "$repo/scripts/artifact.py" verify --release "$release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development
+python3 - "$release/manifest.json" <<'PY'
+import json,sys
+files={item["path"] for item in json.load(open(sys.argv[1]))["payload"]["files"]}
+assert "plugin/hooks/hooks.json" in files
+assert "plugin/hooks/lifecycle-adapter.mjs" in files
+assert "plugin/runtime/bin/node" in files
+PY
 if python3 "$repo/scripts/artifact.py" verify --release "$release" --project loomex-plugin --platform darwin-arm64 2>/dev/null; then echo "unsigned release was accepted" >&2; exit 1; fi
 cp "$release/payload.tar.gz" "$fixture/original.tar.gz"
 printf x >> "$release/payload.tar.gz"
@@ -43,8 +54,19 @@ mv "$fixture/original.tar.gz" "$release/payload.tar.gz"
 LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base"
 test -L "$base/current"
 python3 "$repo/scripts/validate_package.py" "$root"
-grep -Fq "$base/current/runtime/bin/node" "$root/plugin/.mcp.json"
+grep -Fq "$base/current/plugin/runtime/bin/node" "$root/plugin/.mcp.json"
 grep -Fq "$base/current/plugin/dist/server.js" "$root/plugin/.mcp.json"
+# Codex caches the plugin directory alone. Its MCP and hook launchers must
+# resolve without relying on a sibling runtime directory or development PATH.
+"$root/plugin/runtime/bin/node" "$root/plugin/dist/server.js" </dev/null >"$fixture/cached-mcp.out" 2>"$fixture/cached-mcp.err" &
+cached_mcp_pid=$!
+sleep 0.2
+kill -0 "$cached_mcp_pid"
+kill "$cached_mcp_pid"
+wait "$cached_mcp_pid" 2>/dev/null || [[ $? -eq 143 ]]
+test ! -s "$fixture/cached-mcp.err"
+printf '%s' '{"session_id":"packaging-session","cwd":"/tmp","hook_event_name":"SessionStart"}' \
+  | "$root/plugin/runtime/bin/node" "$root/plugin/hooks/lifecycle-adapter.mjs" >/dev/null
 registered_marketplace="$base"
 python3 - "$base/.agents/plugins/marketplace.json" "$base/install-receipt.json" "$base" <<'PY'
 import json,sys
@@ -66,11 +88,17 @@ for path in (root/'plugin/.codex-plugin/plugin.json',root/'.agents/plugins/marke
 PY
 release2="$fixture/release2"
 SOURCE_DATE_EPOCH=2 python3 "$repo/scripts/artifact.py" create --payload "$payload2" --output "$release2" --project loomex-plugin --version 0.1.1 --platform darwin-arm64 --source-revision test2 --unsigned-development
+if LOOMEX_PLUGIN_INSTALL_FAIL_PHASE=marketplace LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release2" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
+  echo "install fault injection did not interrupt" >&2; exit 1
+fi
+test -f "$base/lifecycle.json"
+test ! -e "$base/.lifecycle.lock"
 LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release2" --allow-unsigned-development --install-base "$base"
+test ! -e "$base/lifecycle.json"
 test -f "$registered_marketplace/.agents/plugins/marketplace.json"
-test -x "$registered_marketplace/current/runtime/bin/node"
+test -x "$registered_marketplace/current/plugin/runtime/bin/node"
 test -f "$registered_marketplace/current/plugin/dist/server.js"
-grep -Fq "$registered_marketplace/current/runtime/bin/node" "$base/versions/0.1.1/plugin/.mcp.json"
+grep -Fq "$registered_marketplace/current/plugin/runtime/bin/node" "$base/versions/0.1.1/plugin/.mcp.json"
 python3 - "$registered_marketplace/.agents/plugins/marketplace.json" <<'PY'
 import json,sys
 entry=json.load(open(sys.argv[1]))['plugins'][0]
@@ -86,7 +114,12 @@ if "$repo/scripts/uninstall.sh" --install-base "$base" >/dev/null 2>&1; then ech
 test -f "$outside_metadata/plugins/marketplace.json"
 unlink "$base/.agents"
 mv "$base/.agents-owned" "$base/.agents"
+if LOOMEX_PLUGIN_UNINSTALL_FAIL_PHASE=payload "$repo/scripts/uninstall.sh" --install-base "$base" >/dev/null 2>&1; then
+  echo "uninstall fault injection did not interrupt" >&2; exit 1
+fi
+test -f "$base/lifecycle.json"
 "$repo/scripts/uninstall.sh" --install-base "$base"
+test ! -e "$base/lifecycle.json"
 test ! -e "$base/versions/0.1.1"
 test "$(cat "$base/.agents/plugins/unrelated-sentinel")" = preserve
 test ! -e "$base/.agents/plugins/marketplace.json"

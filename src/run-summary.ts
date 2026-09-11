@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { JsonValue } from "./protocol.js";
+import { monitoringContract } from "./monitoring-contract.js";
 
 type ObjectValue = Record<string, JsonValue>;
 const PAGE_PREVIEW = 8;
@@ -51,28 +52,28 @@ function page(data: ObjectValue, key: string, project: (value: JsonValue) => Obj
 }
 
 /**
- * Advisory lifecycle data for an explicit follow loop. A one-off status read
- * must still be reported once; these fields never create a schedule or imply
- * polling after the current chat turn ends.
+ * A runner snapshot can describe the required host recovery transition, but
+ * cannot observe or perform scheduler work. `nextAction` remains independent
+ * and authoritative for execution data.
  */
 function monitoring(summary: ObjectValue, status: string, identityValid: boolean): ObjectValue {
   if (!identityValid || summary.stateNeedsVerification === true) {
-    return { state: "needs_attention", recoveryAction: "pause", continuePolling: false };
+    return monitoringContract({ state: "needs_attention" }) as unknown as ObjectValue;
   }
   const tool = object(summary.nextAction).tool;
   if (tool === "loomex_run_events") {
-    return { state: "active", recoveryAction: "ensure", continuePolling: true };
+    return monitoringContract({ state: "active", eventPagesPending: true, observation: "event_pages_pending" }) as unknown as ObjectValue;
   }
   if (tool === "loomex_interaction_view" || tool === "loomex_interaction_get") {
-    return { state: "needs_input", recoveryAction: "pause", continuePolling: false };
+    return monitoringContract({ state: "needs_input" }) as unknown as ObjectValue;
   }
   if (tool === "loomex_run_result" || TERMINAL.has(status)) {
-    return { state: "terminal", recoveryAction: "remove", continuePolling: false };
+    return monitoringContract({ state: "terminal", resultPending: tool === "loomex_run_result" }) as unknown as ObjectValue;
   }
   if (tool === "loomex_run_wait") {
-    return { state: "active", recoveryAction: "ensure", continuePolling: true };
+    return monitoringContract({ state: "active", observation: summary.timedOut === true ? "quiet_timeout" : "active" }) as unknown as ObjectValue;
   }
-  return { state: "needs_attention", recoveryAction: "pause", continuePolling: false };
+  return monitoringContract({ state: "needs_attention" }) as unknown as ObjectValue;
 }
 
 /** Model-facing run state must never be overwritten by nested runner/context fields. */
@@ -118,7 +119,10 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
   const requestExecution = object(rawRequest.execution);
   const organizations = [rawExecution.organizationId, rawRequest.organizationId, requestExecution.organizationId]
     .filter((value) => value !== undefined && value !== null);
-  const organizationConsistent = organizations.every((value) => uuid(value)) && new Set(organizations).size <= 1;
+  // Follow-up and human-answer actions cross an organization boundary. Older
+  // non-actionable snapshots may omit this identity, but an absent identity is
+  // never sufficient authority to direct the user or model to act.
+  const organizationConsistent = organizations.length > 0 && organizations.every((value) => uuid(value)) && new Set(organizations).size <= 1;
   const requestBelongsToRun = uuid(rawExecution.id) && uuid(requestExecution.id) && requestExecution.id === rawExecution.id && organizationConsistent;
   const status = String(execution.status || "").toLowerCase();
   const pendingRequest = request.status === "pending";
@@ -168,13 +172,14 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
     summary.awaitingUserAnswer = true;
     if (rawRequest.answerChannel === "chat") {
       summary.answerChannel = "chat";
-      summary.question = object(rawRequest.inputSpec).question ?? rawRequest.prompt ?? "";
+      const exactQuestion = object(rawRequest.inputSpec).question ?? rawRequest.prompt ?? "";
+      summary.question = typeof exactQuestion === "string" ? exactQuestion : "";
       summary.responseSchema = rawRequest.responseSchema ?? null;
       summary.schemaDigest = rawRequest.schemaDigest ?? null;
       summary.answerInstruction = "Ask this question directly in chat. Submit a clear direct user answer after a fresh request read; research requests are not answers. Review synthesized answers with the user first. Never open a textarea or replay an accepted answer.";
     }
   }
-  if ((method === "runs.get" || method === "runs.wait" || method === "runs.events") && uuid(rawExecution.id)) {
+  if ((method === "runs.get" || method === "runs.wait" || method === "runs.events" || method === "runs.result") && uuid(rawExecution.id)) {
     summary.monitoring = monitoring(summary, status, organizationConsistent);
   }
   return summary;

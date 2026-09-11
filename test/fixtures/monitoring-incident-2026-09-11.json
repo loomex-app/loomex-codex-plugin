@@ -1,0 +1,53 @@
+[
+  {
+    "kind": "follow",
+    "runId": "redacted-run-id",
+    "taskId": "redacted-task-id",
+    "trigger": "explicit_follow"
+  },
+  {
+    "kind": "projection",
+    "method": "runs.get",
+    "projection": {
+      "execution": { "id": "redacted-run-id" },
+      "monitoring": {
+        "state": "active",
+        "liveFollow": {
+          "mode": "continue_when_explicit",
+          "nextAction": "authoritative_runner_action"
+        }
+      },
+      "nextAction": {
+        "tool": "loomex_run_wait",
+        "arguments": { "runId": "redacted-run-id", "timeoutSeconds": 30 }
+      }
+    }
+  },
+  {
+    "kind": "tool",
+    "name": "loomex_run_wait",
+    "arguments": { "runId": "redacted-run-id", "timeoutSeconds": 30 }
+  },
+  {
+    "kind": "projection",
+    "method": "runs.wait",
+    "projection": {
+      "execution": { "id": "redacted-run-id" },
+      "monitoring": {
+        "state": "active",
+        "liveFollow": {
+          "mode": "continue_when_explicit",
+          "nextAction": "authoritative_runner_action"
+        }
+      },
+      "nextAction": {
+        "tool": "loomex_run_wait",
+        "arguments": { "runId": "redacted-run-id", "timeoutSeconds": 30 }
+      }
+    }
+  },
+  {
+    "kind": "assistant_final",
+    "text": "The run is still in progress."
+  }
+]

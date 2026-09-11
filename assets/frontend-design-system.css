@@ -941,6 +941,29 @@ html[data-locale-font='Vazirmatn'] body {
     background: var(--color-sidebar-bg);
     padding: 0.75rem 1rem;
   }
+  .ui-organization-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid var(--color-line);
+    border-radius: 0.5rem;
+    min-width: 0;
+  }
+  .ui-organization-row .ui-value {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .ui-organization-row:focus-within {
+    outline: 2px solid var(--color-brand-teal);
+    outline-offset: 2px;
+  }
+  .ui-organization-skeleton {
+    height: 2.75rem;
+    border-radius: 0.5rem;
+    background: var(--color-sidebar-bg);
+  }
   .ui-data-table-pagination-summary {
     font-size: 0.75rem;
     line-height: 1rem;
@@ -951,6 +974,21 @@ html[data-locale-font='Vazirmatn'] body {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+  .ui-data-table-pagination-compact {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.625rem;
+  }
+  .ui-data-table-pagination-compact .ui-data-table-pagination-summary {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ui-data-table-pagination-compact .ui-data-table-pagination-actions {
+    flex-shrink: 0;
   }
   @media (min-width: 768px) {
     .ui-data-table-pagination {

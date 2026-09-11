@@ -1,6 +1,6 @@
 {
   "name": "loomex",
-  "version": "0.12.1",
+  "version": "0.14.6",
   "description": "Build, review, run, and monitor Loomex workflows through the local Loomex runner.",
   "author": {
     "name": "Loomex"
@@ -12,6 +12,7 @@
     "codex"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Loomex",

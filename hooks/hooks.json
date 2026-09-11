@@ -1,0 +1,60 @@
+{
+  "description": "Loomex follow-session lifecycle bridge. The adapter only contacts the owner-checked local runner socket.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/runtime/bin/node\" \"$PLUGIN_ROOT/hooks/lifecycle-adapter.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/runtime/bin/node\" \"$PLUGIN_ROOT/hooks/lifecycle-adapter.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/runtime/bin/node\" \"$PLUGIN_ROOT/hooks/lifecycle-adapter.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/runtime/bin/node\" \"$PLUGIN_ROOT/hooks/lifecycle-adapter.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/runtime/bin/node\" \"$PLUGIN_ROOT/hooks/lifecycle-adapter.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
