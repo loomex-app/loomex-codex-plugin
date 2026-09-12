@@ -17,6 +17,8 @@ actual="$($fixture/node/bin/node --version)"
 }
 (
   cd "$repo"
-  "$fixture/node/bin/node" --test .test-dist/hooks.test.js
+  "$fixture/node/bin/node" scripts/sync-ui-assets.mjs --check
+  "$fixture/node/bin/node" dist/compatibility-check.mjs --package-root . --check
+  "$fixture/node/bin/node" --test .test-dist/hooks.test.js .test-dist/design-system.test.js .test-dist/compatibility-export.test.js
 )
 echo "pinned Node runtime $actual verified"

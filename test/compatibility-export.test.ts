@@ -121,12 +121,17 @@ test("cached-package compatibility checker evaluates its bundled exporter", asyn
   const cachedRoot = await mkdtemp(join(tmpdir(), "loomex-component-cache-"));
   t.after(async () => { await rm(cachedRoot, { recursive: true, force: true }); });
   await mkdir(join(cachedRoot, "dist"));
+  await mkdir(join(cachedRoot, "assets"));
   await Promise.all([
     cp("package.json", join(cachedRoot, "package.json")),
     cp(".codex-plugin", join(cachedRoot, ".codex-plugin"), { recursive: true }),
     cp("contracts", join(cachedRoot, "contracts"), { recursive: true }),
     cp("hooks", join(cachedRoot, "hooks"), { recursive: true }),
     cp("skills", join(cachedRoot, "skills"), { recursive: true }),
+    cp("assets/ui-artifacts.json", join(cachedRoot, "assets/ui-artifacts.json")),
+    cp("assets/loomex-app.html", join(cachedRoot, "assets/loomex-app.html")),
+    cp("assets/frontend-design-system.css", join(cachedRoot, "assets/frontend-design-system.css")),
+    cp("assets/browser-application.js", join(cachedRoot, "assets/browser-application.js")),
     cp("dist/compatibility-export.mjs", join(cachedRoot, "dist/compatibility-export.mjs"), { recursive: false }),
     cp("dist/compatibility-check.mjs", join(cachedRoot, "dist/compatibility-check.mjs"), { recursive: false }),
   ]);
@@ -144,4 +149,33 @@ test("cached-package compatibility checker evaluates its bundled exporter", asyn
     hookCount: 5,
     sha256: "string",
   });
+  assert.equal("source" in result, false);
+  await rm(join(cachedRoot, "assets/browser-application.js"));
+  await assert.rejects(execFile(process.execPath, [
+    join(cachedRoot, "dist/compatibility-check.mjs"), "--package-root", cachedRoot, "--check",
+  ]), /browser-application|ENOENT/);
+});
+
+test("source compatibility export binds identity only to the exported source tree", async () => {
+  const { stdout } = await execFile(process.execPath, [
+    "dist/compatibility-check.mjs",
+    "--package-root", process.cwd(),
+    "--source-root", process.cwd(),
+    "--check",
+  ]);
+  const result = JSON.parse(stdout) as { source?: { headRevision: string; workingTree: string } };
+  assert.match(result.source?.headRevision ?? "", /^[a-f0-9]{40}$/);
+  assert.match(result.source?.workingTree ?? "", /^(?:clean|dirty)$/);
+
+  const unrelated = await mkdtemp(join(tmpdir(), "loomex-other-source-"));
+  try {
+    await assert.rejects(execFile(process.execPath, [
+      "dist/compatibility-check.mjs",
+      "--package-root", process.cwd(),
+      "--source-root", unrelated,
+      "--check",
+    ]), /same directory/);
+  } finally {
+    await rm(unrelated, { recursive: true, force: true });
+  }
 });

@@ -8,15 +8,20 @@
     "node": ">=24.20.0 <25"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/server.js && esbuild src/compatibility-export.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-export.mjs && esbuild scripts/export-plugin-components.mjs --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-check.mjs",
-    "typecheck": "tsc --noEmit",
-    "compatibility:export": "npm run build && node dist/compatibility-check.mjs --package-root .",
-    "compatibility:check": "npm run build && node dist/compatibility-check.mjs --package-root . --check",
+    "build": "npm run ui:sync && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/server.js && esbuild src/compatibility-export.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-export.mjs && esbuild scripts/export-plugin-components.mjs --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-check.mjs",
+    "typecheck": "tsc --noEmit && npm run ui:coverage",
+    "compatibility:export": "npm run build && node dist/compatibility-check.mjs --package-root . --source-root .",
+    "compatibility:check": "npm run build && node dist/compatibility-check.mjs --package-root . --source-root . --check",
     "test:compile": "esbuild test/*.test.ts --bundle --packages=external --platform=node --format=esm --target=node24 --outdir=.test-dist",
     "test": "npm run build && npm run test:compile && node --test --test-concurrency=1 .test-dist/*.test.js",
     "test:ui": "npm run test:compile && LOOMEX_REQUIRE_BROWSER=1 node --test .test-dist/ui-browser.test.js",
     "design:sync": "node scripts/sync-design-system.mjs",
-    "design:check": "node scripts/sync-design-system.mjs --check"
+    "design:check": "node scripts/sync-design-system.mjs --check",
+    "ui:sync": "node scripts/sync-ui-assets.mjs",
+    "ui:check": "node scripts/sync-ui-assets.mjs --check",
+    "package:check": "node dist/compatibility-check.mjs --package-root . --check",
+    "ui:coverage": "node scripts/check-browser-coverage.mjs",
+    "test:coverage": "node --test scripts/test-browser-coverage.mjs scripts/test-browser-build.mjs scripts/test-design-consumers.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

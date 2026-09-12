@@ -7,6 +7,8 @@ permissions:
 jobs:
   test:
     runs-on: macos-14-xlarge
+    env:
+      LOOMEX_REQUIRE_BROWSER: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -14,11 +16,12 @@ jobs:
           node-version: 24.20.0
           cache: npm
       - run: npm ci
+      - run: npm run test:coverage
       - run: npm run typecheck
+      - run: npm run ui:check
       - run: npm run compatibility:check
-      - run: npm test
       - run: npx playwright install chromium
-      - run: npm run test:ui
+      - run: npm test
       - run: ./scripts/test-packaging.sh
       - run: ./scripts/test-node-runtime.sh
       - name: Validate with Codex plugin installer

@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
+import { designConsumers } from './design-consumers.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -29,10 +30,10 @@ const compilerRequire = createRequire(appRequire.resolve('@tailwindcss/vite'));
 const compilerEntry = compilerRequire.resolve('@tailwindcss/node');
 const compilerPackage = JSON.parse(await readFile(resolve(dirname(compilerEntry), '../package.json'), 'utf8'));
 const { compile } = await import(pathToFileURL(compilerEntry).href);
-const template = await readFile(resolve(root, 'assets/loomex-app.html'), 'utf8');
-// Include complete literal utility tokens from the template and canonical React variants.
-// No runtime scan or frontend checkout is required by the installed plugin.
-const candidates = [...new Set([template, sources['packages/ui/src/components/Button.tsx'], sources['packages/ui/src/components/StatusBadge.tsx'], sources['packages/ui/src/components/forms.tsx'], sources['packages/ui/src/components/Pagination.tsx'], sources['packages/ui/src/components/Select.tsx']]
+// Consumer classes are build inputs too; source provenance remains frontend-owned.
+const consumer = await designConsumers(root);
+const consumerText = consumer.texts;
+const candidates = [...new Set([...consumerText, ...Object.entries(sources).filter(([path]) => path.endsWith('.tsx')).map(([, text]) => text)]
   .flatMap(source => source.match(/[^\s"'`<>={}(),;]+/g) ?? []))].sort();
 const compiler = await compile(sources['packages/ui/src/styles.css'], {
   base: resolve(frontend, 'apps/design-system'), onDependency() {},
@@ -54,12 +55,12 @@ function visit(node) {
 visit(statusSource);
 if (!statusClasses?.unknown || !statusClasses?.low || !statusClasses?.failed) throw new Error('Missing canonical status variants');
 const snapshot = {
-  schema: 'loomex/frontend-design-system/v1',
+  schema: 'loomex/frontend-design-system/v3',
+  consumerSourcesSha256: consumer.sha256,
   frontendRevision: execFileSync('git', ['-C', frontend, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
   compiler: { name: compilerPackage.name, version: compilerPackage.version },
   sources: Object.fromEntries(Object.entries(sources).map(([path, content]) => [path, digest(content)])),
   statusClasses,
-  templateSha256: digest(template),
   candidatesSha256: digest(JSON.stringify(candidates)),
   cssSha256: digest(css),
 };

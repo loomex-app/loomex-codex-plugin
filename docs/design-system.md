@@ -1,6 +1,6 @@
 # Loomex custom UI design system
 
-All five MCP Apps views use the **frontend design system** from `frontend/packages/ui/src/styles.css` and its Button, Field, StatusBadge and Pagination components. The plugin does not own another palette. `assets/frontend-design-system.css` is a generated distribution snapshot, with source revision, input hashes, compiler version and output checksum in `assets/frontend-design-system.json`.
+All seven MCP Apps views use the **frontend design system** from `frontend/packages/ui/src/styles.css` and its Button, Field, StatusBadge and Pagination components. The plugin does not own another palette. `assets/frontend-design-system.css` is a generated distribution snapshot, with source revision, input hashes, compiler version and output checksum in `assets/frontend-design-system.json`. Packaged plugin UI integrity is recorded separately in `assets/ui-artifacts.json`; it covers the app template, compiled browser code and foundation stylesheet.
 
 `src/ui-template.ts` verifies and inlines that snapshot into every resource. The browser harness uses the same renderer. Installed views require no frontend checkout, React runtime, external stylesheet, font download or network permission. The local stylesheet in `assets/loomex-app.html` owns only the compact iframe layout, domain-specific choice/rating widgets, and accessibility adaptations.
 
@@ -17,9 +17,11 @@ From the plugin root, with frontend dependencies installed using its pinned pack
 ```sh
 npm run design:sync
 npm run design:check
+npm run ui:sync
+npm run ui:check
 ```
 
-For a separate frontend checkout use `node scripts/sync-design-system.mjs --frontend /absolute/path/to/frontend`. Review and commit the generated CSS and provenance together. The export compiles the actual frontend CSS and discovers utility candidates from the plugin template and canonical frontend button/status variants. It rejects network imports and resource URLs. Do not edit the snapshot manually. Normal plugin release builds verify the packaged hash without requiring a sibling checkout; design changes additionally require the explicit upstream sync check.
+For a separate frontend checkout use `node scripts/sync-design-system.mjs --frontend /absolute/path/to/frontend`. Review and commit the generated CSS and provenance together. The export compiles the actual frontend CSS and discovers utility candidates from canonical frontend button/status variants. It rejects network imports and resource URLs. Do not edit generated snapshots manually. `npm run ui:sync` bundles `src/ui-app/app.ts` into the packaged browser application; `ui:check` recompiles it in a temporary directory and compares the result to the checked-in asset. `design:check` detects drift in the frontend checkout; `ui:check` and `package:check` validate the self-contained package and require no sibling checkout, network or development server. Run `design:sync` before `ui:sync` when both exports change.
 
 A compact contextual toolbar identifies the current stage (browse, workflow details, setup, review, monitoring or response). There is no branded header, visible connection control or persistent connection footer. Refresh sits in the toolbar; run duration appears at the top right. An action bar appears only when there are actions. Run status, stage and current step share one wrapping line instead of a statistics grid. Started/completed timestamps live in a Run timing information tooltip. Missing or invalid timestamps do not invent a duration; terminal runs without completion timestamps omit it.
 
@@ -67,7 +69,7 @@ Safe validation errors may show version 1 issue entries with a one-based step or
 
 Do not add selectors based on `data-mode` to the stylesheet or fork tokens per view. Choose an existing component or add a reusable semantic variant. Keep state and tool behavior separate from presentation: exact preparation bindings, read-only refresh, typed answers, approval decisions and immutable retries remain in the existing handlers. A failed authoritative result locks ordinary mutations until a successful refresh loads current state. Refresh stays available during that lock, while an uncertain mutation retains its separate exact-response retry.
 
-The browser suite compares shared computed styles across all five modes in light, dark and mobile layouts, checks overflow, control targets, keyboard focus and resize notifications, and captures normal/error states. It also covers question navigation, back/edit draft retention, per-question validation, answer review, the review-to-mutation boundary, exact retries, zero automatic run polls, acknowledged chat handoff and manual capability fallback. Existing coverage retains prompt deduplication, structured progress, stale run/request rejection, paged-result handoff, bounded actionable errors, cancellation, integrated setup, canonical workspace binding and preparation sealing. Set `LOOMEX_DESIGN_SCREENSHOT_DIR` to capture the visual matrix when running `npm run test:ui`.
+The browser suite compares shared computed styles across the five workflow modes, with a separate seven-mode shell matrix in light, dark and mobile layouts, checks overflow, control targets, keyboard focus and resize notifications, and captures normal/error states. It also covers question navigation, back/edit draft retention, per-question validation, answer review, the review-to-mutation boundary, exact retries, zero automatic run polls, acknowledged chat handoff and manual capability fallback. Existing coverage retains prompt deduplication, structured progress, stale run/request rejection, paged-result handoff, bounded actionable errors, cancellation, integrated setup, canonical workspace binding and preparation sealing. Set `LOOMEX_UI_SCREENSHOT_DIR` (view-state captures) and `LOOMEX_DESIGN_SCREENSHOT_DIR` (design comparisons) to capture the visual matrix when running `npm run test:ui`.
 
 The workflow browser uses compact rows with name, useful description, status, version and View/Prepare actions. Its bottom pagination bar is always present for a verified list, including empty and single-page results. The frontend-owned Pagination component supplies the semantic structure, class names, dimensions, page-size options and control states; the offline plugin adapts that structure to cursor history. It shows `Page n · x workflows`, Previous and Next, and a labelled page-size selector. It never invents a total or unsupported page jump. Query and page-size changes reset cursor history. Boundary controls remain visible but disabled; delayed reads preserve layout and restore navigation focus after rendering.
 
@@ -93,3 +95,18 @@ Every view uses one compact header, a task-focused body and a predictable action
 In clarification forms, the question is the primary label. A separate request title is not repeated above it. Explicit presentation summary text provides associated helper content; the renderer does not split arbitrary authored sentences. The generic Requirements context disclosure is omitted from questions. Review-specific deliverables, checks and limitations remain visible; underlying history is unchanged.
 
 Previous/Back actions stay left and primary actions right. Review answer(s), Submit answer(s) and Start run have visible text and an icon; familiar navigation and refresh controls may use icons with accessible names. Loading and handoff confirmation remain inline in the current card. Typed validation, answer previews, keyboard focus, exact mutation retries and chat-owned monitoring remain the same.
+
+### Source checks versus package checks
+
+`npm run ui:check` compiles the browser entrypoint into a temporary directory,
+checks its first-party executable inputs against the strict TypeScript program,
+and compares its bytes with the recorded browser artifact. This command needs
+source and development dependencies. `npm run package:check` verifies the
+packaged assets using the compiled compatibility checker and needs neither
+browser source nor a frontend checkout.
+
+The frontend export scans the plugin shell and authored browser modules as
+consumer inputs, including explicit dynamic class variants. Run `design:sync`
+when these inputs change, then `ui:sync` to record the resulting asset hashes.
+The `loomex/plugin-ui-assets/v2` manifest records the shell, stylesheet and
+compiled browser code; persistence is part of that checked browser bundle.

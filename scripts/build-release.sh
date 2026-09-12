@@ -17,8 +17,10 @@ while (($#)); do
 done
 [[ -n "$mode" ]] || usage
 repo="$(cd "$(dirname "$0")/.." && pwd -P)"
+[[ "$(node --version)" == "v24.20.0" ]] || { echo "release build requires pinned Node.js v24.20.0 (found $(node --version))" >&2; exit 1; }
 version="$(node -p "require('$repo/package.json').version")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "package version is not SemVer: $version" >&2; exit 1; }
+revision="$(git -C "$repo" rev-parse --verify HEAD 2>/dev/null || printf unknown)"
 output="${output:-$repo/release/loomex-plugin-$version-darwin-arm64}"
 [[ ! -e "$output" ]] || { echo "output already exists; refusing to replace it: $output" >&2; exit 1; }
 
@@ -32,7 +34,6 @@ if [[ "$mode" == "--production" ]]; then
   [[ "$LOOMEX_CODESIGN_IDENTITY" == Developer\ ID\ Application:* ]] || { echo "production requires a Developer ID Application identity" >&2; exit 1; }
   openssl rsa -in "$LOOMEX_MANIFEST_SIGNING_KEY" -check -noout >/dev/null
   [[ -z "$(git -C "$repo" status --porcelain)" ]] || { echo "production release requires a clean source tree" >&2; exit 1; }
-  revision="$(git -C "$repo" rev-parse --verify HEAD)"
 fi
 
 temporary="$(mktemp -d)"
@@ -44,7 +45,13 @@ if [[ "$mode" == "--production" ]]; then
   build_root="$temporary/source"
   [[ "$(node -p "require('$build_root/package.json').version")" == "$version" ]] || { echo "snapshot version changed during build" >&2; exit 1; }
 fi
-(cd "$build_root" && npm ci && npm run typecheck && npm test)
+source_manifest="$temporary/source-content.json"
+source_snapshot="$temporary/source-snapshot"
+python3 "$build_root/scripts/artifact.py" source-manifest --root "$build_root" --output "$source_manifest" --snapshot "$source_snapshot" --source-revision "$revision"
+build_root="$temporary/build-root"
+mkdir "$build_root"
+cp -R "$source_snapshot/." "$build_root/"
+(cd "$build_root" && npm ci && npm run test:coverage && npm run typecheck && npm run ui:check && npx --no-install playwright install chromium && LOOMEX_REQUIRE_BROWSER=1 npm test)
 payload="$temporary/payload"
 mkdir -p "$payload/plugin/.codex-plugin" "$payload/plugin/assets" "$payload/plugin/hooks" "$payload/plugin/runtime/bin"
 cp "$build_root/.codex-plugin/plugin.json" "$payload/plugin/.codex-plugin/plugin.json"
@@ -92,15 +99,22 @@ root=Path(sys.argv[1]); needle=sys.argv[2].encode()
 for path in root.rglob('*'):
  if path.is_file() and needle in path.read_bytes(): raise SystemExit(f'payload embeds build home path: {path.relative_to(root)}')
 PY
-revision="${revision:-$(git -C "$repo" rev-parse HEAD 2>/dev/null || printf unknown)}"
 release_stage="$temporary/release"
 arguments=(create --payload "$payload" --output "$release_stage" --project loomex-plugin --version "$version" --platform darwin-arm64 --source-revision "$revision")
+arguments+=(--source-manifest "$source_manifest" --source-root "$source_snapshot")
 if [[ "$mode" == "--production" ]]; then
   arguments+=(--signing-key "$LOOMEX_MANIFEST_SIGNING_KEY")
 else
   arguments+=(--unsigned-development)
 fi
 python3 "$build_root/scripts/artifact.py" "${arguments[@]}"
+verify_arguments=(verify --release "$release_stage" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development)
+if [[ "$mode" == "--production" ]]; then
+  production_public_key="$temporary/manifest.pub"
+  openssl rsa -in "$LOOMEX_MANIFEST_SIGNING_KEY" -pubout -out "$production_public_key" >/dev/null 2>&1
+  verify_arguments=(verify --release "$release_stage" --project loomex-plugin --platform darwin-arm64 --public-key "$production_public_key")
+fi
+python3 "$build_root/scripts/artifact.py" "${verify_arguments[@]}"
 
 if [[ "$mode" == "--production" ]]; then
   ditto -c -k --keepParent "$payload" "$temporary/notary.zip"

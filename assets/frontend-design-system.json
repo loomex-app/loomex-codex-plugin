@@ -1,5 +1,6 @@
 {
-  "schema": "loomex/frontend-design-system/v1",
+  "schema": "loomex/frontend-design-system/v3",
+  "consumerSourcesSha256": "67d96592adaeba39ecfb0ea9a8d78feed5b2b61b22bcef36d348f515880c6cad",
   "frontendRevision": "8d88a4a74989165c38f3c2cfa34828dc609d2566",
   "compiler": {
     "name": "@tailwindcss/node",
@@ -47,7 +48,6 @@
     "low": "bg-white/5 text-gray-500 border-white/10",
     "unknown": "bg-white/5 text-gray-500 border-white/10"
   },
-  "templateSha256": "a62538ca2c444edf210c931ecb317498d62ff11e841ea4923dfd1e4a2c148130",
-  "candidatesSha256": "970778ec2b27f7779b58c1fcf435962a28670b34110a33522e500623aee9b0df",
-  "cssSha256": "dd7e245bf4efc26e769837884d2146ce3b434eec62f797c485b068874236c22a"
+  "candidatesSha256": "e0f737f557ded6845373fe05ca83a43f74542e8127eb6eff185b5b2f8e212b7c",
+  "cssSha256": "e377f2f8d72f9543339c03c72321c6c505426e0e38a51d8875e4e6f3fa35cb99"
 }

@@ -1200,6 +1200,27 @@ test("reopening a resolved interaction renders its submitted answer as read-only
   assert.deepEqual(await page.evaluate(() => window.__loomexCalls), [], "reopening a resolved request is read-only");
 });
 
+test("an expired presentation session exposes one safe re-entry without writes or editable controls", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for presentation re-entry");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const requestId = "f69e6207-55b3-4a3e-b486-00be1cec5267";
+  const app = await mountApp(page, "interaction", { humanRequest: {
+    id: requestId, status: "pending", type: "manual_input", schemaDigest: "a".repeat(64),
+    inputSpec: { inputType: "text", question: "Release name" },
+    responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+  } }, false, false, null, false, { "loomex/viewPersistence": {
+    status: "reentry", code: "VIEW_SESSION_NOT_FOUND", message: "View session not found", retryable: false,
+  } });
+  await app.getByText(/View session not found.*Refresh this card/i).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Refresh", exact: true }).isEnabled(), true);
+  assert.equal(await app.getByRole("button", { name: "Review answer", exact: true }).isDisabled(), true);
+  assert.equal(await app.locator("#question-0-value").isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => window.__loomexPersistenceCalls), []);
+});
+
 test("a resolved interaction remount re-reads authoritative status before showing its read-only card", async (t) => {
   const available = await browserTools();
   if (!available) assert.fail("Chromium is required for resolved remount reconciliation");
@@ -4174,6 +4195,7 @@ test("single acceptance saves the backend node identity and remount reconciles s
   await app.getByText("Response received. This request is complete.", { exact: true }).waitFor();
   assert.equal(await app.getByRole("button", { name: "Submit answer", exact: true }).isVisible(), false);
   assert.equal(await page.evaluate(() => window.__loomexMessages.length), 1);
+  await captureRequestedScreenshots(page, "accepted-answer-read-only");
 });
 
 test("reading position restores after setup hydration without persisting transient button state", async (t) => {
@@ -4371,4 +4393,81 @@ test("ambiguous organization selection survives remount and retries its exact ke
   assert.equal(attempts.length, 2);
   assert.deepEqual(attempts[1].arguments, first);
   assert.equal(await app.getByRole("button", { name: "Switch organization", exact: true }).isDisabled(), true);
+});
+
+test("the seven canonical modes expose one accessible shell and explicit action metadata", async (t) => {
+  const available = await browserTools();
+  assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const organization = { id: "95fdc8eb-c9d1-4d54-9f99-938d44eb40bc", name: "Canonical organization", enrolled: true };
+  const requestId = "80863179-8e75-45ee-80b1-9d1d3bdbf7a1";
+  const workflowId = "56cb5884-c2ed-4ad0-9b27-4e49a49f0ae8";
+  const versionId = "e7414900-0ec3-42e3-a445-426258befb4b";
+  const request = {
+    id: requestId, status: "pending", schemaDigest: "a".repeat(64), type: "manual_input",
+    inputSpec: { inputType: "text", question: "What should this mode collect?" },
+    responseSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+  };
+  const connected = connectionProjection({
+    state: "authenticated", organization: { status: "connected", selected: organization }, organizations: [organization],
+    actions: ["organizations.list", "organizations.select", "auth.logout"],
+  });
+  const preparationPresentation = {
+    schemaVersion: "loomex/preparation-review/v1", preparationId: "c3761e48-e423-497d-8e14-a8c188d52d43", bindingDigest: "b".repeat(64),
+    workflowId, versionId, organizationId: organization.id, workflowName: "Canonical workflow", workflowVersion: 1,
+    organizationName: organization.name, providers: [],
+  };
+  const cases: Array<{ mode: "interaction" | "authoring" | "prepare" | "monitor" | "browser" | "connection" | "organizations"; data: Record<string, unknown>; heading: string; presentation?: Record<string, unknown>; responses?: Array<Record<string, unknown>> }> = [
+    { mode: "browser", heading: "Browse workflows", data: { workflows: [{ id: workflowId, name: "Canonical workflow", latestVersion: 1, nodeCount: 1 }], nextCursor: null } },
+    { mode: "authoring", heading: "What should this mode collect?", data: { builderSession: { id: "a270628e-f6f6-4e0f-adf6-0fbe0a9b4cb2" }, humanRequest: request } },
+    { mode: "prepare", heading: "Canonical workflow", presentation: preparationPresentation, data: { preparationId: "c3761e48-e423-497d-8e14-a8c188d52d43", bindingDigest: "b".repeat(64), confirmationKey: "237f2b91-1fc4-4e22-b2c6-a6eb9092bf11", binding: { workflowId, versionId, organizationId: organization.id, installationId: "77d95646-63d9-4786-95d4-99a4ad1858f3", workspacePath: "/Users/example/canonical", executionPolicy: "host_user/v1", inputs: {}, providerConfiguration: {} } } },
+    { mode: "monitor", heading: "Canonical workflow", data: { execution: { id: "639c8774-5d93-4de9-8c93-03d0502beaa1", workflowName: "Canonical workflow", status: "running" } } },
+    { mode: "interaction", heading: "What should this mode collect?", data: { humanRequest: request } },
+    { mode: "connection", heading: "Connection", data: connected },
+    { mode: "organizations", heading: "Organizations", data: connected, responses: [{ structuredContent: { ok: true, data: { organizations: [organization] } } }] },
+  ];
+
+  for (const item of cases) {
+    const app = await mountApp(page, item.mode, item.data, false, false, item.presentation || null, false, undefined, undefined, item.responses || []);
+    await app.getByRole("heading", { name: item.heading, exact: true }).waitFor();
+    assert.equal(await app.locator(`body[data-mode="${item.mode}"]`).count(), 1, `${item.mode} keeps its canonical mode identity`);
+    assert.equal(await app.locator("main").count(), 1, `${item.mode} has one embedded application shell`);
+    assert.equal(await app.locator(".app-body[aria-label='Loomex workspace']").count(), 1, `${item.mode} names its workspace region`);
+    assert.equal(await app.locator("button:visible").evaluateAll((buttons: any[]) => buttons.every(button =>
+      Boolean(button.getAttribute("aria-label")) && button.querySelector("svg[aria-hidden='true']"))), true,
+    `${item.mode} exposes every visible action through an accessible name and decorative icon`);
+    await captureRequestedScreenshots(page, `canonical-${item.mode}`);
+  }
+
+  const interaction = await mountApp(page, "interaction", { humanRequest: request });
+  await interaction.locator("#question-0-value").fill("Document action intent");
+  await interaction.getByRole("button", { name: "Review answer", exact: true }).click();
+  await interaction.getByRole("heading", { name: "Answer preview", exact: true }).waitFor();
+  const submit = interaction.getByRole("button", { name: "Submit answer", exact: true });
+  assert.equal(await submit.getAttribute("data-answer-intent"), "submit");
+  assert.equal(await submit.getAttribute("data-business-mutation"), "true");
+  assert.equal(await submit.getAttribute("aria-label"), "Submit answer");
+});
+
+test("interaction execution context does not turn the answer card into a run monitor", async (t) => {
+  const available = await browserTools();
+  if (!available) {
+    if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Playwright requires an installed Chromium browser");
+    t.skip("Playwright browser unavailable"); return;
+  }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const app = await mountApp(page, "interaction", {
+    humanRequest: {
+      id: "11ae0f7f-37d0-4817-8827-f025b87ff19b", type: "manual_input", status: "pending", schemaDigest: "a".repeat(64),
+      execution: { id: "22ae0f7f-37d0-4817-8827-f025b87ff19b", status: "running", startedAt: new Date(Date.now() - 60_000).toISOString() },
+      inputSpec: { schemaVersion: "loomex.human-input/v2", inputType: "boolean", question: "Accept delivery?" },
+      responseSchema: { type: "object", properties: { value: { type: "boolean" } }, required: ["value"] },
+    },
+  });
+  await app.getByRole("radio", { name: "Yes", exact: true }).waitFor();
+  assert.equal(await app.locator("#run-clock").isVisible(), false);
 });

@@ -20,10 +20,26 @@ test("view sessions carry stable identity without forwarding it as execution con
   assert.deepEqual(calls[1],{method:"presentation.sessions.get",params:{viewSessionId:id}});
 });
 
-test("wrong-bound or unavailable view stores cannot restore state",async()=>{
+test("wrong-bound view stores preserve a machine-readable recovery error",async()=>{
  const definition=TOOL_DEFINITIONS.find(item=>item.name === "loomex_workflow_view")!;
  const client={async call(){return ok({viewSessionId:id,kind:"authoring",entityType:"workflow",entityId:id})}};
- assert.deepEqual(await viewSessionMeta(client,definition,{workflowId:workflow,viewSessionId:id},ok({workflow:{id:workflow}})),{"loomex/viewPersistence":{status:"unavailable"}});
+ assert.deepEqual(await viewSessionMeta(client,definition,{workflowId:workflow,viewSessionId:id},ok({workflow:{id:workflow}})),{"loomex/viewPersistence":{
+   status:"unavailable", code:"VIEW_SESSION_BINDING_MISMATCH", message:"The saved view belongs to a different Loomex card.", retryable:false,
+ }});
+});
+
+test("missing sessions become a safe re-entry without creating a replacement",async()=>{
+ const definition=TOOL_DEFINITIONS.find(item=>item.name === "loomex_workflow_view")!;
+ const calls:any[]=[];
+ const client={async call(method:any,params:any){calls.push({method,params});return {
+   ok:false, protocol:"loomex.local-control/v2", method, requestId:id,
+   error:{code:"VIEW_SESSION_NOT_FOUND",message:"View session not found",retryable:false},
+ } satisfies ToolOutput;}};
+ const result=await viewSessionMeta(client,definition,{workflowId:workflow,viewSessionId:id},ok({workflow:{id:workflow}}));
+ assert.deepEqual(result,{"loomex/viewPersistence":{
+   status:"reentry",code:"VIEW_SESSION_NOT_FOUND",message:"View session not found",retryable:false,
+ }});
+ assert.deepEqual(calls,[{method:"presentation.sessions.get",params:{viewSessionId:id}}]);
 });
 
 test("chat interactions do not create presentation sessions",async()=>{

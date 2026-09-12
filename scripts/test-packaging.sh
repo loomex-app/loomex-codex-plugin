@@ -42,18 +42,63 @@ done
 touch "$payload/plugin/.env"
 if python3 "$repo/scripts/validate_package.py" "$payload" --template 2>/dev/null; then echo "forbidden development file accepted" >&2; exit 1; fi
 rm "$payload/plugin/.env"
+python3 "$repo/scripts/artifact.py" source-manifest --root "$payload" --output "$fixture/source-content.json" --source-revision test
+if python3 "$repo/scripts/artifact.py" source-manifest --root "$fixture/no-such-source-root" --output "$fixture/nonexistent-source.json" --source-revision test 2>/dev/null; then
+  echo "source manifest accepted a nonexistent source root" >&2; exit 1
+fi
+cp "$fixture/source-content.json" "$fixture/invalid-source-content.json"
+python3 - "$fixture/invalid-source-content.json" <<'PY'
+import json,sys
+from pathlib import Path
+path=Path(sys.argv[1]); data=json.loads(path.read_text())
+data['files'][0]['path']='./'+data['files'][0]['path']
+data['files'][0]['mode']=True
+path.write_text(json.dumps(data,sort_keys=True,separators=(',',':'))+'\n')
+PY
+if python3 "$repo/scripts/artifact.py" create --payload "$payload" --output "$fixture/invalid-source-release" --project loomex-plugin --version 0.1.0 --platform darwin-arm64 --source-revision test --source-manifest "$fixture/invalid-source-content.json" --unsigned-development 2>/dev/null; then
+  echo "artifact create accepted noncanonical or boolean source metadata" >&2; exit 1
+fi
+cp "$payload/plugin/package.json" "$fixture/package.json.original"
+printf '\n' >> "$payload/plugin/package.json"
+if python3 "$repo/scripts/artifact.py" create --payload "$payload" --output "$fixture/mutation-rejected" --project loomex-plugin --version 0.1.0 --platform darwin-arm64 --source-revision test --source-manifest "$fixture/source-content.json" --source-root "$payload" --unsigned-development 2>/dev/null; then
+  echo "source mutation after capture was accepted" >&2; exit 1
+fi
+cp "$fixture/package.json.original" "$payload/plugin/package.json"
 release="$fixture/release"
-SOURCE_DATE_EPOCH=1 python3 "$repo/scripts/artifact.py" create --payload "$payload" --output "$release" --project loomex-plugin --version 0.1.0 --platform darwin-arm64 --source-revision test --unsigned-development
-SOURCE_DATE_EPOCH=1 python3 "$repo/scripts/artifact.py" create --payload "$payload" --output "$fixture/release-repeat" --project loomex-plugin --version 0.1.0 --platform darwin-arm64 --source-revision test --unsigned-development
+SOURCE_DATE_EPOCH=1 python3 "$repo/scripts/artifact.py" create --payload "$payload" --output "$release" --project loomex-plugin --version 0.1.0 --platform darwin-arm64 --source-revision test --source-manifest "$fixture/source-content.json" --unsigned-development
+SOURCE_DATE_EPOCH=1 python3 "$repo/scripts/artifact.py" create --payload "$payload" --output "$fixture/release-repeat" --project loomex-plugin --version 0.1.0 --platform darwin-arm64 --source-revision test --source-manifest "$fixture/source-content.json" --unsigned-development
 cmp "$release/manifest.json" "$fixture/release-repeat/manifest.json"; cmp "$release/payload.tar.gz" "$fixture/release-repeat/payload.tar.gz"
 if SOURCE_DATE_EPOCH=1 python3 "$repo/scripts/artifact.py" create --payload "$payload" --output "$release" --project loomex-plugin --version 0.1.0 --platform darwin-arm64 --source-revision test --unsigned-development 2>/dev/null; then echo "artifact create overwrote an existing output" >&2; exit 1; fi
 mkdir "$fixture/extract-existing"; printf preserve > "$fixture/extract-existing/sentinel"
 if python3 "$repo/scripts/artifact.py" extract --release "$release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development --extract "$fixture/extract-existing" 2>/dev/null; then echo "artifact extract overwrote an existing destination" >&2; exit 1; fi
 test "$(cat "$fixture/extract-existing/sentinel")" = preserve
 python3 "$repo/scripts/artifact.py" verify --release "$release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development
+python3 "$repo/scripts/artifact.py" verify --release "$release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development --source-root "$payload"
+if python3 "$repo/scripts/artifact.py" verify --release "$release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development --source-root "$fixture/no-such-source-root" 2>/dev/null; then
+  echo "release verification accepted a nonexistent source root" >&2; exit 1
+fi
+cp "$payload/plugin/package.json" "$fixture/package.json.before-verify-mutation"
+printf '\n' >> "$payload/plugin/package.json"
+if python3 "$repo/scripts/artifact.py" verify --release "$release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development --source-root "$payload" 2>/dev/null; then
+  echo "release verification accepted a post-capture source mutation" >&2; exit 1
+fi
+cp "$fixture/package.json.before-verify-mutation" "$payload/plugin/package.json"
+legacy_files_release="$fixture/invalid-source-file-count"; cp -R "$release" "$legacy_files_release"
+python3 - "$legacy_files_release/manifest.json" <<'PY'
+import json,sys
+from pathlib import Path
+path=Path(sys.argv[1]); data=json.loads(path.read_text()); data['sourceContent']['files']=True
+path.write_text(json.dumps(data,sort_keys=True,separators=(',',':'))+'\n')
+PY
+if python3 "$repo/scripts/artifact.py" verify --release "$legacy_files_release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development 2>/dev/null; then
+  echo "release verification accepted boolean source file count" >&2; exit 1
+fi
 python3 - "$release/manifest.json" <<'PY'
 import json,sys
-files={item["path"] for item in json.load(open(sys.argv[1]))["payload"]["files"]}
+manifest=json.load(open(sys.argv[1]))
+assert manifest["sourceContent"]["file"] == "source-content.json"
+assert manifest["sourceContent"]["files"] > 0
+files={item["path"] for item in manifest["payload"]["files"]}
 assert "plugin/hooks/hooks.json" in files
 assert "plugin/hooks/lifecycle-adapter.mjs" in files
 assert "plugin/runtime/bin/node" in files
@@ -65,6 +110,20 @@ cp "$release/payload.tar.gz" "$fixture/original.tar.gz"
 printf x >> "$release/payload.tar.gz"
 if python3 "$repo/scripts/artifact.py" verify --release "$release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development 2>/dev/null; then echo "tampered release was accepted" >&2; exit 1; fi
 mv "$fixture/original.tar.gz" "$release/payload.tar.gz"
+# New releases require provenance. Historical release inspection remains an
+# explicit opt-in so it cannot silently qualify a new candidate.
+legacy_release="$fixture/legacy-release"; cp -R "$release" "$legacy_release"
+python3 - "$legacy_release/manifest.json" <<'PY'
+import json,sys
+from pathlib import Path
+path=Path(sys.argv[1]); manifest=json.loads(path.read_text()); manifest.pop("sourceContent")
+path.write_text(json.dumps(manifest,sort_keys=True,separators=(",", ":"))+"\n")
+PY
+rm "$legacy_release/source-content.json"
+if python3 "$repo/scripts/artifact.py" verify --release "$legacy_release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development 2>/dev/null; then
+  echo "provenance-free release was accepted without explicit legacy opt-in" >&2; exit 1
+fi
+python3 "$repo/scripts/artifact.py" verify --release "$legacy_release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development --allow-legacy-source-provenance
 LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base"
 test -L "$base/current"
 python3 "$repo/scripts/validate_package.py" "$root"
@@ -123,7 +182,8 @@ for path in (root/'plugin/.codex-plugin/plugin.json',root/'.agents/plugins/marke
  path.write_text(json.dumps(data,indent=2)+'\n')
 PY
 release2="$fixture/release2"
-SOURCE_DATE_EPOCH=2 python3 "$repo/scripts/artifact.py" create --payload "$payload2" --output "$release2" --project loomex-plugin --version 0.1.1 --platform darwin-arm64 --source-revision test2 --unsigned-development
+python3 "$repo/scripts/artifact.py" source-manifest --root "$payload2" --output "$fixture/source-content-2.json" --source-revision test2
+SOURCE_DATE_EPOCH=2 python3 "$repo/scripts/artifact.py" create --payload "$payload2" --output "$release2" --project loomex-plugin --version 0.1.1 --platform darwin-arm64 --source-revision test2 --source-manifest "$fixture/source-content-2.json" --unsigned-development
 if LOOMEX_PLUGIN_INSTALL_FAIL_PHASE=marketplace LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release2" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
   echo "install fault injection did not interrupt" >&2; exit 1
 fi
