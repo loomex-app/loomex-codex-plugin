@@ -1,8 +1,8 @@
 # Loomex plugin release and installation
 
-Version 0.14.6 is a portable private, macOS arm64 Codex plugin. The release payload contains bundled JavaScript and a private Node.js 24.20.0 LTS runtime whose upstream archive is pinned by SHA-256. It does not use a GUI process's `PATH`, current directory, `PLUGIN_ROOT`, or undocumented plugin environment variables. After release verification, the installer derives `.mcp.json` from the signed template with absolute paths under the target user's stable `current` installation link. No build-machine home path is present in release bytes.
+Version 0.14.7 is a portable private, macOS arm64 Codex plugin. The release payload contains bundled JavaScript and a private Node.js 24.20.0 LTS runtime whose upstream archive is pinned by SHA-256. It does not use a GUI process's `PATH`, current directory, `PLUGIN_ROOT`, or undocumented plugin environment variables. After release verification, the installer derives `.mcp.json` from the signed template with absolute paths under the target user's stable `current` installation link. No build-machine home path is present in release bytes.
 
-The 0.14.6 payload also packages `plugin/hooks/hooks.json`, its
+The 0.14.7 payload also packages `plugin/hooks/hooks.json`, its
 `lifecycle-adapter.mjs`, and `plugin/runtime/bin/node`. The hook command binds
 that runtime through `$PLUGIN_ROOT/runtime/bin/node`, so a plugin-only cache
 layout resolves both the MCP server and lifecycle hook without a sibling

@@ -185,7 +185,7 @@ function timeoutFor(definition: ToolDefinition, params: Record<string, JsonValue
 
 export function createServer(client: PreparationReviewClient = new LocalControlClient()): McpServer {
   const server = new McpServer(
-    { name: "loomex", version: "0.13.3" },
+    { name: "loomex", version: "0.14.7" },
     {
       capabilities: { tools: {}, resources: {} },
       instructions: [
