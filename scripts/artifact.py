@@ -201,6 +201,27 @@ def create(args: argparse.Namespace) -> None:
     archive = destination / "payload.tar.gz"
     deterministic_tar(root, archive, epoch)
     files = inventory(root)
+    # A release-side launcher needs Node before it can inspect the compressed
+    # payload. Keep its two bootstrap files in the release envelope and bind
+    # their bytes to the same signed manifest as the archive.
+    bootstrap_sources = {
+        "runtime": ("lifecycle-runtime/node", root / "plugin" / "runtime" / "bin" / "node"),
+        "manager": ("lifecycle.mjs", root / "plugin" / "dist" / "lifecycle.mjs"),
+    }
+    bootstrap = {}
+    for name, (relative, source) in bootstrap_sources.items():
+        if not source.is_file() or source.is_symlink():
+            raise SystemExit(f"release bootstrap source is missing: {source}")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        os.chmod(target, stat.S_IMODE(source.stat().st_mode))
+        bootstrap[name] = {
+            "file": relative,
+            "sha256": digest(target),
+            "size": target.stat().st_size,
+            "mode": stat.S_IMODE(target.stat().st_mode),
+        }
     manifest = {
         "schema": "app.loomex.release/v1",
         "project": args.project,
@@ -210,6 +231,7 @@ def create(args: argparse.Namespace) -> None:
         "sourceDateEpoch": epoch,
         "developmentOnly": args.unsigned_development,
         "payload": {"file": archive.name, "sha256": digest(archive), "files": files},
+        "bootstrap": bootstrap,
     }
     if args.source_manifest:
         source_path = Path(args.source_manifest).resolve()
@@ -265,6 +287,19 @@ def load_verified(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     archive = release / archive_name
     if digest(archive) != manifest["payload"]["sha256"]:
         raise SystemExit("payload digest mismatch")
+    bootstrap = manifest.get("bootstrap")
+    if not isinstance(bootstrap, dict) or set(bootstrap) != {"runtime", "manager"}:
+        raise SystemExit("release bootstrap metadata is invalid")
+    expected_bootstrap = {"runtime": "lifecycle-runtime/node", "manager": "lifecycle.mjs"}
+    for name, expected_file in expected_bootstrap.items():
+        entry = bootstrap.get(name)
+        if not isinstance(entry, dict) or set(entry) != {"file", "sha256", "size", "mode"}:
+            raise SystemExit("release bootstrap metadata is invalid")
+        if entry.get("file") != expected_file or type(entry.get("size")) is not int or type(entry.get("mode")) is not int:
+            raise SystemExit("release bootstrap metadata is invalid")
+        path = release / expected_file
+        if not path.is_file() or path.is_symlink() or digest(path) != entry.get("sha256") or path.stat().st_size != entry.get("size") or stat.S_IMODE(path.stat().st_mode) != entry.get("mode"):
+            raise SystemExit("release bootstrap digest mismatch")
     source_content = manifest.get("sourceContent")
     if source_content is not None:
         if not isinstance(source_content, dict) or set(source_content) != {"file", "sha256", "files"}:

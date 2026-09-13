@@ -8,7 +8,7 @@
     "node": ">=24.20.0 <25"
   },
   "scripts": {
-    "build": "npm run ui:sync && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/server.js && esbuild src/compatibility-export.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-export.mjs && esbuild scripts/export-plugin-components.mjs --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-check.mjs",
+    "build": "npm run ui:sync && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/server.js && esbuild src/lifecycle/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/lifecycle.mjs && esbuild src/compatibility-export.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-export.mjs && esbuild scripts/export-plugin-components.mjs --bundle --platform=node --format=esm --target=node24 --outfile=dist/compatibility-check.mjs",
     "typecheck": "tsc --noEmit && npm run ui:coverage",
     "compatibility:export": "npm run build && node dist/compatibility-check.mjs --package-root . --source-root .",
     "compatibility:check": "npm run build && node dist/compatibility-check.mjs --package-root . --source-root . --check",

@@ -63,6 +63,7 @@ cp -R "$build_root/hooks/." "$payload/plugin/hooks/"
 [[ ! -d "$build_root/skills" ]] || cp -R "$build_root/skills" "$payload/plugin/skills"
 mkdir -p "$payload/plugin/dist"
 cp "$build_root/dist/server.js" "$payload/plugin/dist/server.js"
+cp "$build_root/dist/lifecycle.mjs" "$payload/plugin/dist/lifecycle.mjs"
 cp "$build_root/dist/compatibility-export.mjs" "$payload/plugin/dist/compatibility-export.mjs"
 cp "$build_root/dist/compatibility-check.mjs" "$payload/plugin/dist/compatibility-check.mjs"
 
@@ -115,6 +116,15 @@ if [[ "$mode" == "--production" ]]; then
   verify_arguments=(verify --release "$release_stage" --project loomex-plugin --platform darwin-arm64 --public-key "$production_public_key")
 fi
 python3 "$build_root/scripts/artifact.py" "${verify_arguments[@]}"
+
+# The archive keeps the payload immutable. These two launch assets let the
+# tiny installer shell start the pinned runtime before extraction; the bundle
+# then verifies and inventories the archive before it touches installation
+# state. They are copied from the same validated payload bytes.
+mkdir -p "$release_stage/lifecycle-runtime"
+cp "$payload/plugin/runtime/bin/node" "$release_stage/lifecycle-runtime/node"
+chmod 0755 "$release_stage/lifecycle-runtime/node"
+cp "$payload/plugin/dist/lifecycle.mjs" "$release_stage/lifecycle.mjs"
 
 if [[ "$mode" == "--production" ]]; then
   ditto -c -k --keepParent "$payload" "$temporary/notary.zip"

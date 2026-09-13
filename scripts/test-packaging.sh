@@ -26,13 +26,14 @@ cp -R "$repo/assets/." "$payload/plugin/assets/"
 printf 'console.log("test")\n' > "$payload/plugin/dist/server.js"
 cp "$(command -v node)" "$payload/plugin/runtime/bin/node"; chmod 0755 "$payload/plugin/runtime/bin/node"
 cp "$repo/dist/server.js" "$payload/plugin/dist/server.js"
+cp "$repo/dist/lifecycle.mjs" "$payload/plugin/dist/lifecycle.mjs"
 cp "$repo/dist/compatibility-export.mjs" "$payload/plugin/dist/compatibility-export.mjs"
 cp "$repo/dist/compatibility-check.mjs" "$payload/plugin/dist/compatibility-check.mjs"
 cp "$repo/scripts/mcp.template.json" "$payload/plugin/.mcp.template.json"
 mkdir -p "$payload/.agents/plugins"
 printf '%s\n' '{"name":"loomex-private","plugins":[{"name":"loomex","version":"0.1.0","source":{"source":"local","path":"./plugin"}}]}' > "$payload/.agents/plugins/marketplace.json"
 python3 "$repo/scripts/validate_package.py" "$payload" --template
-for component in compatibility-export.mjs compatibility-check.mjs; do
+for component in lifecycle.mjs compatibility-export.mjs compatibility-check.mjs; do
   rm "$payload/plugin/dist/$component"
   if python3 "$repo/scripts/validate_package.py" "$payload" --template 2>/dev/null; then
     echo "package validation accepted missing compatibility bundle: $component" >&2; exit 1
@@ -102,14 +103,29 @@ files={item["path"] for item in manifest["payload"]["files"]}
 assert "plugin/hooks/hooks.json" in files
 assert "plugin/hooks/lifecycle-adapter.mjs" in files
 assert "plugin/runtime/bin/node" in files
+assert "plugin/dist/lifecycle.mjs" in files
 assert "plugin/dist/compatibility-export.mjs" in files
 assert "plugin/dist/compatibility-check.mjs" in files
+assert manifest["bootstrap"]["runtime"]["file"] == "lifecycle-runtime/node"
+assert manifest["bootstrap"]["manager"]["file"] == "lifecycle.mjs"
 PY
 if python3 "$repo/scripts/artifact.py" verify --release "$release" --project loomex-plugin --platform darwin-arm64 2>/dev/null; then echo "unsigned release was accepted" >&2; exit 1; fi
 cp "$release/payload.tar.gz" "$fixture/original.tar.gz"
 printf x >> "$release/payload.tar.gz"
 if python3 "$repo/scripts/artifact.py" verify --release "$release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development 2>/dev/null; then echo "tampered release was accepted" >&2; exit 1; fi
 mv "$fixture/original.tar.gz" "$release/payload.tar.gz"
+# The shell launcher uses these two release-side bootstrap assets. The manager
+# verifies the archive and installs its own retained helper before mutation.
+mkdir -p "$release/lifecycle-runtime"
+cp "$payload/plugin/runtime/bin/node" "$release/lifecycle-runtime/node"
+chmod 0755 "$release/lifecycle-runtime/node"
+cp "$payload/plugin/dist/lifecycle.mjs" "$release/lifecycle.mjs"
+cp "$release/lifecycle.mjs" "$fixture/lifecycle.mjs.original"
+printf x >> "$release/lifecycle.mjs"
+if LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
+  echo "installer accepted a tampered bootstrap manager" >&2; exit 1
+fi
+mv "$fixture/lifecycle.mjs.original" "$release/lifecycle.mjs"
 # New releases require provenance. Historical release inspection remains an
 # explicit opt-in so it cannot silently qualify a new candidate.
 legacy_release="$fixture/legacy-release"; cp -R "$release" "$legacy_release"
@@ -126,6 +142,24 @@ fi
 python3 "$repo/scripts/artifact.py" verify --release "$legacy_release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development --allow-legacy-source-provenance
 LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base"
 test -L "$base/current"
+# First installation has no in-root lock anchor yet.  Concurrent installers
+# serialize on the narrowly scoped sibling bootstrap lock; one may establish
+# ownership and the other must not write a competing lifecycle transaction.
+bootstrap_base="$fixture/bootstrap-first-install"
+( LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$bootstrap_base" >"$fixture/bootstrap-one.out" 2>&1 ) & bootstrap_one=$!
+( LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$bootstrap_base" >"$fixture/bootstrap-two.out" 2>&1 ) & bootstrap_two=$!
+set +e
+wait "$bootstrap_one"; bootstrap_one_status=$?
+wait "$bootstrap_two"; bootstrap_two_status=$?
+set -e
+if [[ "$bootstrap_one_status" -eq 0 && "$bootstrap_two_status" -eq 0 ]]; then
+  echo "two first installers both mutated the install root" >&2; exit 1
+fi
+if [[ "$bootstrap_one_status" -ne 0 && "$bootstrap_two_status" -ne 0 ]]; then
+  echo "no first installer established the install root" >&2; exit 1
+fi
+test -L "$bootstrap_base/current"
+test ! -e "$bootstrap_base/lifecycle.json"
 python3 "$repo/scripts/validate_package.py" "$root"
 grep -Fq "$base/current/plugin/runtime/bin/node" "$root/plugin/.mcp.json"
 grep -Fq "$base/current/plugin/dist/server.js" "$root/plugin/.mcp.json"
@@ -168,8 +202,14 @@ import json,sys
 marketplace=json.load(open(sys.argv[1])); receipt=json.load(open(sys.argv[2])); base=sys.argv[3]
 assert marketplace['plugins'][0]['source']=={'source':'local','path':'./current/plugin'}
 assert marketplace['plugins'][0]['version']=='0.1.0'
-assert receipt=={'schema':'app.loomex.plugin.install-receipt/v1','currentPath':f'{base}/current','versionsPath':f'{base}/versions','marketplacePath':f'{base}/.agents/plugins/marketplace.json'}
+assert receipt['schema']=='app.loomex.plugin.install-receipt/v2'
+assert receipt['currentPath']==f'{base}/current' and receipt['versionsPath']==f'{base}/versions' and receipt['marketplacePath']==f'{base}/.agents/plugins/marketplace.json'
+assert set(receipt['versions'])=={'0.1.0'} and len(receipt['versions']['0.1.0']['payloadInventorySha256'])==64
 PY
+# `lifecycle.sh` must also work with its optional forwarded-argument array
+# empty; macOS Bash with nounset otherwise treats an empty array as unbound.
+"$repo/scripts/lifecycle.sh" status --install-base "$base" > "$fixture/lifecycle-status-no-optional-args.json"
+grep -Fq '"schema": "app.loomex.plugin.lifecycle-status/v1"' "$fixture/lifecycle-status-no-optional-args.json"
 payload2="$fixture/payload2"; cp -R "$payload" "$payload2"
 python3 - "$payload2" <<'PY'
 import json,sys
@@ -184,11 +224,23 @@ PY
 release2="$fixture/release2"
 python3 "$repo/scripts/artifact.py" source-manifest --root "$payload2" --output "$fixture/source-content-2.json" --source-revision test2
 SOURCE_DATE_EPOCH=2 python3 "$repo/scripts/artifact.py" create --payload "$payload2" --output "$release2" --project loomex-plugin --version 0.1.1 --platform darwin-arm64 --source-revision test2 --source-manifest "$fixture/source-content-2.json" --unsigned-development
-if LOOMEX_PLUGIN_INSTALL_FAIL_PHASE=marketplace LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release2" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
+mkdir -p "$release2/lifecycle-runtime"
+cp "$payload2/plugin/runtime/bin/node" "$release2/lifecycle-runtime/node"
+chmod 0755 "$release2/lifecycle-runtime/node"
+cp "$payload2/plugin/dist/lifecycle.mjs" "$release2/lifecycle.mjs"
+if LOOMEX_PLUGIN_INSTALL_FAIL_PHASE=bytes LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release2" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
   echo "install fault injection did not interrupt" >&2; exit 1
 fi
 test -f "$base/lifecycle.json"
 test ! -e "$base/.lifecycle.lock"
+# A bytes checkpoint is not authorization to activate altered retained bytes.
+printf '\nchanged install evidence\n' >> "$base/versions/0.1.1/plugin/dist/server.js"
+if LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release2" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
+  echo "install resume accepted changed bytes after the bytes checkpoint" >&2; exit 1
+fi
+test -f "$base/lifecycle.json"
+test "$(basename "$(readlink "$base/current")")" = 0.1.0
+cp "$payload2/plugin/dist/server.js" "$base/versions/0.1.1/plugin/dist/server.js"
 LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release2" --allow-unsigned-development --install-base "$base"
 test ! -e "$base/lifecycle.json"
 test -f "$registered_marketplace/.agents/plugins/marketplace.json"
@@ -200,7 +252,107 @@ import json,sys
 entry=json.load(open(sys.argv[1]))['plugins'][0]
 assert entry['version']=='0.1.1' and entry['source']=={'source':'local','path':'./current/plugin'}
 PY
-test ! -e "$root"
+# Administrative lifecycle commands use the retained package helper and never
+# need the source checkout, Python, or npm after the first install.
+"$repo/scripts/lifecycle.sh" status --install-base "$base" > "$fixture/lifecycle-status.json"
+grep -Fq '"current": "0.1.1"' "$fixture/lifecycle-status.json"
+# A retained version is a rollback artifact, not merely a directory name.  A
+# changed retained payload must be rejected before current is moved.
+printf '\nchanged rollback evidence\n' >> "$base/versions/0.1.0/plugin/dist/server.js"
+if "$repo/scripts/lifecycle.sh" rollback --install-base "$base" --version 0.1.0 >/dev/null 2>&1; then
+  echo "rollback accepted changed retained package bytes" >&2; exit 1
+fi
+cp "$payload/plugin/dist/server.js" "$base/versions/0.1.0/plugin/dist/server.js"
+"$repo/scripts/lifecycle.sh" rollback --install-base "$base" --version 0.1.0
+test "$(basename "$(readlink "$base/current")")" = 0.1.0
+"$repo/scripts/lifecycle.sh" repair --install-base "$base"
+"$repo/scripts/lifecycle.sh" rollback --install-base "$base" --version 0.1.1
+test "$(basename "$(readlink "$base/current")")" = 0.1.1
+# The first repair checkpoint is durable. A later state-write failure keeps
+# that exact operation for repair/resume instead of reporting a completed run.
+if LOOMEX_PLUGIN_LIFECYCLE_FAIL_WRITE=after-first "$repo/scripts/lifecycle.sh" repair --install-base "$base" >/dev/null 2>&1; then
+  echo "lifecycle durable-write fault injection did not interrupt" >&2; exit 1
+fi
+test -f "$base/lifecycle.json"
+"$repo/scripts/lifecycle.sh" status --install-base "$base" > "$fixture/recovery-status.json"
+grep -Fq '"operation": "repair"' "$fixture/recovery-status.json"
+grep -Fq '"recoveryRequired": true' "$fixture/recovery-status.json"
+"$repo/scripts/lifecycle.sh" repair --install-base "$base" > "$fixture/repair-result.json"
+grep -Fq '"schema": "app.loomex.plugin.lifecycle-result/v1"' "$fixture/repair-result.json"
+test ! -e "$base/lifecycle.json"
+# Lock recovery only accepts a lock whose owner is positively known dead. The
+# fixtures below use a non-existent PID and an old creation date so they are
+# deterministic without waiting for a clock timeout.
+write_stale_lock() {
+  local lock_path="$1" token="$2"
+  rm -rf "$lock_path"
+  mkdir "$lock_path"
+  printf '%s\n' '{"schema":"app.loomex.plugin.lock/v1","token":"'"$token"'","pid":999999,"processStart":"stale","host":"'"$(hostname)"'","createdAt":"2000-01-01T00:00:00.000Z"}' > "$lock_path/owner.json"
+}
+assert_no_recovery_locks() {
+  test ! -e "$base/.lifecycle.lock"
+  if compgen -G "$base/.lifecycle.lock.recovery*" >/dev/null; then
+    echo "stale lifecycle recovery guard remained" >&2; exit 1
+  fi
+}
+# A process can die while it owns the recovery guard. The next operation must
+# reclaim that guard through its own nested guard, finish recovery, and remove
+# every temporary lock.
+write_stale_lock "$base/.lifecycle.lock" stale-primary-with-dead-guard
+write_stale_lock "$base/.lifecycle.lock.recovery" dead-recovery-guard
+"$repo/scripts/lifecycle.sh" repair --install-base "$base"
+assert_no_recovery_locks
+# Two contenders use independent FIFO gates, so both are released without a
+# shared-reader race or arbitrary delay. A contender may finish a serialized
+# repair or lose the active-lock race; any failure must be that exact outcome.
+write_stale_lock "$base/.lifecycle.lock" stale-two-contenders
+contender_one_gate="$fixture/lifecycle-contender-one-gate"
+contender_two_gate="$fixture/lifecycle-contender-two-gate"
+mkfifo "$contender_one_gate" "$contender_two_gate"
+( read -r _ < "$contender_one_gate"; "$repo/scripts/lifecycle.sh" repair --install-base "$base" >"$fixture/lifecycle-contender-one.out" 2>&1 ) & lock_one=$!
+( read -r _ < "$contender_two_gate"; "$repo/scripts/lifecycle.sh" repair --install-base "$base" >"$fixture/lifecycle-contender-two.out" 2>&1 ) & lock_two=$!
+exec 8>"$contender_one_gate"
+exec 9>"$contender_two_gate"
+printf 'go\n' >&8
+printf 'go\n' >&9
+exec 8>&-
+exec 9>&-
+set +e
+wait "$lock_one"; lock_one_status=$?
+wait "$lock_two"; lock_two_status=$?
+set -e
+if [[ "$lock_one_status" -ne 0 && "$lock_one_status" -ne 1 ]]; then
+  echo "first lifecycle contender exited unexpectedly: $lock_one_status" >&2; exit 1
+fi
+if [[ "$lock_two_status" -ne 0 && "$lock_two_status" -ne 1 ]]; then
+  echo "second lifecycle contender exited unexpectedly: $lock_two_status" >&2; exit 1
+fi
+if [[ "$lock_one_status" -ne 0 && "$lock_two_status" -ne 0 ]]; then
+  echo "no lifecycle contender completed stale-lock recovery" >&2; exit 1
+fi
+if [[ "$lock_one_status" -ne 0 ]]; then grep -Fq 'plugin lifecycle operation already in progress' "$fixture/lifecycle-contender-one.out"; fi
+if [[ "$lock_two_status" -ne 0 ]]; then grep -Fq 'plugin lifecycle operation already in progress' "$fixture/lifecycle-contender-two.out"; fi
+assert_no_recovery_locks
+# An unavailable liveness probe is uncertain, never evidence that it is safe
+# to move the lock. The retained stale lock can later be recovered normally.
+write_stale_lock "$base/.lifecycle.lock" stale-liveness-unknown
+if LOOMEX_PLUGIN_LOCK_TEST_LIVENESS=unknown "$repo/scripts/lifecycle.sh" repair --install-base "$base" >/dev/null 2>&1; then
+  echo "lifecycle recovery stole a lock when liveness was uncertain" >&2; exit 1
+fi
+grep -Fq '"token":"stale-liveness-unknown"' "$base/.lifecycle.lock/owner.json"
+test ! -e "$base/.lifecycle.lock.recovery"
+rm -rf "$base/.lifecycle.lock"
+# If ownership changes after the initial stale read, the exact-owner recheck
+# must preserve the new lock and report a recoverable busy outcome.
+write_stale_lock "$base/.lifecycle.lock" stale-before-new-owner
+if LOOMEX_PLUGIN_LOCK_TEST_REPLACE_OWNER_BEFORE_REREAD=1 "$repo/scripts/lifecycle.sh" repair --install-base "$base" >/dev/null 2>&1; then
+  echo "lifecycle recovery accepted a replaced lock owner" >&2; exit 1
+fi
+grep -Fq '"token":"fixture-new-owner"' "$base/.lifecycle.lock/owner.json"
+test ! -e "$base/.lifecycle.lock.recovery"
+rm -rf "$base/.lifecycle.lock"
+# Versions are retained so the lifecycle manager can offer a verified rollback.
+test -d "$root"
 printf preserve > "$base/.agents/plugins/unrelated-sentinel"
 outside_metadata="$fixture/outside-metadata"; mkdir -p "$outside_metadata/plugins"
 cp "$base/.agents/plugins/marketplace.json" "$outside_metadata/plugins/marketplace.json"
@@ -210,13 +362,51 @@ if "$repo/scripts/uninstall.sh" --install-base "$base" >/dev/null 2>&1; then ech
 test -f "$outside_metadata/plugins/marketplace.json"
 unlink "$base/.agents"
 mv "$base/.agents-owned" "$base/.agents"
-if LOOMEX_PLUGIN_UNINSTALL_FAIL_PHASE=payload "$repo/scripts/uninstall.sh" --install-base "$base" >/dev/null 2>&1; then
+if LOOMEX_PLUGIN_UNINSTALL_FAIL_PHASE=current "$repo/scripts/uninstall.sh" --install-base "$base" >/dev/null 2>&1; then
   echo "uninstall fault injection did not interrupt" >&2; exit 1
 fi
 test -f "$base/lifecycle.json"
+# Current has already been removed, so this exercises a resumable uninstall.
+# A version modified after the journal was created must remain on disk.
+test ! -e "$base/current"
+printf '\nchanged uninstall evidence\n' >> "$base/versions/0.1.1/plugin/dist/server.js"
+if "$repo/scripts/uninstall.sh" --install-base "$base" >/dev/null 2>&1; then
+  echo "resumed uninstall deleted changed package bytes" >&2; exit 1
+fi
+test -d "$base/versions/0.1.1"
+cp "$payload2/plugin/dist/server.js" "$base/versions/0.1.1/plugin/dist/server.js"
+if LOOMEX_PLUGIN_UNINSTALL_FAIL_PHASE=after-terminal-journal "$repo/scripts/uninstall.sh" --install-base "$base" >/dev/null 2>&1; then
+  echo "terminal helper cleanup fault injection did not interrupt" >&2; exit 1
+fi
+test ! -e "$base/lifecycle.json"
+test -f "$base/lifecycle.terminal.json"
+test ! -e "$base/.lifecycle-runtime"
+recovery_helper=""
+for candidate in "$base"/.lifecycle-runtime.recovery-*; do
+  [[ -d "$candidate" && -x "$candidate/node" && -f "$candidate/lifecycle.mjs" ]] || continue
+  recovery_helper="$candidate"
+done
+test -n "$recovery_helper"
+"$repo/scripts/lifecycle.sh" status --install-base "$base" > "$fixture/uninstall-recovery-status.json"
+grep -Fq '"phase": "complete"' "$fixture/uninstall-recovery-status.json"
+grep -Fq '"recoveryRequired": true' "$fixture/uninstall-recovery-status.json"
+# The retained helper can also fail after it has deleted itself but before the
+# terminal marker is unlinked.  That marker is recognizably complete and the
+# launchers clear only that exact terminal record; active journals never take
+# this path.
+if LOOMEX_PLUGIN_UNINSTALL_FAIL_PHASE=after-helper-delete "$repo/scripts/uninstall.sh" --install-base "$base" >/dev/null 2>&1; then
+  echo "post-helper-delete fault injection did not interrupt" >&2; exit 1
+fi
+test ! -e "$recovery_helper"
+test -f "$base/lifecycle.terminal.json"
+"$repo/scripts/lifecycle.sh" status --install-base "$base" > "$fixture/terminal-no-helper-status.json"
+grep -Fq '"terminal":true' "$fixture/terminal-no-helper-status.json"
 "$repo/scripts/uninstall.sh" --install-base "$base"
 test ! -e "$base/lifecycle.json"
+test ! -e "$base/lifecycle.terminal.json"
+test ! -e "$recovery_helper"
 test ! -e "$base/versions/0.1.1"
+test ! -e "$base/versions/0.1.0"
 test "$(cat "$base/.agents/plugins/unrelated-sentinel")" = preserve
 test ! -e "$base/.agents/plugins/marketplace.json"
 test ! -e "$base/install-receipt.json"
