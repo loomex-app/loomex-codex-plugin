@@ -1,8 +1,8 @@
 # Plugin component compatibility export
 
-`npm run compatibility:export` evaluates the current Zod tool schemas and writes a deterministic JSON document to standard output. It also records the checked-out source revision and whether that source tree is clean, so it can be used by the required cross-component source gate. Pass `--output <new-file>` through to `dist/compatibility-check.mjs` when a durable artifact is needed. `npm run compatibility:check` performs the same export checks and prints only its schema version, component counts, source identity, and SHA-256.
+`npm run compatibility:export` evaluates the current Zod tool schemas and writes a deterministic JSON document to standard output. In a Git checkout it also records the source revision and whether that source tree is clean, so it can be used by the required cross-component source gate. Pass `--output <new-file>` through to `dist/compatibility-check.mjs` when a durable artifact is needed. `npm run compatibility:check` performs the same export checks and prints only its schema version, component counts, source identity, and SHA-256.
 
-The cached-package check intentionally omits source identity. A cache is a packaged runtime artifact, not proof of the source checkout that produced it. `--source-root` may only name the same canonical directory as `--package-root`; this prevents an unrelated checkout from being represented as the package source.
+The cached-package check intentionally omits source identity. A cache is a packaged runtime artifact, not proof of the source checkout that produced it. `--source-root` may only name the same canonical directory as `--package-root`; this prevents an unrelated checkout from being represented as the package source. Release builds test an immutable source-content snapshot without Git metadata; its release envelope supplies the separate provenance check, so checkout-only identity validation is skipped for that snapshot.
 
 The document uses `loomex.plugin-compatibility-components/v1` and contains the package identity, alphabetized tool records, canonical UI resources and deprecated aliases, required runner capabilities, skill tool references, and lifecycle hook bindings. A tool record contains its evaluated input JSON Schema, adapter-local fields, runner aliases and omissions, its mapped runner `outputSchema` SHA-256, and its canonical UI resource URI when it opens a card. The output digest binds the runner response contract before the adapter applies its MCP result schema or compact model projection; it does not describe an MCP envelope. The document intentionally does not claim backend-route or installed-host compatibility; those are separate components of the combined compatibility manifest.
 
@@ -21,6 +21,14 @@ The check fails if an evaluated tool input no longer maps exactly to a public ru
 New tool metadata must use an entry in `src/ui-resources.ts` and its canonical `ui://loomex/<view>.html` URI. Historical `ui://loomex/<view>-0.2.x.html` identities are explicit deprecated aliases in that same registry; they are only for restoring already-open cards and resolve to the canonical resource's renderer. Do not add an alias merely to rename a new view.
 
 Removing or changing an alias requires a new compatibility-manifest version, an explicit catalog migration note, and cached-package evidence that no supported installed task still depends on it. Until then, leave the alias in the registry and keep its replacement URI stable. The template registration reads the same registry, so the export, MCP discovery, and alias handling cannot drift independently.
+
+The run-start handoff methods use the versioned `loomex.run-start-handoff/v2`
+contract. `issue` seals a reviewed preparation and returns app-only browser
+approval data, `get` is a read-only status check, and `commit` accepts only a
+reference whose runner status is approved.
+The chat layer requests status and commit; it never treats an app envelope as
+consent or derives parameters from it. Older committed handoffs remain
+readable, while old non-committed records are not eligible for a new start.
 
 Phase 6B uses `loomex/plugin-ui-assets/v2`. The persistence implementation is
 compiled into the browser application rather than injected as an independently

@@ -1,8 +1,8 @@
 import { after, before, test } from "node:test";
 import * as assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { constants } from "node:fs";
-import { transform } from "esbuild";
+import { build } from "esbuild";
 import { chromium, type Browser, type Page } from "@playwright/test";
 import { inputSpecSupported, normalizeInputType, validDate } from "../src/ui-app/interaction-form.js";
 import type { InputSpec } from "../src/ui-app/page-models.js";
@@ -49,9 +49,8 @@ window.makeInteractionForm = (options = {}) => {
 async function resetPage(): Promise<void> {
   if (!page) throw new Error("A browser page is required for this test.");
   await page.setContent('<main><div id="summary"></div><form id="form"></form><button id="primary"></button><button id="secondary"></button></main>');
-  const source = await readFile(new URL("../src/ui-app/interaction-form.ts", import.meta.url), "utf8");
-  const compiled = await transform(source, { loader: "ts", format: "iife", globalName: "InteractionFormModule", target: "es2022" });
-  await page.addScriptTag({ content: compiled.code });
+  const compiled = await build({ entryPoints: [new URL("../src/ui-app/interaction-form.ts", import.meta.url).pathname], bundle: true, write: false, format: "iife", globalName: "InteractionFormModule", target: "es2022" });
+  await page.addScriptTag({ content: compiled.outputFiles[0]!.text });
   await page.addScriptTag({ content: fixtureScript });
 }
 
@@ -166,6 +165,84 @@ test("routes a lone long-text question to chat and rejects mixed inline batches"
       error: "Long-form questions cannot be mixed into an inline batch. Continue in the conversation to answer this request.",
     },
     malformed: { rendered: false, kind: "invalid-questions" },
+  });
+});
+
+test("uses the request answer channel before legacy input metadata and rejects explicit unsupported routes", async (context) => {
+  if (!page) { if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Playwright requires an installed Chromium browser"); context.skip("No local Chromium browser is installed."); return; }
+  await resetPage();
+  const result = await page.evaluate(`(() => {
+    const fixture = window.makeInteractionForm({ answerChannel: "chat" });
+    const requestUi = fixture.controller.typedForm(
+      { type: "object", required: ["value"] }, {},
+      { question: "Explain the decision", inputType: "long_text", answerChannel: "chat" },
+      { title: "Explain the decision", answerChannel: "ui" },
+    );
+    const form = document.getElementById("form");
+    const uiRoute = { rendered: requestUi, kind: form.dataset.formKind, text: form.textContent };
+    const unsupported = fixture.controller.typedForm(
+      { type: "object", required: ["value"] }, {},
+      { question: "Name the deliverable", inputType: "text", answerChannel: "chat" },
+      { title: "Name the deliverable", answerChannel: "unsupported" },
+    );
+    return { uiRoute, unsupported: { rendered: unsupported, kind: form.dataset.formKind, text: form.textContent } };
+  })()`);
+  assert.deepEqual(result, {
+    uiRoute: {
+      rendered: false,
+      kind: "invalid-questions",
+      text: "This long-form answer must be collected in the conversation. Continue in chat to answer it.",
+    },
+    unsupported: {
+      rendered: false,
+      kind: "invalid-questions",
+      text: "This request uses an unsupported answer channel. Continue in the conversation for the compatible response flow.",
+    },
+  });
+});
+
+test("Space advances radio questions and opens review from the final question", async (context) => {
+  if (!page) { if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Playwright requires an installed Chromium browser"); context.skip("No local Chromium browser is installed."); return; }
+  await resetPage();
+  await page.evaluate(`(() => {
+    const fixture = window.makeInteractionForm();
+    window.__spaceFixture = fixture;
+    window.__spaceKeys = [];
+    document.addEventListener("keydown", event => window.__spaceKeys.push({ key: event.key, target: event.target?.id, trusted: event.isTrusted }));
+    fixture.controller.attach();
+    fixture.controller.questionForm({ collectionMode: "batch", questions: [
+      { id: "priority", question: "Priority?", inputType: "radio", allowOther: false, options: [{ id: "high", label: "High" }] },
+      { id: "decision", question: "Proceed?", inputType: "radio", allowOther: false, options: [{ id: "yes", label: "Yes" }] },
+    ] }, { required: ["answers"] }, {}, {});
+  })()`);
+  const first = page.locator('#question-0-option-0');
+  await first.focus();
+  await page.keyboard.press("Space");
+  await page.waitForTimeout(50);
+  assert.deepEqual(await page.evaluate(() => ({
+    index: document.getElementById("form")?.dataset.questionIndex,
+    checked: (document.getElementById("question-0-option-0") as HTMLInputElement | null)?.checked,
+    events: (window as any).__spaceFixture?.events,
+    keys: (window as any).__spaceKeys,
+    active: document.activeElement?.id,
+  })), { index: "1", checked: true, events: { dirty: 0, draft: 0, navigation: 1, renders: 0, errors: [] }, keys: [{ key: " ", target: "question-0-option-0", trusted: true }], active: "question-1-option-0" });
+  const final = page.locator('#question-1-option-0');
+  await final.focus();
+  await page.keyboard.press("Space");
+  await page.getByRole("heading", { name: "Answer preview", exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => {
+    const form = document.getElementById("form");
+    return {
+      phase: form?.dataset.answerPhase,
+      finalChecked: (document.getElementById("question-1-option-0") as HTMLInputElement | null)?.checked,
+      primaryIntent: document.getElementById("primary")?.dataset.answerIntent,
+      preview: form?.querySelector(".answer-review")?.textContent,
+    };
+  }), {
+    phase: "review",
+    finalChecked: true,
+    primaryIntent: "submit",
+    preview: "Answer previewCheck each answer before sending it.Priority?HighEdit answer 1Proceed?YesEdit answer 2",
   });
 });
 

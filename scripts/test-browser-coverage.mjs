@@ -23,3 +23,5 @@ test('rejects compiler options that silently disable implementation checking',()
   assert.match(browserCoverage(root,['entry.ts']).join(),/must use strict checking/);
  }
 }));
+
+test('accepts imported checked JSON data without admitting unchecked implementations',()=>fixture({'tsconfig.json':JSON.stringify({compilerOptions:{strict:true,noEmit:true,resolveJsonModule:true,module:'NodeNext',moduleResolution:'NodeNext'},files:['entry.ts']}),'entry.ts':"import rules from './rules.json'; export const version: number=rules.version;",'rules.json':'{"version":1}'},root=>{assert.deepEqual(browserCoverage(root,['entry.ts','rules.json']),[]);assert.match(browserCoverage(root,['entry.ts','unchecked.js']).join(),/unchecked.js: implementation/);}));

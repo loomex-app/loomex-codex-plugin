@@ -1,3 +1,4 @@
+import packageMetadata from "../package.json" with { type: "json" };
 import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, readFile } from "node:fs/promises";
@@ -24,6 +25,17 @@ import {
   VALIDATION_ERRORS_CAPABILITY,
 } from "../src/protocol.js";
 import { renderUiHtml } from "../src/ui-template.js";
+import {
+  AUTHORING_UI_URI,
+  BROWSER_UI_URI,
+  CONNECTION_UI_URI,
+  INTERACTION_UI_URI,
+  MONITOR_UI_URI,
+  ORGANIZATIONS_UI_URI,
+  PREPARE_UI_URI,
+  RUNS_UI_URI,
+  UI_RESOURCE_REVISION,
+} from "../src/ui-resources.js";
 import { FakeRunner } from "./fake-runner.js";
 
 const running: Array<{ client: Client; transport: StdioClientTransport; runner: FakeRunner }> = [];
@@ -48,6 +60,7 @@ async function connect(runner: FakeRunner): Promise<Client> {
   const client = new Client({ name: "loomex-plugin-test", version: "0.1.0" });
   try {
     await client.connect(transport);
+    assert.equal(client.getServerVersion()?.version, packageMetadata.version);
   } catch (error) {
     await transport.close();
     await runner.stop();
@@ -143,7 +156,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...REQUIRED_RUNNER_CAPABILITIES, "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1"].sort(),
+    [...REQUIRED_RUNNER_CAPABILITIES, "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1"].sort(),
   );
   assert.equal(catalog.capabilities.includes("method:protocol.negotiate"), false);
 
@@ -318,7 +331,7 @@ test("SDK stdio discovery exposes only the focused tool catalog", async () => {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [...TOOL_NAMES].sort());
-  assert.equal(names.length, 71);
+  assert.equal(names.length, TOOL_NAMES.length);
   assert.equal(names.includes("protocol.negotiate"), false);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.some((name) => /legacy|alias|v1/i.test(name)), false);
@@ -376,17 +389,25 @@ test("run setup collects schema through a read-only entry point without opening 
   const setup = tools.find((tool) => tool.name === "loomex_run_setup");
   assert.deepEqual(read?._meta?.ui, { visibility: ["model", "app"] });
   assert.equal(read?._meta?.["openai/outputTemplate"], undefined);
-  assert.deepEqual(view?._meta?.ui, { visibility: ["model"], resourceUri: "ui://loomex/authoring.html" });
-  assert.deepEqual(setup?._meta?.ui, { visibility: ["model", "app"], resourceUri: "ui://loomex/prepare.html" });
+  assert.deepEqual(view?._meta?.ui, { visibility: ["model"], resourceUri: AUTHORING_UI_URI });
+  assert.deepEqual(setup?._meta?.ui, { visibility: ["model", "app"], resourceUri: PREPARE_UI_URI });
   assert.equal(setup?.annotations?.readOnlyHint, true);
   for (const tool of tools) {
     const allowed = APP_CALLABLE_TOOLS.has(tool.name);
+    const appOnly = TOOL_DEFINITIONS.find((definition) => definition.name === tool.name)?.appOnly === true;
     assert.equal(tool._meta?.["openai/widgetAccessible"], allowed);
-    assert.deepEqual((tool._meta?.ui as { visibility: string[] }).visibility, allowed ? ["model", "app"] : ["model"]);
+    assert.deepEqual((tool._meta?.ui as { visibility: string[] }).visibility, appOnly ? ["app"] : allowed ? ["model", "app"] : ["model"]);
   }
   assert.equal(APP_CALLABLE_TOOLS.has("loomex_run_commit"), true);
   assert.equal(APP_CALLABLE_TOOLS.has("loomex_workspace_grant"), true);
   assert.equal(APP_CALLABLE_TOOLS.has("loomex_workflow_update"), false);
+  const issue = tools.find((tool) => tool.name === "loomex_run_start_handoff_issue");
+  assert.deepEqual(issue?._meta?.ui, { visibility: ["app"] });
+  assert.equal(issue?.annotations?.idempotentHint, false);
+  const approve = tools.find((tool) => tool.name === "loomex_run_start_handoff_approve");
+  assert.deepEqual(approve?._meta?.ui, { visibility: ["app"] });
+  assert.equal(approve?.annotations?.idempotentHint, false);
+  assert.equal(tools.some((tool) => tool.name === "loomex_run_start_handoff_resume"), false);
   const result = await client.callTool({ name: "loomex_run_setup", arguments: {
     workflowId,
     version: "5",
@@ -1223,7 +1244,7 @@ test("MCP Apps resources use the portable bridge and no external network", async
   runner = new FakeRunner((request, socket) => runner.respond(socket, request, {}));
   const client = await connect(runner);
   const resources = await client.listResources();
-  assert.equal(resources.resources.length, 7);
+  assert.equal(resources.resources.length, 8);
   for (const resource of resources.resources) {
     const result = await client.readResource({ uri: resource.uri });
     const content = result.contents[0];
@@ -1242,7 +1263,8 @@ test("MCP Apps resources use the portable bridge and no external network", async
     // Bundled validators may contain documentation URLs. Offline behavior is
     // enforced by resource policy and inline-only assets, not arbitrary strings.
     assert.match(text, /default-src 'none'/);
-    assert.match(text, /connect-src 'none'/);
+    assert.match(text, /connect-src[^;]*127\.0\.0\.1/);
+    assert.doesNotMatch(text, /connect-src[^;]*(?:https?:\/\/(?!127\.0\.0\.1)[^\s;]+)/);
     assert.match(text, /frame-src 'none'/);
     assert.match(text, /form-action 'none'/);
     assert.match(text, /startLoomexApp/);
@@ -1298,7 +1320,7 @@ test("workflow views route task workspace metadata without changing runner reque
   const client = await connect(runner);
   const tools = await client.listTools();
   const listing = tools.tools.find((tool) => tool.name === "loomex_workflows_view");
-  assert.match(String((listing?._meta?.ui as { resourceUri: string }).resourceUri), /browser\.html/);
+  assert.equal((listing?._meta?.ui as { resourceUri: string }).resourceUri, BROWSER_UI_URI);
   const taskContext = { cwd: "/Users/example/current-task" };
   const result = await client.callTool({ name: "loomex_workflows_view", arguments: { query: "idea", limit: 20, taskContext } });
   assert.deepEqual(result._meta?.["loomex/workflowListQuery"], { query: "idea", limit: 20 });
@@ -1432,9 +1454,11 @@ test("connection tools use dedicated resources and owner-local view sessions", a
   const view = tools.tools.find((tool) => tool.name === "loomex_connection_view");
   const organizationsView = tools.tools.find((tool) => tool.name === "loomex_organizations_view");
   assert.deepEqual(get?._meta?.ui, { visibility: ["model", "app"] });
-  assert.deepEqual(view?._meta?.ui, { visibility: ["model"], resourceUri: "ui://loomex/connection.html" });
-  assert.deepEqual(organizationsView?._meta?.ui, { visibility: ["model"], resourceUri: "ui://loomex/organizations.html" });
+  assert.deepEqual(view?._meta?.ui, { visibility: ["model"], resourceUri: CONNECTION_UI_URI });
+  assert.deepEqual(organizationsView?._meta?.ui, { visibility: ["model"], resourceUri: ORGANIZATIONS_UI_URI });
   const result = await client.callTool({ name: "loomex_connection_view", arguments: {} });
+  assert.deepEqual((result.structuredContent as Record<string, any>)?.data, projection,
+    "connection cards must receive a complete projection without relying on _meta");
   assert.deepEqual((result._meta?.["loomex/uiData"] as Record<string, any>).data, projection);
   assert.equal(result._meta?.["loomex/viewSession"], undefined);
   assert.equal(runner.requests.length, 2);
@@ -1443,19 +1467,23 @@ test("connection tools use dedicated resources and owner-local view sessions", a
   assert.deepEqual(runner.requests[0]?.params, {});
 
   const organizationsResult = await client.callTool({ name: "loomex_organizations_view", arguments: {} });
+  assert.deepEqual((organizationsResult.structuredContent as Record<string, any>)?.data, projection,
+    "organization cards share the complete connection projection contract");
   assert.deepEqual((organizationsResult._meta?.["loomex/uiData"] as Record<string, any>).data, projection);
   assert.equal(runner.requests.length, 4);
   assert.equal(runner.requests[2]?.method, "connection.get");
   assert.equal(runner.requests[3]?.method, "connection.views.create");
 });
 
-test("stable UI resources resolve previously shipped cached references only", async () => {
+test("content-addressed UI resources resolve explicit previously shipped aliases", async () => {
   let runner!: FakeRunner;
   runner = new FakeRunner((request, socket) => runner.respond(socket, request, {}));
   const client = await connect(runner);
   const resources = await client.listResources();
-  assert.equal(resources.resources.length, 7);
-  for (const resource of resources.resources) assert.match(resource.uri, /^ui:\/\/loomex\/[a-z]+\.html$/);
+  assert.equal(resources.resources.length, 8);
+  for (const resource of resources.resources) {
+    assert.match(resource.uri, new RegExp(`^ui://loomex/[a-z]+-${UI_RESOURCE_REVISION}\\.html$`));
+  }
   for (const mode of ["authoring", "prepare", "monitor", "interaction", "browser"]) {
     const uri = `ui://loomex/${mode}-${mode === "browser" ? "0.2.7" : "0.2.3"}.html`;
     const result = await client.readResource({ uri });
@@ -1464,10 +1492,20 @@ test("stable UI resources resolve previously shipped cached references only", as
     assert.match(content && "text" in content ? content.text : "", new RegExp(`data-mode="${mode}"`));
     assert.equal(runner.requests.length, 0);
   }
-  const organizations = await client.readResource({ uri: "ui://loomex/organizations.html" });
+  for (const mode of ["browser", "runs", "authoring", "prepare", "monitor", "interaction", "organizations", "connection"]) {
+    const uri = `ui://loomex/${mode}.html`;
+    const result = await client.readResource({ uri });
+    assert.equal(result.contents[0]?.uri, uri);
+    const content = result.contents[0];
+    assert.match(content && "text" in content ? content.text : "", new RegExp(`data-mode="${mode}"`));
+    assert.equal(runner.requests.length, 0);
+  }
+  const organizations = await client.readResource({ uri: ORGANIZATIONS_UI_URI });
   assert.match(organizations.contents[0] && "text" in organizations.contents[0] ? organizations.contents[0].text : "", /data-mode="organizations"/);
-  const connection = await client.readResource({ uri: "ui://loomex/connection.html" });
+  const connection = await client.readResource({ uri: CONNECTION_UI_URI });
   assert.match(connection.contents[0] && "text" in connection.contents[0] ? connection.contents[0].text : "", /data-mode="connection"/);
+  const runs = await client.readResource({ uri: RUNS_UI_URI });
+  assert.match(runs.contents[0] && "text" in runs.contents[0] ? runs.contents[0].text : "", /data-mode="runs"/);
   await assert.rejects(client.readResource({ uri: "ui://loomex/authoring-99.0.0.html" }));
   await assert.rejects(client.readResource({ uri: "ui://loomex/unknown-0.2.3.html" }));
   await assert.rejects(client.readResource({ uri: "ui://loomex/browser-0.2.3.html" }));
@@ -1493,7 +1531,8 @@ test("chat monitoring data tools never remount views and display tools fetch aut
     ["loomex_interaction_view", "interaction", { requestId: "8081f734-5175-492b-b412-b1d88d8e3a7d" }, "interactions.get"],
   ] as const) {
     const tool = tools.find(tool => tool.name === name);
-    assert.equal((tool?._meta?.ui as { resourceUri?: string })?.resourceUri, `ui://loomex/${uri}.html`);
+    const expectedUri = { browser: BROWSER_UI_URI, monitor: MONITOR_UI_URI, interaction: INTERACTION_UI_URI }[uri];
+    assert.equal((tool?._meta?.ui as { resourceUri?: string })?.resourceUri, expectedUri);
     assert.equal(tool?.annotations?.readOnlyHint, true);
     const result = await client.callTool({ name, arguments: args });
     assert.notEqual(result.isError, true);

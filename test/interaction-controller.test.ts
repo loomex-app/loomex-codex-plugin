@@ -2,7 +2,8 @@ import { after, before, test } from "node:test";
 import * as assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { transform } from "esbuild";
+import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "@playwright/test";
 
 let browser: Browser | undefined;
@@ -72,9 +73,8 @@ window.requestOutput = (overrides = {}) => ({ humanRequest: {
 async function resetPage(): Promise<void> {
   if (!page) throw new Error("A browser page is required for this test.");
   await page.setContent('<main><div id="summary"></div><form id="form"></form><button id="primary"></button><button id="secondary"></button></main>');
-  const source = await readFile(new URL("../src/ui-app/interaction-controller.ts", import.meta.url), "utf8");
-  const compiled = await transform(source, { loader: "ts", format: "iife", globalName: "InteractionControllerModule", target: "es2022" });
-  await page.addScriptTag({ content: compiled.code });
+  const compiled = await build({ entryPoints: [fileURLToPath(new URL("../src/ui-app/interaction-controller.ts", import.meta.url))], bundle: true, write: false, format: "iife", globalName: "InteractionControllerModule", target: "es2022" });
+  await page.addScriptTag({ content: compiled.outputFiles[0]!.text });
   await page.addScriptTag({ content: fixtureScript });
 }
 

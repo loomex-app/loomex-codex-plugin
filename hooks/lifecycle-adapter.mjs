@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { createConnection } from "node:net";
@@ -13,17 +13,31 @@ const LIFECYCLE_SCHEMA_VERSION = "loomex.follow-session.lifecycle/v1";
 const DECISION_SCHEMA_VERSION = "loomex.follow-session.decision/v1";
 const CONTINUATION_SCHEMA_VERSION = "loomex.follow-session.continuation/v1";
 const TOOL_ASSOCIATION_SCHEMA_VERSION = "loomex.follow-session.tool-association/v1";
-const FOLLOW_COMMAND = "$loomex-follow";
+const FOLLOW_COMMAND = "$loomex-runs";
+const FOLLOW_EXISTING_RUN_INTENT = "follow-existing-run";
+const FOLLOW_GENERATED_FORMAT_VERSION = "loomex-runs-follow-existing-run-continuation/v2";
 const FOLLOW_RUN_ID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const FOLLOW_RECEIPT = "[A-Za-z0-9_-]{16,2048}";
 const FOLLOW_INSTRUCTIONS = [
-  "Follow this exact Loomex run: first call `loomex_run_get` with this run ID, then follow its authoritative `nextAction`.",
+  "Follow the exact existing Loomex run identified above: first call `loomex_run_get` with this run ID, then follow its authoritative `nextAction`.",
+  "While the fresh authoritative `nextAction` is `loomex_run_wait` or `loomex_run_events`, do not final-answer: drain required event pages, then call the next action. Active progress, provider activity, and quiet timeouts require another bounded wait. Hooks and schedules are not prerequisites.",
+  "Final-answer only after presenting verified user input, retrieving the complete authoritative terminal result, an actionable observation failure, or an explicit user stop. Each wait is bounded; do not add hidden indefinite waits or UI polling.",
+  "Do not start another run or resubmit an accepted response.",
+];
+const PREVIOUS_FOLLOW_INSTRUCTIONS = [
+  "Follow the exact existing Loomex run identified above: first call `loomex_run_get` with this run ID, then follow its authoritative `nextAction`.",
   "Do not start another run or resubmit an accepted response.",
 ];
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const BARE_FOLLOW = new RegExp(`^${escapeRegex(FOLLOW_COMMAND)} (${FOLLOW_RUN_ID})$`, "i");
 const GENERATED_FOLLOW = new RegExp(
-  `^${escapeRegex(FOLLOW_COMMAND)} (${FOLLOW_RUN_ID})\\n\\n<!-- loomex-follow-continuation/v1 receipt=(${FOLLOW_RECEIPT}) -->\\n\\n${FOLLOW_INSTRUCTIONS.map(escapeRegex).join("\\n\\n")}$`,
+  `^${escapeRegex(FOLLOW_COMMAND)} ${escapeRegex(FOLLOW_EXISTING_RUN_INTENT)} (${FOLLOW_RUN_ID})\\n\\n<!-- ${escapeRegex(FOLLOW_GENERATED_FORMAT_VERSION)} receipt=(${FOLLOW_RECEIPT}) -->\\n\\n(?:${[FOLLOW_INSTRUCTIONS, PREVIOUS_FOLLOW_INSTRUCTIONS].map((instructions) => instructions.map(escapeRegex).join("\\n\\n")).join("|")})$`,
+  "i",
+);
+const LEGACY_GENERATED_FOLLOW = new RegExp(
+  `^\\$loomex-follow (${FOLLOW_RUN_ID})\\n\\n<!-- loomex-follow-continuation/v1 receipt=(${FOLLOW_RECEIPT}) -->\\n\\n${[
+    "Follow this exact Loomex run: first call `loomex_run_get` with this run ID, then follow its authoritative `nextAction`.",
+    "Do not start another run or resubmit an accepted response.",
+  ].map(escapeRegex).join("\\n\\n")}$`,
   "i",
 );
 const ASSOCIATED_RUN_TOOLS = new Set([
@@ -39,6 +53,25 @@ const ASSOCIATED_INTERACTION_TOOLS = new Set([
   "mcp__loomex__loomex_interaction_get",
   "mcp__loomex__loomex_interaction_view",
 ]);
+
+// Codex hosts have emitted both the fully-qualified bridge name and the MCP
+// server-local tool name. Normalize only the documented Loomex spellings so a
+// harmless host representation change cannot strand a verified UI handoff.
+// The runner still verifies the exact request and response identities.
+const LOCAL_TOOL_NAMES = new Set([
+  "loomex_run_events",
+  "loomex_run_wait",
+  "loomex_run_get",
+  "loomex_interaction_view",
+  "loomex_interaction_get",
+  "loomex_run_result",
+]);
+
+function canonicalToolName(name) {
+  if (ASSOCIATED_RUN_TOOLS.has(name) || ASSOCIATED_INTERACTION_TOOLS.has(name)) return name;
+  if (LOCAL_TOOL_NAMES.has(name)) return `mcp__loomex__${name}`;
+  return undefined;
+}
 const SUPPORTED_EVENTS = new Set([
   "SessionStart",
   "UserPromptSubmit",
@@ -73,7 +106,7 @@ function exactRequestId(value) {
 
 /**
  * Give a retried host delivery the same idempotency identity without hashing a
- * prompt, cwd, tool payload, transcript, or runner response. UUID version 8
+ * prompt, workspace path, tool payload, transcript, or runner response. UUID version 8
  * denotes this application-defined SHA-256 derivation.
  */
 export function lifecycleEventId({ event, sessionId, turnId, toolUseId }) {
@@ -103,11 +136,7 @@ export function lifecycleEventId({ event, sessionId, turnId, toolUseId }) {
 /** Only full, canonical continuation messages can trigger a lifecycle follow. */
 export function parseFollowContinuation(value) {
   if (typeof value !== "string" || value.length > 4096) return undefined;
-  const bare = value.match(BARE_FOLLOW);
-  if (bare?.[1] !== undefined) {
-    return { schemaVersion: CONTINUATION_SCHEMA_VERSION, source: "bare_command", runId: bare[1].toLowerCase() };
-  }
-  const generated = value.match(GENERATED_FOLLOW);
+  const generated = value.match(GENERATED_FOLLOW) ?? value.match(LEGACY_GENERATED_FOLLOW);
   if (generated?.[1] !== undefined && generated[2] !== undefined) {
     return {
       schemaVersion: CONTINUATION_SCHEMA_VERSION,
@@ -159,8 +188,9 @@ function nestedRequestId(value) {
  * the run identity and the runner verifies that request-to-run binding.
  */
 function toolAssociation(input, name) {
-  if (!ASSOCIATED_RUN_TOOLS.has(name) && !ASSOCIATED_INTERACTION_TOOLS.has(name)) return undefined;
-  if (ASSOCIATED_INTERACTION_TOOLS.has(name)) {
+  const canonical = canonicalToolName(name);
+  if (canonical === undefined) return undefined;
+  if (ASSOCIATED_INTERACTION_TOOLS.has(canonical)) {
     const requestId = nestedRequestId(input.tool_input);
     const responseRequestId = nestedRequestId(input.tool_response);
     const responseRunId = nestedRunId(input.tool_response);
@@ -246,8 +276,7 @@ function readHookInput(timeoutMs) {
 function lifecycleParams(input) {
   const event = safeString(input.hook_event_name, 64);
   const sessionId = safeString(input.session_id);
-  const cwd = safeString(input.cwd, 4096);
-  if (!SUPPORTED_EVENTS.has(event) || sessionId === undefined || cwd === undefined || !isAbsolute(cwd)) {
+  if (!SUPPORTED_EVENTS.has(event) || sessionId === undefined) {
     throw new LifecycleError("invalid hook input");
   }
   const turnId = safeString(input.turn_id);
@@ -259,7 +288,6 @@ function lifecycleParams(input) {
     eventId: lifecycleEventId({ event, sessionId, turnId, toolUseId }),
     session: {
       id: sessionId,
-      cwd,
       ...(turnId === undefined ? {} : { turnId }),
     },
   };
@@ -273,7 +301,9 @@ function lifecycleParams(input) {
     const name = safeString(input.tool_name);
     if (name === undefined) throw new LifecycleError("invalid hook input");
     const association = toolAssociation(input, name);
-    params.tool = association === undefined ? { name, useId: toolUseId } : { name, useId: toolUseId, association };
+    params.tool = association === undefined
+      ? { name, useId: toolUseId }
+      : { name: canonicalToolName(name), useId: toolUseId, association };
   }
   return params;
 }
@@ -442,6 +472,16 @@ async function main() {
   }
 }
 
-if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
-  void main();
+async function invokedAsMain() {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return (await realpath(fileURLToPath(import.meta.url))) === (await realpath(process.argv[1]));
+  } catch {
+    return false;
+  }
 }
+
+void invokedAsMain().then((isMain) => {
+  if (isMain) return main();
+  return undefined;
+});

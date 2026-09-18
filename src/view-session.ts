@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { PreparationReviewClient } from "./preparation-review.js";
 import type { JsonValue, ToolOutput } from "./protocol.js";
 import type { ToolDefinition } from "./tool-catalog.js";
+import { uiResourceForUri } from "./ui-resources.js";
 
 function object(value: JsonValue | undefined): Record<string, JsonValue> {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -44,10 +45,11 @@ export async function viewSessionMeta(client: PreparationReviewClient, definitio
   if (!definition.uiUri || !output.ok || !output.data || output.data.responseRef) return {};
   // Connection navigation is owner-local and available before authentication;
   // domain state is always re-read and never restored as authority.
-  const connectionView = ["connection.html", "organizations.html"].some(view => definition.uiUri!.endsWith(view));
+  const resource = uiResourceForUri(definition.uiUri);
+  const connectionView = resource?.mode === "connection" || resource?.mode === "organizations";
   const data = output.data;
   const request = object(data.humanRequest);
-  const kind = definition.uiUri.split("/").at(-1)?.replace(".html", "");
+  const kind = resource?.mode;
   if (kind === "interaction" && request.answerChannel === "chat") return { "loomex/answerChannel": "chat" };
   let entityType = "catalog";
   let entityId: JsonValue = nil;
@@ -67,7 +69,10 @@ export async function viewSessionMeta(client: PreparationReviewClient, definitio
   }
   try {
     const restoring = typeof input.viewSessionId === "string";
-    const session = await client.call(connectionView ? (restoring ? "connection.views.get" : "connection.views.create") : (restoring ? "presentation.sessions.get" : "presentation.sessions.create"),
+    // A remount needs only a safe display snapshot here. The browser performs
+    // its separate authoritative session/domain reconciliation before it
+    // enables a mutation. New cards still create the durable session normally.
+    const session = await client.call(connectionView ? (restoring ? "connection.views.get" : "connection.views.create") : (restoring ? "presentation.sessions.restore" : "presentation.sessions.create"),
       restoring ? { viewSessionId: input.viewSessionId! } : {
         kind, entityType, entityId, state: {}, idempotencyKey: randomUUID(),
       }, { mutating: !restoring, ...(signal ? {signal} : {}), timeoutMs: 5000 });

@@ -14,7 +14,7 @@ The connection flow is:
 
 The plugin never asks for passwords, tokens, recovery codes or provider credentials. Users should enter authentication data only in the browser device flow. The plugin does not provide a web organization-admin fallback; membership and scope come from the runner and backend authorization.
 
-The selected organization is runner-wide for the authenticated installation. It is used by later workflow, workspace and run operations. Loomex never auto-selects an organization from a workflow name, workspace, previous task or failed operation. Use `$loomex-organizations` to list available organizations and switch only after the user names the desired organization.
+The selected organization is runner-wide for the authenticated installation. It is used by later workflow, workspace and run operations. Loomex never auto-selects an organization from a workflow name, workspace, previous task or failed operation. Use `$loomex:loomex-connect` to list available organizations and switch only after the user names the desired organization.
 
 Logout is an explicit, safety-sensitive request. The runner may refuse logout while active managed work still depends on the connection. Preserve the returned cleanup or recovery state and explain what must finish before retrying. A successful logout clears local authentication state according to the runner contract; it does not delete workflows, organization data or workspace files. If a logout response is lost, read connection/auth status before considering another attempt.
 
@@ -31,7 +31,7 @@ These names describe the intended connection contract. The installed runner and 
 
 ## Dedicated views and restoration
 
-Connection uses `ui://loomex/connection.html`; Organizations uses `ui://loomex/organizations.html`. Resource identity establishes the initial page. In-card navigation updates owner-local presentation state without opening another card. The `connection.views.create/get/update` API stores page and pending mutation arguments/key in the runner's protected SQLite presentation store, under a separate local scope that works before sign-in. It grants no backend authority. Remount always reads current authentication and organization data; loading and busy flags are never restored.
+Connection and Organizations use separate content-addressed `ui://loomex/…` resources. Resource identity establishes the initial page and changes whenever the packaged HTML, design system, or browser application changes, preventing a host cache from pairing a new server with an old card. In-card navigation updates owner-local presentation state without opening another card. The `connection.views.create/get/update` API stores page and pending mutation arguments/key in the runner's protected SQLite presentation store, under a separate local scope that works before sign-in. It grants no backend authority. Remount always reads current authentication and organization data; loading and busy flags are never restored.
 
 Organizations are fetched on opening and refresh, including when one is already selected. Accessible unenrolled entries remain selectable: explicit submission invokes the existing enrollment/selection operation. Search filters the complete returned list, with five entries per page. Failed refresh retains the old list as unverified and disables switching; only successful empty responses show an empty state. Selection affects subsequent operations, not existing run or preparation bindings.
 

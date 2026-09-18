@@ -29,7 +29,7 @@ export type TranscriptEntry =
   | { readonly kind: "assistant_final"; readonly text: string; readonly recoveryEstablished?: boolean };
 
 export interface TranscriptIssue {
-  readonly code: "final_before_poll" | "recovery_initialization_missing" | "recovery_claim_unverified" | "duplicate_request_presentation" | "stale_request_presentation" | "recovery_create_unpermitted" | "recovery_host_mutation_unpermitted" | "follow_identity_unverified";
+  readonly code: "final_before_poll" | "recovery_initialization_missing" | "recovery_claim_unverified" | "duplicate_request_presentation" | "stale_request_presentation" | "recovery_create_unpermitted" | "recovery_host_mutation_unpermitted" | "follow_identity_unverified" | "poll_retry_without_observation";
   readonly message: string;
 }
 
@@ -166,7 +166,6 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
   let recoveryVerified: { id: string; runId: string; taskId: string; status: "ACTIVE" | "PAUSED" } | undefined;
   let expectedVerificationId: string | undefined;
   let followIdentityValid = true;
-  let recoveryOperationSeen = false;
   let durableRecordInitialized = false;
   let registrationState: RecoveryRegistrationState | undefined;
   let recoveryOperationPermitted = false;
@@ -175,6 +174,10 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
   const displayedRequests = new Set<string>();
   const resolvedRequests = new Set<string>();
   let freshReadRequired = false;
+  // A wait is a response to one authoritative projection.  In particular, a
+  // tool failure does not authorize reissuing that wait from memory: a fresh
+  // runner observation must still say that waiting is the next action.
+  let expectedPollTool: string | undefined;
 
   for (const entry of normalizedEntries) {
     if (entry.kind === "follow") {
@@ -182,7 +185,6 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
       recoveryVerified = undefined;
       expectedVerificationId = entry.knownAutomationId;
       followIdentityValid = true;
-      recoveryOperationSeen = false;
       durableRecordInitialized = false;
       registrationState = entry.knownAutomationId === undefined ? undefined : "registered";
       recoveryOperationPermitted = entry.knownAutomationId !== undefined;
@@ -191,6 +193,7 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
     }
     if (entry.kind === "projection") {
       latestProjection = entry.projection;
+      expectedPollTool = isPolling(entry.projection) ? entry.projection.nextAction?.tool : undefined;
       if (follow !== undefined && entry.projection.execution?.id !== follow.runId) {
         followIdentityValid = false;
         issues.push({ code: "follow_identity_unverified", message: "authoritative monitoring projection does not match the followed run" });
@@ -200,7 +203,14 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
     }
 
     if (entry.kind === "tool") {
-      if (entry.name.startsWith("loomex_recovery_") || entry.name === "automation_update") recoveryOperationSeen = true;
+      if ((entry.name === "loomex_run_wait" || entry.name === "loomex_run_events") &&
+          entry.name !== expectedPollTool) {
+        issues.push({
+          code: "poll_retry_without_observation",
+          message: `${entry.name} was retried without a fresh authoritative projection requiring it`,
+        });
+      }
+      if (entry.name === expectedPollTool) expectedPollTool = undefined;
       const result = entry.result ?? {};
       if (entry.name === "loomex_recovery_get") {
         const recovery = recoveryRecordFromResult(result);
@@ -276,15 +286,14 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
     }
 
     if (entry.kind !== "assistant_final") continue;
-    if (isPolling(latestProjection)) {
+    // A one-off status snapshot may legitimately end here.  Only a declared
+    // live follow turns an active runner action into an obligation to wait.
+    if (follow !== undefined && isPolling(latestProjection)) {
       issues.push({ code: "final_before_poll", message: `final text appeared while nextAction still requires ${latestProjection?.nextAction?.tool ?? "polling"}` });
     }
     const activeRecoveryMatchesFollow = followIdentityValid && recoveryVerified?.status === "ACTIVE" &&
       recoveryOperationSettled &&
       recoveryVerified.runId === follow?.runId && recoveryVerified.taskId === follow?.taskId;
-    if (follow !== undefined && isPolling(latestProjection) && !recoveryOperationSeen) {
-      issues.push({ code: "recovery_initialization_missing", message: "active follow ended without a host recovery registration or explicit recovery reconciliation" });
-    }
     if (claimsRecovery(entry) && !activeRecoveryMatchesFollow) {
       issues.push({ code: "recovery_claim_unverified", message: "recovery was claimed without a matching active heartbeat receipt" });
     }

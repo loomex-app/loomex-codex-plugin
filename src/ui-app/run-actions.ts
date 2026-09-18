@@ -1,7 +1,9 @@
+import { continuationMessage, type ContinuationDeliveryController } from "./continuation-delivery.js";
+import { errorRecovery } from "../protocol.js";
 import type {JsonObject,JsonValue} from "./contracts.js";
 import type {RunFlow,UiData,RpcResult,RuntimeViewSessionProjection,SessionUpdateAttempt,WorkflowData,InteractionDraft} from "./page-models.js";
 import type {MutationOperation,MutationToolName,MutationSettlementStatus,MutationSessionProjection} from "./mutation-controller.js";
-import { createMutationOperation, MUTATION_PERSISTENCE_TOOLS as VIEW_SESSION_TOOLS } from "./mutation-controller.js";
+import { dispatchJournaledOperation, createMutationOperation, MUTATION_PERSISTENCE_TOOLS as VIEW_SESSION_TOOLS } from "./mutation-controller.js";
 import type {BrowserControllerState} from "./browser-controller.js";
 import type {createRunSetupController} from "./run-setup.js";
 import type {createRunMonitorController} from "./run-monitor.js";
@@ -10,8 +12,17 @@ import type {createRunPresentation} from "./run-presentation.js";
 type SetupController = ReturnType<typeof createRunSetupController>;
 type MonitorController = ReturnType<typeof createRunMonitorController>;
 type PresentationController = ReturnType<typeof createRunPresentation>;
-type AcceptOutcome = (result:RpcResult,request:JsonObject)=>Promise<void | (()=>Promise<void>)>;
+type AcceptOutcome = (result:RpcResult,request:JsonObject)=>void | (()=>Promise<void>) | Promise<void | (()=>Promise<void>)>;
+type StartHandoffLifecycle = "prepared" | "approving" | "approved" | "committing" | "ambiguous" | "committed" | "expired" | "rejected" | "unknown";
+type StartHandoffFlow = Omit<RunFlow, "startHandoffState"> & {
+  startHandoffRef?: string;
+  startHandoffState?: StartHandoffLifecycle;
+  startHandoffOperation?: JsonObject;
+  startHandoffReady?: boolean;
+};
 export interface RunActionsServices {
+ deliveryChanged?():void;
+ readonly delivery: ContinuationDeliveryController;
  readonly flowStore: {flow:RunFlow|null};
  readonly browserState: BrowserControllerState;
  readonly summary: HTMLElement;
@@ -78,10 +89,61 @@ export function createRunActionsController(host:RunActionsServices){
  const {stalePreparationError,acceptRunSnapshot,renderIntegratedRunFlow,initializeRunMonitor,handoffRunToChat,captureRunHumanDraft}=host.monitor;
  const {safeText,workflowPageData,presentationMatches,preparationReviewable,terminalRun}=host.presentation;
  let disposed=false;
+ let pendingStartHandoff:Promise<void>|undefined;
  let navigationEpoch=0;
  const navigationCurrent=(epoch:number)=>!disposed && navigationEpoch===epoch;
  async function navigation<T>(promise:Promise<T>,epoch:number):Promise<T>{const result=await promise;if(!navigationCurrent(epoch))throw new Error("The view changed during navigation.");return result;}
- function activeFlow():RunFlow {const flow=host.flowStore.flow;if(!flow)throw new Error("The run view is no longer active.");return flow;}
+  function activeFlow():RunFlow {const flow=host.flowStore.flow;if(!flow)throw new Error("The run view is no longer active.");return flow;}
+  function handoffFlow(flow:RunFlow):StartHandoffFlow{return flow as StartHandoffFlow;}
+  function handoffReference(flow:RunFlow):string|undefined {
+    const ref = safeText(handoffFlow(flow).startHandoffRef, 64);
+    return workflowIdValid(ref) ? ref : undefined;
+  }
+  function setStartHandoffReady(flow:RunFlow,value:boolean) {handoffFlow(flow).startHandoffReady=value;}
+  function setHandoffLifecycle(flow:RunFlow,lifecycle:StartHandoffLifecycle,operation?:JsonObject) {
+    const handoff = handoffFlow(flow);
+    handoff.startHandoffState = lifecycle;
+    if (operation) handoff.startHandoffOperation = immutableCopy(operation);
+    else delete handoff.startHandoffOperation;
+    // This is runtime-only diagnostic state.  captureViewState deliberately
+    // does not serialize it; exact mutation arguments belong to the journal.
+  }
+  function handoffOperation(flow:RunFlow):MutationOperation|undefined {
+    return [...flow.operations.values()].find((operation):operation is MutationOperation =>
+      operation.name === "loomex_run_start_handoff_issue" || operation.name === "loomex_run_start_handoff_approve",
+    );
+  }
+  function startHandoffSnapshot(flow:RunFlow, result:RpcResult):StartHandoffLifecycle {
+    const data = dataOf(result);
+    const lifecycle = safeText(data.lifecycle, 32) as StartHandoffLifecycle | undefined;
+    const responseRef = safeText(data.handoffRef, 64);
+    const ref = handoffReference(flow);
+    if (result?.isError || result?.structuredContent?.ok === false || !ref || (responseRef !== undefined && responseRef !== ref) ||
+        data.preparationId !== flow.prepared?.preparationId || !lifecycle ||
+        !["prepared", "approved", "committing", "ambiguous", "committed", "expired", "rejected"].includes(lifecycle)) {
+      setHandoffLifecycle(flow, "unknown", {result: "unverifiable"});
+      return "unknown";
+    }
+    setHandoffLifecycle(flow, lifecycle, {
+      lifecycle,
+      ...(typeof data.approvalObserved === "boolean" ? {approvalObserved: data.approvalObserved} : {}),
+      ...(typeof data.nextAction === "string" ? {nextAction: data.nextAction} : {}),
+      ...(typeof data.runId === "string" ? {runId: data.runId} : {}),
+    });
+    return lifecycle;
+  }
+  function staleStartHandoff(flow: RunFlow, message: string, error?: unknown): void {
+    const ref = handoffReference(flow);
+    delete handoffFlow(flow).startHandoffRef;
+    setStartHandoffReady(flow, false);
+    setHandoffLifecycle(flow, "unknown", { reconciliation: "stale" });
+    flow.preparationStale = true;
+    runFlowError(message, error);
+  }
+  function definitiveStartHandoffFailure(result: RpcResult): boolean {
+    return (result?.isError || result?.structuredContent?.ok === false) &&
+      ["START_HANDOFF_NOT_FOUND", "START_HANDOFF_STALE"].includes(errorCodeOf(result));
+  }
   function mutationFailureMessage(result: RpcResult, fallback: string) {
     const error = structuredError(result);
     return safeText(error?.message, 1000) || fallback;
@@ -152,6 +214,10 @@ export function createRunActionsController(host:RunActionsServices){
         await transitionSessionAfterSuccess(operation);
         flow.operations.delete(slot);
         renderIntegratedRunFlow();
+        if (operation.successfulResult) {
+          const continuation = await accept(immutableCopy(operation.successfulResult), operation.arguments);
+          if (typeof continuation === "function" && !disposed) await continuation();
+        }
       } catch (error) { runFlowError(errorMessage(error, "The next view link could not be completed."), error); }
       return;
     }
@@ -163,8 +229,8 @@ export function createRunActionsController(host:RunActionsServices){
       if (disposed || host.flowStore.flow?.operations !== flow.operations) throw new Error("The view closed before its operation could be sent. Reopen the saved view to reconcile it.");
       const result = operation.successfulResult
         ? immutableCopy(operation.successfulResult)
-        : await callTool(operation.name, immutableCopy(operation.arguments), false,
-          !["loomex_run_prepare", "loomex_run_commit"].includes(operation.name));
+        : await dispatchJournaledOperation(operation, () => callTool(operation.name, immutableCopy(operation.arguments), false,
+          !["loomex_run_prepare", "loomex_run_commit"].includes(operation.name)));
       if (disposed || host.flowStore.flow?.operations !== flow.operations) throw new Error("The view changed before the operation outcome could be reconciled. Reopen its saved view.");
       const observed = viewSessionProjection(result);
       const observedTargetSession = observed ? mutationSession(observed) : null;
@@ -173,7 +239,7 @@ export function createRunActionsController(host:RunActionsServices){
       }
       if (result?.isError || result?.structuredContent?.ok === false) {
         const code = errorCodeOf(result);
-        const ambiguous = ["NETWORK_AMBIGUOUS", "IDEMPOTENCY_REQUEST_IN_PROGRESS"].includes(code);
+        const ambiguous = errorRecovery(code || "INTERNAL").outcome === "unknown";
         await settleMutationOperation(operation, ambiguous ? "ambiguous" : "completed", result);
         stopAutomaticPreparation(operation);
         if (!ambiguous) {
@@ -209,6 +275,9 @@ export function createRunActionsController(host:RunActionsServices){
         verifiedRunSnapshot = await ensureRunMonitorTarget(operation, result);
       }
       const afterSuccess = await accept(result, operation.arguments);
+      // Cache only after domain validation accepts this response. A malformed
+      // response must not replace the exact-key retry with invalid local data.
+      operation.successfulResult = operation.successfulResult || immutableCopy(result);
       if (typeof afterSuccess === "function") afterAccepted = afterSuccess;
       if (verifiedRunSnapshot) {
         acceptRunSnapshot(dataOf(verifiedRunSnapshot), executionId(host.flowStore.flow?.result), { initial: true });
@@ -220,7 +289,8 @@ export function createRunActionsController(host:RunActionsServices){
       flow.operations.delete(slot);
       host.setAuthoritativeStateStale(false);
     } catch (error) {
-      afterAccepted = undefined;
+      // Domain acceptance survives a failed journal/display transition. Its
+      // continuation uses the independent runner delivery journal below.
       host.setAuthoritativeStateStale(false);
       stopAutomaticPreparation(operation);
       if (operation.operationId && !operation.journalStatus) {
@@ -231,7 +301,12 @@ export function createRunActionsController(host:RunActionsServices){
     } finally {
       flow.busy = false; if (!disposed && host.flowStore.flow?.operations === flow.operations) renderIntegratedRunFlow();
     }
-    if (afterAccepted && !disposed && host.flowStore.flow?.operations === flow.operations) await afterAccepted();
+    // A successful preparation switches to a freshly hydrated target card.
+    // Its successor must run against that target, so comparing the old
+    // source operation map here would incorrectly suppress Start issuance.
+    // `afterAccepted` itself obtains the live flow and remains fenced by
+    // disposal and its own authoritative checks.
+    if (afterAccepted && !disposed) await afterAccepted();
   }
 
   async function beginRunSetup(id: string, detailData?: WorkflowData | null) {
@@ -485,6 +560,10 @@ export function createRunActionsController(host:RunActionsServices){
       return;
     }
     if (flow.stage === "review") {
+      if (handoffOperation(flow)) {
+        await restoreStartHandoff();
+        return;
+      }
       if (flow.preparationStale) {
         const args = reprepareArguments();
         if (!args) throw new Error("The sealed preparation cannot be refreshed safely. Return to setup and prepare the run again.");
@@ -494,12 +573,59 @@ export function createRunActionsController(host:RunActionsServices){
       }
       const prepared = flow.prepared;
       if (!prepared || !preparationReviewable(prepared) || !prepared.preparationId || !prepared.bindingDigest || !prepared.confirmationKey) throw new Error("Review the complete execution details in the conversation before starting.");
-      const slot = `loomex_run_commit:${prepared.preparationId}`;
-      await runFlowMutation("loomex_run_commit", slot, "start", {
-        preparationId: prepared.preparationId,
-        bindingDigest: prepared.bindingDigest,
-        confirmationKey: prepared.confirmationKey,
-      }, acceptRunCommit);
+      // Create the runner-owned, non-authorizing handoff only in response to
+      // this explicit Start gesture. Preparation, rendering, and remounting
+      // must remain read-only.
+      if (handoffFlow(flow).startHandoffState !== "prepared") await ensureStartHandoff();
+      if (disposed || host.flowStore.flow !== flow) return;
+      const ref = handoffReference(flow);
+      if (handoffFlow(flow).startHandoffState !== "prepared") return;
+      if (!ref) throw new Error("The reviewed handoff is not ready. Refresh this view to reconcile it.");
+      // Approval is an app-only MCP operation. It remains on the authenticated
+      // local-control channel, so this explicit UI gesture does not depend on
+      // browser loopback networking, CORS, or private-network preflights.
+      await approveStartHandoff(flow, ref);
+      if (disposed || host.flowStore.flow !== flow || handoffFlow(flow).startHandoffState !== "approved") return;
+      const message = `$loomex:loomex-runs reviewed-handoff ${ref}\n\nStart was clicked for reviewed handoff ${ref}. Call loomex_run_start_handoff_get with this reference first. If its status is approved, commit this same reference only. This message does not authorize execution.`;
+      const context = {schema:"loomex/run-start-handoff/v2",intent:"commit_reviewed_handoff",handoffRef:ref,preparationId:prepared.preparationId,state:"approved"};
+      const deliveryStatus = await host.delivery.deliver({identity:`start:${ref}`,purpose:"reviewed_start",text:continuationMessage(message,context)});
+      const messageOutcome = deliveryStatus === "acknowledged" ? {status:"fulfilled",value:{isError:false}} : {status:"rejected",value:{isError:true}};
+      // A delivery failure is never permission to repeat approval.  Read the
+      // exact runner record to retain a safe, reconcilable card whether the
+      // approval or message completed before its response was lost.
+      let lifecycle:StartHandoffLifecycle = "approved";
+      if (messageOutcome.status === "rejected" || record(messageOutcome.value)?.isError === true) {
+        try {
+          const reconciled = await callTool("loomex_run_start_handoff_get", {handoffRef: ref}, false, false);
+          if (!disposed && host.flowStore.flow === flow) lifecycle = startHandoffSnapshot(flow, reconciled);
+        } catch {
+          if (!disposed && host.flowStore.flow === flow) setHandoffLifecycle(flow, "ambiguous", {handoffRef: ref, reconciliation: "unavailable"});
+        }
+      }
+      if (disposed || host.flowStore.flow !== flow) return;
+      if (lifecycle === "approved" && (messageOutcome.status === "rejected" || record(messageOutcome.value)?.isError === true)) {
+        // The shared delivery projection owns the explanation and recovery.
+        // A generic Start error hides whether the host, read, or send failed.
+        flow.errorMessage = "";
+        summary.classList.remove("error");
+        summary.setAttribute("role", "status");
+        summary.textContent = "";
+      } else if (lifecycle === "approved") {
+        flow.errorMessage = "";
+        summary.classList.remove("error");
+        summary.setAttribute("role", "status");
+        summary.textContent = "";
+      } else if (lifecycle === "committed") {
+        flow.errorMessage = "";
+        summary.classList.remove("error");
+        summary.setAttribute("role", "status");
+        summary.textContent = "";
+      } else {
+        runFlowError("We could not verify whether Start was accepted. Check its status before trying again.");
+      }
+      renderIntegratedRunFlow();
+      host.deliveryChanged?.();
+      await flushCurrentPersistence();
       return;
     }
     if (flow.stage === "monitor") {
@@ -543,7 +669,7 @@ export function createRunActionsController(host:RunActionsServices){
     return { data, presentation };
   }
 
-  async function acceptRunPreparation(result: RpcResult, request: JsonObject) {
+  function acceptRunPreparation(result: RpcResult, request: JsonObject): () => Promise<void> {
     const flow = activeFlow();
     const { data, presentation } = validateRunPreparationResult(result, request);
     host.restorePreparationPresentation(presentation);
@@ -551,7 +677,243 @@ export function createRunActionsController(host:RunActionsServices){
     flow.prepared = immutableCopy(data);
     flow.preparationStale = false;
     delete flow.pendingSetupInputs;
+    // Enter review before transitioning to its target presentation session so
+    // that target hydration can verify the immutable preparation identity.
+    // Start sealing is deferred until the user presses Start. A review is a
+    // read-only representation of the preparation and must not create a
+    // runner mutation simply because it rendered or hydrated.
     flow.stage = "review";
+    setHandoffLifecycle(flow, "unknown");
+    setStartHandoffReady(flow,false);
+    delete handoffFlow(flow).startHandoffRef;
+    return async () => {};
+  }
+
+  async function ensureStartHandoff() {
+    const flow = activeFlow();
+    // `startHandoffState` is presentation-only runtime state. A freshly
+    // hydrated review deliberately restores the sealed preparation but does
+    // not persist this transient lifecycle marker. Normalize that absence
+    // before deciding whether a successor handoff may be issued.
+    if (!handoffFlow(flow).startHandoffState) setHandoffLifecycle(flow, "unknown");
+    // A persisted legacy handoff cannot authorize a v2 replacement. Once
+    // restoration has proved the preparation stale, only a new preparation
+    // may create a new reference.
+    if (flow.preparationStale) return;
+    const persistedRef = safeText(record(host.session()?.state?.startHandoff)?.handoffRef, 64);
+    const ref = handoffReference(flow) || (workflowIdValid(persistedRef) ? persistedRef : undefined);
+    // An unresolved handoff mutation is retained in the operation journal.
+    // Do not create another issue/resume tuple before that exact attempt is
+    // restored and explicitly reconciled.
+    if (handoffOperation(flow)) return;
+    // A handoff reference is durable but non-authorizing.  Always reconcile
+    // it from the runner on remount; it must never cause another issue or
+    // approval operation to be created from stale presentation state.
+    if (ref) {
+      handoffFlow(flow).startHandoffRef = ref;
+      setStartHandoffReady(flow,true);
+      setHandoffLifecycle(flow, "unknown", {handoffRef: ref, reconciliation: "pending"});
+      try {
+        const result = await callTool("loomex_run_start_handoff_get", {handoffRef: ref}, false, false);
+        if (!disposed && host.flowStore.flow === flow) {
+          if (definitiveStartHandoffFailure(result)) {
+            staleStartHandoff(flow, "This reviewed start is no longer current. Review the run again before starting.", structuredError(result));
+            return;
+          }
+          const lifecycle=startHandoffSnapshot(flow,result);
+          // A successful read that cannot be projected onto this exact review
+          // is definitive invalidity, not a retryable transport outcome.
+          // Retire the preparation instead of retaining a dead reference that
+          // would permanently lock the primary review action.
+          if (lifecycle === "expired" || lifecycle === "rejected" || lifecycle === "unknown") {
+            staleStartHandoff(flow, "This reviewed start is no longer current. Review the run again before starting.");
+            return;
+          }
+          if (lifecycle === "prepared") setStartHandoffReady(flow,true);
+        }
+      } catch {
+        if (!disposed && host.flowStore.flow === flow) setHandoffLifecycle(flow, "unknown", {handoffRef: ref, reconciliation: "unavailable"});
+      }
+      return;
+    }
+    // A non-authorizing handoff still mutates the runner-owned operation
+    // journal. It may be issued only after target-card hydration completed;
+    // this keeps it separate from the just-settled preparation operation.
+    try { requireMutationHydrationReady(); } catch { return; }
+    if (handoffFlow(flow).startHandoffState !== "unknown") return;
+    const data = flow.prepared;
+    if (pendingStartHandoff) return pendingStartHandoff;
+    const issue = issueStartHandoff(flow, data);
+    pendingStartHandoff = issue;
+    try {
+      await issue;
+    } finally {
+      if (pendingStartHandoff === issue) pendingStartHandoff = undefined;
+    }
+  }
+
+  /**
+   * Dispatches one already-journaled Start handoff tuple.  The journal is the
+   * sole durable location for its sealed preparation fields and idempotency
+   * key; the review card receives only a safe lifecycle projection.
+   */
+  async function executeHandoffOperation(flow: RunFlow, operation: MutationOperation, explicit = false) {
+    // `Restore Start` safely reads an old journal record and then creates a
+    // fresh resume operation in the same user gesture. Permit that successor
+    // to progress while the outer restore is still rendering its busy state.
+    if (flow.busy && handoffOperation(flow) !== operation) return;
+    flow.busy = true;
+    setStartHandoffReady(flow,false);
+    setHandoffLifecycle(flow,"unknown",{reconciliation:explicit ? "restore_requested" : "pending"});
+    renderIntegratedRunFlow();
+    try {
+      await journalMutationOperation(operation);
+      if (disposed || host.flowStore.flow !== flow) return;
+      const result=await dispatchJournaledOperation(operation, () => callTool(operation.name,immutableCopy(operation.arguments),false,false));
+      if (disposed || host.flowStore.flow !== flow) return;
+      const failed=result?.isError || result?.structuredContent?.ok===false;
+      const code=errorCodeOf(result);
+      const ambiguous=failed && (errorRecovery(code || "INTERNAL").outcome === "unknown");
+      if (failed) {
+        await settleMutationOperation(operation,ambiguous ? "ambiguous" : "completed",result);
+        if (!ambiguous) flow.operations.delete(operation.slot);
+        setHandoffLifecycle(flow,"unknown",{reconciliation:ambiguous ? "pending" : "failed"});
+        if (!ambiguous) runFlowError(`${mutationFailureMessage(result,"Start approval could not be completed.")} Review the run again before starting.`,structuredError(result));
+        return;
+      }
+      const data=dataOf(result);
+      const ref=safeText(data.handoffRef,64);
+      // The initial issue is the one response that establishes the safe
+      // reference. Install it only after the response proves it belongs to
+      // this sealed preparation; snapshot validation then applies the normal
+      // lifecycle checks.
+      if (operation.name === "loomex_run_start_handoff_issue" && workflowIdValid(ref) &&
+          data.preparationId === flow.prepared?.preparationId && data.lifecycle === "prepared") {
+        handoffFlow(flow).startHandoffRef=ref;
+      }
+      const lifecycle=startHandoffSnapshot(flow,result);
+      const expected = operation.name === "loomex_run_start_handoff_approve" ? "approved" : "prepared";
+      if (lifecycle !== expected || !workflowIdValid(ref)) {
+        await settleMutationOperation(operation,"ambiguous",result);
+        setStartHandoffReady(flow,false);
+        setHandoffLifecycle(flow,"unknown",{reconciliation:"response_unverifiable"});
+        runFlowError("Start approval could not be verified. Refresh this view to reconcile the reviewed handoff.");
+        return;
+      }
+      await settleMutationOperation(operation,"completed",result);
+      flow.operations.delete(operation.slot);
+      handoffFlow(flow).startHandoffRef=ref;
+      setStartHandoffReady(flow,expected === "prepared");
+      setHandoffLifecycle(flow,expected,{handoffRef:ref,lifecycle:expected});
+    } catch (error) {
+      // The journal remains the recovery authority when a persistence or
+      // transport outcome is indeterminate.  No key or sealed args are copied
+      // into ordinary presentation state.
+      setHandoffLifecycle(flow,"unknown",{reconciliation:"journal_pending"});
+      runFlowError(errorMessage(error,"Start recovery is pending verification."),error);
+    } finally {
+      if (!disposed && host.flowStore.flow === flow) {
+        flow.busy=false;
+        renderIntegratedRunFlow();
+      }
+    }
+  }
+
+  async function issueStartHandoff(flow: RunFlow, data: RunFlow["prepared"]) {
+    if (!data?.preparationId || !data.bindingDigest || !data.confirmationKey || !preparationReviewable(data)) {
+      throw new Error("The reviewed run cannot be sealed for a secure chat handoff.");
+    }
+    const operation=createMutationOperation("loomex_run_start_handoff_issue",`start-handoff:issue:${data.preparationId}`,{
+      preparationId: data.preparationId as string,
+      bindingDigest: data.bindingDigest as string,
+      confirmationKey: data.confirmationKey as string,
+    },"start",uuid);
+    flow.operations.set(operation.slot,operation);
+    await executeHandoffOperation(flow,operation);
+  }
+
+  async function approveStartHandoff(flow: RunFlow, ref: string) {
+    const operation=createMutationOperation("loomex_run_start_handoff_approve",`start-handoff:approve:${ref}`,{
+      handoffRef: ref,
+    },"start",uuid);
+    flow.operations.set(operation.slot,operation);
+    await executeHandoffOperation(flow,operation);
+  }
+
+  async function restoreStartHandoff() {
+    const flow=activeFlow();
+    const retained=handoffOperation(flow);
+    if (retained) {
+      await reconcileJournaledHandoff(flow,retained);
+      renderIntegratedRunFlow();
+      return;
+    }
+    const ref=handoffReference(flow);
+    if (ref) await ensureStartHandoff();
+    else {
+      const data=flow.prepared;
+      await issueStartHandoff(flow,data);
+    }
+    renderIntegratedRunFlow();
+  }
+
+  /**
+   * A remounted or ambiguous Start attempt first performs a safe runner read.
+   * Issue recovery is keyed by the journaled issue key. Approval recovery
+   * reads the exact handoff before any new explicit Start gesture. Neither
+   * branch commits or starts a run.
+   */
+  async function reconcileJournaledHandoff(flow: RunFlow, operation: MutationOperation) {
+    if (flow.busy) return;
+    flow.busy=true;
+    setStartHandoffReady(flow,false);
+    setHandoffLifecycle(flow,"unknown",{reconciliation:"restore_requested"});
+    renderIntegratedRunFlow();
+    try {
+      const isIssue=operation.name === "loomex_run_start_handoff_issue";
+      const args=isIssue
+        ? {idempotencyKey: operation.arguments.idempotencyKey}
+        : {handoffRef: operation.arguments.handoffRef as string};
+      const result=await callTool(isIssue ? "loomex_run_start_handoff_restore" : "loomex_run_start_handoff_get",args,false,false);
+      if (disposed || host.flowStore.flow !== flow) return;
+      if (result?.isError || result?.structuredContent?.ok===false) {
+        const code=errorCodeOf(result);
+        if (!(errorRecovery(code || "INTERNAL").outcome === "unknown")) {
+          await settleMutationOperation(operation,"completed",result);
+          flow.operations.delete(operation.slot);
+        }
+        setHandoffLifecycle(flow,"unknown",{reconciliation:"unavailable"});
+        runFlowError(`${mutationFailureMessage(result,"Start recovery could not be read.")} Restore Start remains safe to retry.`,structuredError(result));
+        return;
+      }
+      const data=dataOf(result);
+      const ref=safeText(data.handoffRef,64);
+      if (workflowIdValid(ref) && data.preparationId === flow.prepared?.preparationId) handoffFlow(flow).startHandoffRef=ref;
+      const lifecycle=startHandoffSnapshot(flow,result);
+      if (lifecycle === "unknown" || lifecycle === "ambiguous") {
+        await settleMutationOperation(operation,"ambiguous",result);
+        runFlowError("Start recovery could not be verified. Restore Start remains safe to retry.");
+        return;
+      }
+      await settleMutationOperation(operation,"completed",result);
+      flow.operations.delete(operation.slot);
+      if (lifecycle === "prepared" && workflowIdValid(ref)) {
+        setStartHandoffReady(flow,true);
+      } else if (lifecycle === "approved" || lifecycle === "committing" || lifecycle === "committed") {
+        setStartHandoffReady(flow,false);
+      } else {
+        setHandoffLifecycle(flow,"unknown",{reconciliation:"not_prepared"});
+        runFlowError("Start recovery could not restore a prepared handoff. Refresh this view to check the runner state.");
+      }
+    } catch (error) {
+      setHandoffLifecycle(flow,"unknown",{reconciliation:"unavailable"});
+      runFlowError(errorMessage(error,"Start recovery could not be read."),error);
+    } finally {
+      if (!disposed && host.flowStore.flow === flow) {
+        flow.busy=false;
+        renderIntegratedRunFlow();
+      }
+    }
   }
 
   function validateRunCommitResult(result: RpcResult, request: JsonObject) {
@@ -656,5 +1018,5 @@ export function createRunActionsController(host:RunActionsServices){
     }
   }
 
-return {mutationFailureMessage, stopAutomaticPreparation, ensureRunPreparationTarget, ensureRunMonitorTarget, runFlowMutation, beginRunSetup, returnToBrowserView, returnToRunSetup, continueUnsupportedSetup, setupPreparationArguments, prepareSetupReview, beginSetupReview, handleRunFlowPrimary, acceptWorkspaceGrant, validateRunPreparationResult, acceptRunPreparation, validateRunCommitResult, acceptRunCommit, acceptRunStatus, acceptHumanResolution, readRunSnapshot,dispose(){disposed=true;navigationEpoch++;}, invalidateNavigation(){navigationEpoch++;}};
+return {mutationFailureMessage, stopAutomaticPreparation, ensureRunPreparationTarget, ensureRunMonitorTarget, runFlowMutation, beginRunSetup, returnToBrowserView, returnToRunSetup, continueUnsupportedSetup, setupPreparationArguments, prepareSetupReview, beginSetupReview, handleRunFlowPrimary, restoreStartHandoff, acceptWorkspaceGrant, validateRunPreparationResult, acceptRunPreparation, ensureStartHandoff, validateRunCommitResult, acceptRunCommit, acceptRunStatus, acceptHumanResolution, readRunSnapshot,dispose(){disposed=true;navigationEpoch++;}, invalidateNavigation(){navigationEpoch++;}};
 }

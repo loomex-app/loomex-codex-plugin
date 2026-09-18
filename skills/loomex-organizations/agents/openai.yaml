@@ -1,4 +1,0 @@
-interface:
-  display_name: "Loomex Organizations"
-  short_description: "List and switch Loomex organizations safely"
-  default_prompt: "Use $loomex-organizations to show my Loomex organizations."

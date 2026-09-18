@@ -9,9 +9,27 @@ function object(value: unknown): JsonObject | undefined {
     : undefined;
 }
 
+/**
+ * A browser App receives values through postMessage, so ordinary JSON can
+ * originate in a different JavaScript realm. Comparing directly with this
+ * iframe's Object.prototype rejects those valid records. An Object prototype
+ * is itself rooted at null in every realm; custom instances retain their
+ * class prototype between the object and that root.
+ */
 function plainObject(value: object): boolean {
   const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  return prototype === null || Object.getPrototypeOf(prototype) === null;
+}
+
+/**
+ * Array.isArray is cross-realm safe. Its direct prototype must be the realm's
+ * native Array prototype (whose parent is that realm's Object prototype), not
+ * an Array subclass prototype.
+ */
+function plainArray(value: readonly unknown[]): boolean {
+  const prototype = Object.getPrototypeOf(value);
+  return prototype !== null && Object.getPrototypeOf(prototype) !== null &&
+    Object.getPrototypeOf(Object.getPrototypeOf(prototype)) === null;
 }
 
 function defineJsonProperty(target: JsonObject, key: string, value: JsonValue): void {
@@ -24,7 +42,7 @@ function defineJsonProperty(target: JsonObject, key: string, value: JsonValue): 
 }
 
 function normalizeArray(value: readonly unknown[], ancestors: WeakSet<object>): Normalized {
-  if (Object.getPrototypeOf(value) !== Array.prototype || ancestors.has(value)) return INVALID_JSON;
+  if (!plainArray(value) || ancestors.has(value)) return INVALID_JSON;
   const ownKeys = Reflect.ownKeys(value);
   if (ownKeys.some((key) => typeof key === "symbol")) return INVALID_JSON;
   const allowedKeys = new Set<string>(["length"]);

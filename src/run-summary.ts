@@ -23,8 +23,155 @@ function fields(value: ObjectValue, keys: readonly string[], maxLength = 160): O
   }
   return result;
 }
+
+const FOLLOW_ACTIVATION_STATES = new Set(["handoff_pending", "hook_observed", "hook_not_observed"]);
+const FOLLOW_BINDING_KINDS = new Set(["ui_workspace_handoff", "host_session_unverified_task", "verified_host_task"]);
+const FOLLOW_LIFECYCLES = new Set(["handoff_pending", "active", "terminal", "superseded", "paused", "failed"]);
+const FOLLOW_REQUIRED_ACTIONS = new Set(["none", "wait", "drain_events", "handoff", "result_read", "pause"]);
+const RECOVERY_REGISTRATION_STATES = new Set(["not_attempted", "attempt_in_flight", "registered", "ambiguous", "removed"]);
+const RECOVERY_LIFECYCLES = new Set(["unchecked", "verified", "unavailable", "ambiguous", "paused", "removed"]);
+const DIAGNOSTIC_EVENTS = new Set(["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "Interrupt"]);
+const DIAGNOSTIC_OUTCOMES = new Set(["accepted", "rejected"]);
+
+function enumField(value: JsonValue | undefined, allowed: ReadonlySet<string>): string | undefined {
+  return typeof value === "string" && allowed.has(value) ? value : undefined;
+}
+function timestamp(value: JsonValue | undefined): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * Keep runner-originated diagnostic labels categorical.  A local-control
+ * failure may evolve its fixed code independently, so classify known stable
+ * families while never reflecting arbitrary runner error text or identifiers.
+ */
+function diagnosticClass(outcome: string | undefined, code: JsonValue | undefined): string {
+  if (outcome === "accepted") return "runner_accepted";
+  const value = typeof code === "string" ? code : "";
+  if (/(?:ASSOCIATION|CONTINUATION|PAYLOAD|INVALID_REQUEST|HANDOFF_MISMATCH)/.test(value)) {
+    return "payload_or_association_rejected";
+  }
+  if (/(?:RUNNER|INTERNAL|UNAVAILABLE|DATABASE|STORE)/.test(value)) return "runner_error";
+  return "runner_rejected";
+}
+
+function followRecord(value: JsonValue): ObjectValue {
+  const source = object(value);
+  const binding = object(source.binding);
+  const activation = enumField(source.activationState, FOLLOW_ACTIVATION_STATES) ?? "unknown";
+  const result: ObjectValue = {
+    // Do not expose host session or task identifiers to the model. The runner
+    // retains the exact association; this projection only proves its class.
+    binding: {
+      kind: enumField(binding.kind, FOLLOW_BINDING_KINDS) ?? "unknown",
+      verifiedHostTask: binding.verifiedHostTask === true,
+    },
+    activation,
+    hookObserved: source.hostHookObserved === true,
+  };
+  const lifecycle = enumField(source.lifecycle, FOLLOW_LIFECYCLES);
+  const requiredAction = enumField(source.requiredAction, FOLLOW_REQUIRED_ACTIONS);
+  const updatedAt = timestamp(source.updatedAt);
+  if (lifecycle !== undefined) result.lifecycle = lifecycle;
+  if (requiredAction !== undefined) result.requiredAction = requiredAction;
+  if (updatedAt !== undefined) result.updatedAt = updatedAt;
+  return result;
+}
+
+function recoveryRecord(value: JsonValue): ObjectValue {
+  const source = object(value);
+  const binding = object(source.binding);
+  const result: ObjectValue = {
+    // Recovery binding IDs are host-owned. Their presence is useful evidence,
+    // but their raw values are never needed in a model-facing run summary.
+    bindingRecorded: typeof binding.hostId === "string" && typeof binding.hostTaskId === "string",
+  };
+  const registrationState = enumField(source.registrationState, RECOVERY_REGISTRATION_STATES);
+  const lifecycle = enumField(source.recordedLifecycle, RECOVERY_LIFECYCLES);
+  const observedAt = timestamp(source.observedAt);
+  const updatedAt = timestamp(source.updatedAt);
+  if (registrationState !== undefined) result.registrationState = registrationState;
+  if (lifecycle !== undefined) result.recordedLifecycle = lifecycle;
+  if (source.automationIdRecorded === true) result.automationIdRecorded = true;
+  if (source.hostEvidenceRecorded === true) result.hostEvidenceRecorded = true;
+  if (source.previouslyVerified === true) result.previouslyVerified = true;
+  if (source.operationPending === true) result.operationPending = true;
+  if (observedAt !== undefined) result.observedAt = observedAt;
+  if (updatedAt !== undefined) result.updatedAt = updatedAt;
+  return result;
+}
+
+function hookDiagnostic(value: JsonValue): ObjectValue {
+  const source = object(value);
+  const event = enumField(source.event, DIAGNOSTIC_EVENTS);
+  const outcome = enumField(source.outcome, DIAGNOSTIC_OUTCOMES);
+  const observedAt = timestamp(source.observedAt);
+  const result: ObjectValue = { classification: diagnosticClass(outcome, source.code) };
+  if (event !== undefined) result.event = event;
+  if (outcome !== undefined) result.outcome = outcome;
+  if (observedAt !== undefined) result.observedAt = observedAt;
+  return result;
+}
+
+/** Prior runner observations stay run-scoped and never become host guarantees. */
+function monitoringEvidence(data: ObjectValue, runId: JsonValue | undefined): ObjectValue | undefined {
+  const value = object(object(data.details).monitoring);
+  if (value.schemaVersion !== "loomex.monitoring-observation/v1" || !uuid(runId) || value.runId !== runId) return undefined;
+  const result: ObjectValue = { schemaVersion: value.schemaVersion, runId, guarantee: "none", freshHostVerificationRequired: true };
+  for (const section of ["follow", "recovery"] as const) {
+    const source = object(value[section]);
+    const records = Array.isArray(source.records) ? source.records : [];
+    result[section] = {
+      records: records.slice(0, 3).map(item => section === "follow" ? followRecord(item) : recoveryRecord(item)),
+      recordCount: typeof source.recordCount === "number" ? source.recordCount : records.length,
+      truncated: source.truncated === true || records.length > 3,
+    };
+    if (section === "follow") {
+      const diagnostics = object(source.hookDiagnostics);
+      const diagnosticRows = Array.isArray(diagnostics.records) ? diagnostics.records : [];
+      result[section].hookDiagnostics = {
+        records: diagnosticRows.slice(0, 3).map(hookDiagnostic),
+        recordCount: typeof diagnostics.recordCount === "number" ? diagnostics.recordCount : diagnosticRows.length,
+        truncated: diagnostics.truncated === true || diagnosticRows.length > 3,
+      };
+    }
+  }
+  return result;
+}
+
 function run(value: JsonValue | undefined): ObjectValue {
   return fields(object(value), ["id", "status", "workflowName", "name", "workflowId", "workflowVersionId", "currentNodeName", "stageLabel"]);
+}
+
+/**
+ * Terminal errors are useful to a caller, but backend/provider error objects
+ * may contain raw command output, credentials, or arbitrary nested context.
+ * Keep only the stable, user-actionable fields at the MCP boundary.
+ */
+function failure(value: JsonValue | undefined): ObjectValue | undefined {
+  const source = object(value);
+  const details = object(source.details);
+  const pluginAgent = object(details.pluginAgentError);
+  const providerError = object(object(pluginAgent.details).error);
+  const effective = Object.keys(providerError).length > 0 ? providerError : source;
+  const result = fields(effective, ["code", "provider", "model", "retryable", "recoverable", "retryAfterSeconds"]);
+  for (const [key, fallback] of Object.entries(fields(source, ["provider", "model", "retryable", "recoverable", "retryAfterSeconds"]))) {
+    if (result[key] === undefined) result[key] = fallback;
+  }
+  const node = fields(source, ["nodeKey", "nodeName"]);
+  Object.assign(result, node);
+  const code = String(result.code ?? source.code ?? "");
+  const message = [effective.message, source.message].find((candidate): candidate is string => typeof candidate === "string");
+  if (/usage\s+limit|rate\s+limit/i.test(message ?? "") || /USAGE_LIMIT|RATE_LIMIT/i.test(code)) {
+    result.message = "The provider usage limit was reached. Wait for provider availability, then start a new run.";
+  } else if (/AUTH|CREDENTIAL|LOGIN/i.test(code)) {
+    result.message = "The provider could not authenticate. Reconnect the provider, then start a new run.";
+  } else if (/UNAVAILABLE|NOT_FOUND|NOT_INSTALLED/i.test(code)) {
+    result.message = "The configured provider is unavailable. Correct the local provider setup, then start a new run.";
+  } else if (Object.keys(result).length > 0) {
+    result.message = "The workflow node failed. Review the runner setup and start a new run when it is ready.";
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 function question(value: JsonValue | undefined): ObjectValue {
   const spec = object(value);
@@ -110,6 +257,14 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
       hasMore: progress.hasMore === true,
       latestActivity: activity(progress.latestActivity),
     };
+    const latestActivity = object(progress.latestActivity);
+    // Provider activity is not workflow completion. This explicit marker lets
+    // chat explain the short delivery/finalization interval without claiming
+    // that a node is paused or completed before the backend says so.
+    if (ACTIVE.has(String(execution.status || "").toLowerCase()) &&
+      typeof latestActivity.kind === "string" && /(?:completed|finished)$/i.test(latestActivity.kind)) {
+      summary.providerCompletionPending = true;
+    }
   }
   if (typeof request.id === "string") summary.humanRequest = request;
   if (Array.isArray(data.events)) summary.eventCount = data.events.length;
@@ -125,6 +280,10 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
   const organizationConsistent = organizations.length > 0 && organizations.every((value) => uuid(value)) && new Set(organizations).size <= 1;
   const requestBelongsToRun = uuid(rawExecution.id) && uuid(requestExecution.id) && requestExecution.id === rawExecution.id && organizationConsistent;
   const status = String(execution.status || "").toLowerCase();
+  if (["failed", "error", "rejected", "expired"].includes(status)) {
+    const projectedFailure = failure(rawExecution.error) ?? failure(data.error);
+    if (projectedFailure !== undefined) summary.failure = projectedFailure;
+  }
   const pendingRequest = request.status === "pending";
   // A commit/cancel receipt is not the authoritative monitoring baseline.
   if ((method === "runs.commit" || method === "runs.cancel") && uuid(rawExecution.id)) {
@@ -181,6 +340,8 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
   }
   if ((method === "runs.get" || method === "runs.wait" || method === "runs.events" || method === "runs.result") && uuid(rawExecution.id)) {
     summary.monitoring = monitoring(summary, status, organizationConsistent);
+    const evidence = monitoringEvidence(data, rawExecution.id);
+    if (evidence) summary.monitoringEvidence = evidence;
   }
   return summary;
 }

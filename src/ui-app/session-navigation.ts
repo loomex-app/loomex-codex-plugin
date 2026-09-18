@@ -1,7 +1,9 @@
+import { decodePersistedHandoff } from "./persisted-presentation.js";
 import {committedPreparationRun} from "./run-presentation.js";
 import type {JsonObject,UiMode} from "./contracts.js";
 import type {UiData,RpcResult,RunFlow,RuntimeViewSessionProjection,ViewFault,ReopenedInteraction,HumanRequest} from "./page-models.js";
-import type {ViewPersistenceController,PersistenceStatus} from "./persistence.js";
+import {ViewRestorationCoordinator} from "./persistence.js";
+import type {ViewPersistenceController,PersistenceStatus,ViewRestorationPhase,RestorationScopeFence} from "./persistence.js";
 import type {createRunSetupController} from "./run-setup.js";
 import type {createRunMonitorController} from "./run-monitor.js";
 import type {createRunPresentation} from "./run-presentation.js";
@@ -9,14 +11,19 @@ import type {InteractionFormController} from "./interaction-form.js";
 import type {ActionId} from "./shell.js";
 
 export interface NavigationState {
- viewRestoring:boolean;viewPersistenceUnavailable:boolean;viewReentry:ViewFault|null;
- viewHydrationEpoch:number;hydratedSessionId:string;hydratedReadySessionId:string;
+ readonly viewRestoring:boolean;viewPersistenceUnavailable:boolean;viewReentry:ViewFault|null;
+ readonly viewHydrationEpoch:number;hydratedSessionId:string;readonly hydratedReadySessionId:string;
+ readonly viewRestorationPhase:ViewRestorationPhase;readonly verificationFailedSection:string|undefined;
  persistenceConflict:boolean;reopenedInteraction:ReopenedInteraction|null;
  readonly followedViewSessions:Set<string>;readonly completedViewStatuses:Set<string>;readonly refreshedInteractionViews:Set<string>;
 }
 export interface SessionNavigationServices {
+ readonly lifecycle?: ViewRestorationCoordinator;
  readonly flowStore:{flow:RunFlow|null};
- readonly persistence:Pick<ViewPersistenceController,"session"|"configure"|"changeVersion">;
+ readonly persistence:Pick<ViewPersistenceController,"session"|"configure"|"changeVersion"> & {
+  /** Optional display-only read supplied by a host with a local snapshot store. */
+  restoreSnapshot?():Promise<RuntimeViewSessionProjection|null|undefined>;
+ };
  readonly elements:{form:HTMLFormElement;refresh:HTMLButtonElement};
  readonly setup:Pick<ReturnType<typeof createRunSetupController>,"selectedWorkflowVersion"|"initializeRunSetup"|"setupRequestIdentity"|"initializePreparedRunReview">;
  readonly monitor:Pick<ReturnType<typeof createRunMonitorController>,"initializeRunMonitor"|"renderIntegratedRunFlow"|"acceptRunSnapshot">;
@@ -35,6 +42,7 @@ export interface SessionNavigationServices {
  viewSessionProjection(result:RpcResult):RuntimeViewSessionProjection|null;
  taskWorkspaceArguments():JsonObject;
  restoreBrowserFromPersistence(state:JsonObject):Promise<unknown>;
+ restoreRunsFromPersistence?(state:JsonObject):Promise<unknown>;
  restoreDisclosures(value:unknown):void;restoreControls(value:unknown):void;
  restoreReadingPosition(value:unknown,epoch:number):void;
  fieldsetQuestionId(field:HTMLElement):string|null;
@@ -45,10 +53,18 @@ export interface SessionNavigationServices {
  persistenceStatus(status:PersistenceStatus,error?:Error):void;
  detachInteractionDraft():void;
  hydrate():Promise<RuntimeViewSessionProjection|null|undefined>;
+ /** Optional immediate rendering hook for a display-safe saved snapshot. */
+ renderRestorationSnapshot?(projection:RuntimeViewSessionProjection,phase:"verifying"|"read_only"):void;
+ /** Rebuilds the incoming canonical form without starting a new persistence cycle. */
+ renderCanonicalRestoration?():void;
  viewEntityMatches(value:RuntimeViewSessionProjection):boolean;
  draftRequest():HumanRequest|null|undefined;
  loadInteractionDraft(request:HumanRequest,epoch:number):Promise<boolean>;
+ restoreDelivery?(state:JsonObject|undefined):void;
+ projectRetainedOperation?():void;
  restoreJournalOperation(projection:RuntimeViewSessionProjection,epoch:number):Promise<boolean>;
+ /** Available to explicit recovery controls; hydration never invokes it. */
+ ensureStartHandoff():Promise<void>;
  setAction(button:HTMLButtonElement,label:string,id?:ActionId):void;
  syncChrome():void;
  desiredViewStatus():string|undefined;
@@ -63,10 +79,20 @@ export function createSessionNavigationController(host:SessionNavigationServices
  const {initializeRunMonitor,renderIntegratedRunFlow,acceptRunSnapshot}=host.monitor;
  const {safeText,observePreparationReview}=host.presentation;
  const {showQuestionStep,beginAnswerReview}=host.forms;
- const {workflowIdValid,dataOf,humanRequest,humanRequestResolved,executionId,interactionId,builderSessionId,callTool,viewSessionProjection,taskWorkspaceArguments,restoreBrowserFromPersistence,restoreDisclosures,restoreControls,restoreReadingPosition,fieldsetQuestionId,render,viewPersistenceFault,enterSafeViewReentry,syncRestorationVisibility,persistenceStatus,detachInteractionDraft,viewEntityMatches,draftRequest,loadInteractionDraft,restoreJournalOperation,setAction,syncChrome,desiredViewStatus,markCurrentViewStatus,setError}=host;
+ const {workflowIdValid,dataOf,humanRequest,humanRequestResolved,executionId,interactionId,builderSessionId,callTool,viewSessionProjection,taskWorkspaceArguments,restoreBrowserFromPersistence,restoreRunsFromPersistence,restoreDisclosures,restoreControls,restoreReadingPosition,fieldsetQuestionId,render,viewPersistenceFault,enterSafeViewReentry,syncRestorationVisibility,persistenceStatus,detachInteractionDraft,viewEntityMatches,draftRequest,loadInteractionDraft,restoreJournalOperation,ensureStartHandoff,setAction,syncChrome,desiredViewStatus,markCurrentViewStatus,setError,renderRestorationSnapshot}=host;
  const VIEW_SESSION_TOOLS={get:"loomex_view_session_get"};
- const stateStore:NavigationState={viewRestoring:true,viewPersistenceUnavailable:false,viewReentry:null,viewHydrationEpoch:0,hydratedSessionId:"",hydratedReadySessionId:"",persistenceConflict:false,reopenedInteraction:null,followedViewSessions:new Set(),completedViewStatuses:new Set(),refreshedInteractionViews:new Set()};
+ const restorationCoordinator = host.lifecycle ?? new ViewRestorationCoordinator();
+ const stateStore:NavigationState={
+  get viewRestoring(){return restorationCoordinator.state.phase === "loading_snapshot";},
+  get viewHydrationEpoch(){return restorationCoordinator.state.generation;},
+  get viewRestorationPhase(){return restorationCoordinator.state.phase;},
+  get verificationFailedSection(){return restorationCoordinator.state.failedSection;},
+  get hydratedReadySessionId(){return ["ready","read_only"].includes(restorationCoordinator.state.phase) ? restorationCoordinator.state.scope : "";},
+  viewPersistenceUnavailable:false,viewReentry:null,hydratedSessionId:"",persistenceConflict:false,reopenedInteraction:null,
+  followedViewSessions:new Set(),completedViewStatuses:new Set(),refreshedInteractionViews:new Set(),
+ };
  let disposed=false;
+ const unsubscribe=restorationCoordinator.subscribe(()=>{if(!disposed){syncRestorationVisibility();syncChrome();}});
  async function restoration<T>(promise:Promise<T>,epoch:number):Promise<T>{const value=await promise;if(disposed||epoch!==stateStore.viewHydrationEpoch)throw new Error("The saved view changed during restoration.");return value;}
  async function persistenceTool(name:string,args:JsonObject):Promise<RuntimeViewSessionProjection>{return host.requiredViewSession(await host.persistenceTool(name,args));}
  function activeFlow():RunFlow{const flow=host.flowStore.flow;if(!flow)throw new Error("The saved run view is unavailable.");return flow;}
@@ -81,7 +107,7 @@ export function createSessionNavigationController(host:SessionNavigationServices
       throw new Error("The reopened request is not bound to this saved interaction view.");
     }
     const requestId = reopen.requestId;
-    const refreshKey = `${viewSessionId}:${requestId}`;
+    const refreshKey = `${viewSessionId}:${requestId}:${epoch}`;
     if (stateStore.refreshedInteractionViews.has(refreshKey)) return true;
     const result = await callTool("loomex_interaction_get", { requestId }, false, false);
     const data = dataOf(result);
@@ -96,6 +122,84 @@ export function createSessionNavigationController(host:SessionNavigationServices
     // notification payload with the request's authoritative current state.
     render({ structuredContent: { ok: true, data } });
     return true;
+  }
+
+  type RestoredPreparation =
+    | Readonly<{ kind: "valid"; result: RpcResult; preparation: UiData }>
+    | Readonly<{ kind: "committed"; run: UiData }>
+    | Readonly<{ kind: "pending" }>;
+
+  async function readRestoredPreparation(preparationId: string, epoch: number): Promise<RestoredPreparation> {
+    const result = await restoration(callTool("loomex_preparation_get", { preparationId }, false), epoch);
+    const restored = dataOf(result);
+    // A submitted handoff may reopen before the conversation has committed
+    // it. It can also receive a non-preparation payload while an
+    // outer restore is completing. Neither condition authorizes reviving the
+    // review. Keep its durable lock until a later exact read proves either
+    // the original preparation or the run it committed.
+    if (result?.isError || result?.structuredContent?.ok === false) return { kind: "pending" };
+    const committedRunId = committedPreparationRun(restored, preparationId);
+    if (committedRunId) {
+      const snapshot = await restoration(callTool("loomex_run_get", { runId: committedRunId }, false), epoch);
+      const run = dataOf(snapshot);
+      if (snapshot?.isError || snapshot?.structuredContent?.ok === false || executionId(run) !== committedRunId) {
+        throw new Error("The committed run could not be verified while restoring this view.");
+      }
+      return { kind: "committed", run };
+    }
+    if (restored?.status !== "valid" || restored?.operation !== "runs.prepare" ||
+        !restored.preparation || restored.preparation.preparationId !== preparationId) return { kind: "pending" };
+    return { kind: "valid", result, preparation: restored.preparation };
+  }
+
+  function restoreCommittedRun(run: UiData, returnBrowserViewSessionId: string, preparationId: string): void {
+    initializeRunMonitor(run, host.flowStore.flow);
+    const flow = activeFlow();
+    // A preparation card is immutable presentation state.  Its committed run
+    // is useful as a read-only summary, but it must not turn the card into an
+    // execution-owned monitor while the preparation session is being verified.
+    // Keep the verified preparation identity on the monitor flow so the shell
+    // can distinguish this restoration from an ordinary monitor card.
+    const previousPreparationId = safeText(flow.prepared?.preparationId, 64);
+    if (previousPreparationId && previousPreparationId !== preparationId) {
+      throw new Error("The committed run does not match this saved preparation.");
+    }
+    if (!previousPreparationId) flow.prepared = { preparationId };
+    flow.summaryOwner = "preparation";
+    flow.returnToBrowser = Boolean(returnBrowserViewSessionId);
+    flow.returnViewSessionId = returnBrowserViewSessionId;
+    host.setLatest(run);
+  }
+
+  async function reconcileRestoredHandoff(flow: RunFlow, state: JsonObject, epoch: number): Promise<boolean> {
+    const handoff = decodePersistedHandoff(state);
+    // Exact mutation arguments and idempotency keys are restored separately
+    // from the owner-scoped operation journal. Presentation state is never a
+    // recovery source for those values.
+    delete flow.startHandoffOperation;
+    flow.startHandoffReady=false;
+    flow.startHandoffState="unknown";
+    if (!handoff.ref) {
+      if (handoff.lifecycle === "legacy") {
+        // Earlier cards did not retain a safe reference. They can still show
+        // an already committed preparation, but a still-valid review must be
+        // prepared again instead of resurrecting its old handoff value.
+        const preparationId = safeText(flow.prepared?.preparationId, 64);
+        if (!workflowIdValid(preparationId)) throw new Error("The saved preparation is missing its verifiable identity.");
+        const preparation = await readRestoredPreparation(preparationId, epoch);
+        if (preparation.kind === "committed") {
+          restoreCommittedRun(preparation.run, flow.returnViewSessionId || "", preparationId);
+          return true;
+        }
+        flow.preparationStale = true;
+      }
+      return false;
+    }
+    flow.startHandoffRef = handoff.ref;
+    // Let journal restoration complete before the runner reference is read.
+    // Otherwise a remount could mint a duplicate issue/resume while a saved
+    // exact operation is still being reconciled.
+    return false;
   }
 
   async function restoreViewState(value: unknown) {
@@ -130,38 +234,58 @@ export function createSessionNavigationController(host:SessionNavigationServices
       restoreDisclosures(state.disclosures);
       return;
     }
+    if (host.mode() === "runs" && !host.flowStore.flow) {
+      const runs = record(state.runs);
+      if (!runs || !restoreRunsFromPersistence) return;
+      await restoration(restoreRunsFromPersistence(runs), restorationEpoch);
+      restoreDisclosures(state.disclosures);
+      return;
+    }
     if (host.flowStore.flow?.stage === "setup" && state.workflowId === host.flowStore.flow.selected?.workflowId && state.versionId === host.flowStore.flow.selected?.versionId) {
       host.flowStore.flow.workspaceEditing = host.flowStore.flow.workspaceEditing || state.workspaceEditing === true;
       if (workflowIdValid(state.returnBrowserViewSessionId)) activeFlow().returnViewSessionId = state.returnBrowserViewSessionId;
       renderIntegratedRunFlow();
       restoreControls(state.controls);
-    } else if (host.flowStore.flow?.stage === "review" && state.preparationId === host.flowStore.flow.prepared?.preparationId) {
-      if (workflowIdValid(state.returnBrowserViewSessionId)) activeFlow().returnViewSessionId = state.returnBrowserViewSessionId;
-      if (workflowIdValid(state.setupViewSessionId)) host.flowStore.flow.setupViewSessionId = state.setupViewSessionId;
-      if (typeof state.workflowVersion === "number" && Number.isSafeInteger(state.workflowVersion) && state.workflowVersion > 0) host.flowStore.flow.editWorkflowVersion = state.workflowVersion;
-    } else if (host.flowStore.flow?.stage === "monitor" && state.executionId === executionId(host.flowStore.flow.result)) {
+    } else {
+      const reviewFlow = host.flowStore.flow?.stage === "review" ? host.flowStore.flow : null;
+      if (reviewFlow && state.preparationId === reviewFlow.prepared?.preparationId) {
+      if (workflowIdValid(state.returnBrowserViewSessionId)) reviewFlow.returnViewSessionId = state.returnBrowserViewSessionId;
+      if (workflowIdValid(state.setupViewSessionId)) reviewFlow.setupViewSessionId = state.setupViewSessionId;
+      if (typeof state.workflowVersion === "number" && Number.isSafeInteger(state.workflowVersion) && state.workflowVersion > 0) reviewFlow.editWorkflowVersion = state.workflowVersion;
+      const committed = await reconcileRestoredHandoff(reviewFlow, state, restorationEpoch);
+      if (committed) {
+        renderIntegratedRunFlow();
+        return true;
+      }
+      } else if (host.flowStore.flow?.stage === "monitor" && state.executionId === executionId(host.flowStore.flow.result)) {
       const acceptedRequestId = safeText(state.acceptedRequestId, 64);
       if (workflowIdValid(acceptedRequestId)) {
         const result = await restoration(callTool("loomex_interaction_get", { requestId: acceptedRequestId }, false), restorationEpoch);
         const restored = humanRequest(dataOf(result));
         if (result?.isError || !restored || restored.id !== acceptedRequestId ||
-            restored.execution?.id !== state.executionId || !humanRequestResolved(restored)) {
+            (restored.execution?.id || restored.executionId) !== state.executionId || !humanRequestResolved(restored)) {
           throw new Error("The saved response review could not be verified for this run.");
         }
         host.flowStore.flow.acceptedRequest = restored;
       }
       renderIntegratedRunFlow();
-    } else if (host.mode() === "authoring" && state.builderSessionId === builderSessionId(host.latest() || {})) {
+      } else if (host.mode() === "authoring" && state.builderSessionId === builderSessionId(host.latest() || {})) {
+      // The provisional snapshot intentionally hides editable controls. This
+      // branch runs only after the full owner-checked session read, so it can
+      // reveal the canonical form before reconstructing its saved position.
+      form.hidden = false;
       const fields = [...form.querySelectorAll<HTMLElement>("fieldset[data-question-id]")];
       const index = fields.findIndex((fieldset) => fieldsetQuestionId(fieldset) === state.currentQuestionId);
       if (index >= 0) showQuestionStep(index, false);
       if (state.phase === "review") {
         try { beginAnswerReview(); } catch { /* Preserve the draft for correction. */ }
       }
-    } else if (host.mode() === "interaction" && state.requestId === interactionId(host.latest() || {})) {
+      } else if (host.mode() === "interaction" && state.requestId === interactionId(host.latest() || {})) {
+      form.hidden = false;
       const fields = [...form.querySelectorAll<HTMLElement>("fieldset[data-question-id]")];
       const index = fields.findIndex((fieldset) => fieldsetQuestionId(fieldset) === state.currentQuestionId);
       if (index >= 0) showQuestionStep(index, false);
+      }
     }
     restoreDisclosures(state.disclosures);
   }
@@ -213,35 +337,24 @@ export function createSessionNavigationController(host:SessionNavigationServices
       return true;
     }
     if (forward.kind === "prepare" && forward.entityType === "preparation") {
-      const result = await restoration(callTool("loomex_preparation_get", { preparationId: forward.entityId }, false), restorationEpoch);
-      const restored = dataOf(result);
-      // The commit sealed this preparation. A durable commit result gives us a
-      // verified execution identity, so follow that identity rather than
-      // presenting a sealed review as an expired local draft.
-      const committedRunId = committedPreparationRun(restored, forward.entityId);
-      if (!result.isError && result.structuredContent?.ok !== false && committedRunId) {
-        const snapshot = await restoration(callTool("loomex_run_get", { runId: committedRunId }, false), restorationEpoch);
-        const run = dataOf(snapshot);
-        if (snapshot?.isError || snapshot?.structuredContent?.ok === false || executionId(run) !== committedRunId) {
-          throw new Error("The committed run could not be verified while restoring this view.");
-        }
-        initializeRunMonitor(run, null);
-        activeFlow().returnToBrowser = Boolean(returnBrowserViewSessionId);
-        activeFlow().returnViewSessionId = returnBrowserViewSessionId;
+      const preparation = await readRestoredPreparation(forward.entityId, restorationEpoch);
+      if (preparation.kind === "committed") {
+        restoreCommittedRun(preparation.run, returnBrowserViewSessionId, forward.entityId);
         observeViewPersistence({ _meta: { "loomex/viewSession": target } });
         renderIntegratedRunFlow();
         return true;
       }
-      if (result?.isError || result?.structuredContent?.ok === false || restored?.status !== "valid" || restored?.operation !== "runs.prepare" ||
-          !restored.preparation || restored.preparation.preparationId !== forward.entityId) {
+      if (preparation.kind === "pending") {
         throw new Error("The saved preparation is no longer available. Return to setup and prepare it again.");
       }
-      host.setLatest(restored.preparation);
-      observePreparationReview(result, restored.preparation);
-      initializePreparedRunReview(restored.preparation);
+      host.setLatest(preparation.preparation);
+      observePreparationReview(preparation.result, preparation.preparation);
+      initializePreparedRunReview(preparation.preparation);
       activeFlow().returnToBrowser = Boolean(returnBrowserViewSessionId);
       activeFlow().returnViewSessionId = returnBrowserViewSessionId;
+      const committed = await reconcileRestoredHandoff(activeFlow(), target.state || {}, restorationEpoch);
       observeViewPersistence({ _meta: { "loomex/viewSession": target } });
+      if (committed) return true;
       renderIntegratedRunFlow();
       return true;
     }
@@ -276,29 +389,159 @@ export function createSessionNavigationController(host:SessionNavigationServices
     }
   }
 
-  function observeViewPersistence(result: RpcResult) {
-    if (disposed) return;
+  function provisionalPhase(projection: RuntimeViewSessionProjection): "verifying" | "read_only" {
+    const saved = record(projection.state);
+    const sealedNavigation = Boolean(forwardSession(saved?.forwardSession)?.entityType === "preparation");
+    return projection.status === "resolved" || projection.status === "inactive" ||
+      workflowIdValid(safeText(saved?.acceptedRequestId, 64)) || sealedNavigation ? "read_only" : "verifying";
+  }
+
+  function showRetry(section: "snapshot" | "verification", error: Error): void {
+    refresh.dataset.retryViewHydration = "true";
+    refresh.dataset.retryViewSection = section;
+    refresh.hidden = false;
+    setAction(refresh, "Retry restore", "refresh");
+    refresh.disabled = !host.connected();
+    persistenceStatus("load_failed", error);
+    setError(error);
+    syncChrome();
+  }
+
+  async function verifySnapshot(snapshot: RuntimeViewSessionProjection, epoch: number, localChangeVersion: number, fence: RestorationScopeFence, rebuildSnapshotUi: boolean): Promise<RuntimeViewSessionProjection | null> {
+    const sessionRead = fence.request("view-session");
+    const authoritative = await host.hydrate();
+    if (!fence.currentRequest(sessionRead)) return null;
+    if (!authoritative) throw new Error("The saved view could not be verified.");
+    const projection = host.requiredViewSession(authoritative);
+    if(projection.state?.schemaVersion !== undefined && projection.state.schemaVersion !== 1)throw new Error("This saved view uses an unsupported state version. Reopen it from its original command; any pending operation remains saved.");
+    if (projection.viewSessionId !== snapshot.viewSessionId || projection.kind !== snapshot.kind ||
+        projection.entityType !== snapshot.entityType || projection.entityId !== snapshot.entityId) {
+      throw new Error("The saved view changed while it was being restored.");
+    }
+    if (!fence.current() || disposed || !viewEntityMatches(projection)) throw new Error("The saved view no longer matches this card.");
+    // The snapshot renderer removes editable form content. Once this fresh,
+    // owner-checked session identity is in hand, reveal the already-rendered
+    // canonical form so state/draft restoration has a real DOM target. The
+    // mutation-ready gate remains closed until the whole verification path
+    // below completes.
+    if (rebuildSnapshotUi && ["authoring", "interaction"].includes(host.mode())) {
+      // Rendering creates real form controls so drafts can be reconciled, but
+      // they must remain inert until the draft and operation journal below
+      // are current. A late draft can otherwise overwrite a user's edit.
+      form.inert = true;
+      host.renderCanonicalRestoration?.();
+      form.hidden = false;
+    }
+    const reopen = host.mode() === "interaction" ? (stateStore.reopenedInteraction || {
+      viewSessionId: projection.viewSessionId,
+      requestId: interactionId(host.latest() || {}) || "",
+    }) : null;
+    if (reopen && (reopen.viewSessionId !== projection.viewSessionId || !workflowIdValid(reopen.requestId) ||
+        projection.kind !== "interaction" || projection.entityType !== "request" || projection.entityId !== reopen.requestId)) {
+      throw new Error("The reopened request does not match this saved interaction view.");
+    }
+    if (reopen && (rebuildSnapshotUi || projection.status === "resolved" || projection.revision > 0 || stateStore.reopenedInteraction) && stateStore.hydratedSessionId !== projection.viewSessionId && host.persistence.changeVersion === localChangeVersion) {
+      const request = fence.request(`interaction:${reopen.requestId}`);
+      if (!await refreshReopenedInteraction(reopen, projection.viewSessionId, epoch) || !fence.currentRequest(request)) return null;
+    }
+    if (rebuildSnapshotUi && host.mode() === "authoring" && projection.entityType === "builderSession") {
+      const sessionId = projection.entityId;
+      const read = fence.request("authoring-session");
+      const result = await callTool("loomex_builder_get", {sessionId}, false, false);
+      if (!fence.currentRequest(read)) return null;
+      const data = dataOf(result);
+      if (result.isError || result.structuredContent?.ok === false || builderSessionId(data) !== sessionId) throw new Error("The authoring session could not be verified.");
+      host.setLatest(data);
+      render({structuredContent:{ok:true,data}});
+    }
+    if (host.mode() === "monitor" && projection.status === "resolved" && stateStore.hydratedSessionId !== projection.viewSessionId &&
+        host.persistence.changeVersion === localChangeVersion && host.flowStore.flow?.stage === "monitor") {
+      const runId = executionId(host.flowStore.flow.result) || safeText(projection.entityId, 64);
+      if (!workflowIdValid(runId)) throw new Error("The resolved monitor view is missing its run identity.");
+      const request = fence.request(`run:${runId}`);
+      const refreshed = await callTool("loomex_run_get", { runId }, false);
+      const refreshedData = dataOf(refreshed);
+      if (!fence.currentRequest(request)) return null;
+      if (refreshed?.isError || refreshed?.structuredContent?.ok === false || executionId(refreshedData) !== runId) throw new Error("The resolved run could not be verified.");
+      acceptRunSnapshot(refreshedData, runId);
+      host.setLatest(refreshedData);
+      render({ structuredContent: { ok: true, data: refreshedData } });
+    }
+    return projection;
+  }
+
+  async function reconcileAuthority(projection:RuntimeViewSessionProjection, epoch:number, fence:RestorationScopeFence):Promise<void> {
+    const journalFence = fence.request("journal");
+    const journalReady = await restoreJournalOperation(projection, epoch);
+    if (!fence.currentRequest(journalFence)) return;
+    if (!journalReady) throw new Error("The saved pending action could not be restored.");
+  }
+
+  async function restoreEditableState(projection:RuntimeViewSessionProjection, epoch:number, localChangeVersion:number, fence:RestorationScopeFence):Promise<void> {
+    if (stateStore.hydratedSessionId !== projection.viewSessionId && host.persistence.changeVersion === localChangeVersion) {
+      // Draft answers are separately authoritative. Restore them before
+      // rebuilding an authoring review so the review never briefly reflects
+      // stale or blank controls from the presentation snapshot.
+      const candidate = draftRequest();
+      const request = candidate && !humanRequestResolved(candidate) ? candidate : undefined;
+      const draftFirst = request && ["authoring", "interaction"].includes(host.mode());
+      if (draftFirst) {
+        const draftFence = fence.request(`draft:${request.id || "current"}`);
+        if (!await loadInteractionDraft(request, epoch) || !fence.currentRequest(draftFence)) {
+          throw new Error("The saved answer draft could not be restored.");
+        }
+      }
+      if (await restoreViewState(projection.state)) return;
+      if (request && !draftFirst) {
+        const draftFence = fence.request(`draft:${request.id || "current"}`);
+        if (!await loadInteractionDraft(request, epoch) || !fence.currentRequest(draftFence)) throw new Error("The saved answer draft could not be restored.");
+      }
+      stateStore.hydratedSessionId = projection.viewSessionId;
+    }
+  }
+
+  async function projectVerifiedState(projection:RuntimeViewSessionProjection, epoch:number, fence:RestorationScopeFence):Promise<"ready"|"read_only"> {
+    if (!fence.current() || disposed || !viewEntityMatches(projection)) return "read_only";
+    form.inert = false;
+    if (["authoring", "interaction"].includes(host.mode())) {
+      form.hidden = false;
+    }
+    host.restoreDelivery?.(projection.state);
+    host.projectRetainedOperation?.();
+    delete refresh.dataset.retryViewHydration;
+    delete refresh.dataset.retryViewSection;
+    if (["setup", "review"].includes(host.flowStore.flow?.stage || "")) {
+      renderIntegratedRunFlow();
+    }
+    else syncChrome();
+    restoreDisclosures(projection.state?.disclosures);
+    restoreReadingPosition(projection.state, epoch);
+    const completedStatus = desiredViewStatus();
+    if (completedStatus) void markCurrentViewStatus(completedStatus);
+    return desiredViewStatus() || (humanRequest(host.latest() || {}) && humanRequestResolved(humanRequest(host.latest() || {})!)) ? "read_only" : "ready";
+  }
+
+  function observeViewPersistence(result: RpcResult): Promise<boolean> | undefined {
+    if (disposed) return undefined;
     const fault = viewPersistenceFault(result);
     if (fault?.status === "reentry") {
+      restorationCoordinator.reenter();
       enterSafeViewReentry(fault);
-      return;
+      return Promise.resolve(false);
     }
     if (fault?.status === "unavailable") {
+      restorationCoordinator.unavailable();
       stateStore.viewReentry = null;
       stateStore.viewPersistenceUnavailable = true;
-      stateStore.viewRestoring = false;
       syncRestorationVisibility();
-      stateStore.hydratedReadySessionId = "";
-      persistenceStatus("save_failed");
-      return;
+        persistenceStatus("save_failed");
+      return Promise.resolve(false);
     }
     const supplied = viewSessionProjection(result);
     if (!supplied) {
-      if (!host.persistence.session) { stateStore.viewRestoring = false; syncRestorationVisibility(); }
-      return;
+      if (!host.persistence.session) { restorationCoordinator.unavailable(); syncRestorationVisibility(); }
+      return Promise.resolve(false);
     }
-    stateStore.viewRestoring = true;
-    syncRestorationVisibility();
     stateStore.viewPersistenceUnavailable = false;
     stateStore.viewReentry = null;
     const changedSession = host.persistence.configure(supplied);
@@ -306,96 +549,52 @@ export function createSessionNavigationController(host:SessionNavigationServices
       stateStore.persistenceConflict = false;
       detachInteractionDraft();
     }
-    stateStore.hydratedReadySessionId = "";
+    // Only a plugin-provided restore response represents a remounted card.
+    // A newly created session already accompanies fresh authoritative tool
+    // output, so showing its own saved display projection would duplicate the
+    // live form and spend an unnecessary runner round trip.
+    const rawMeta = record(record(result._meta)?.["loomex/viewSession"]);
+    const showSavedSnapshot = rawMeta?.restoreVersion === "presentation.sessions.restore/v1";
     if (["inactive", "resolved"].includes(supplied.status || "")) stateStore.completedViewStatuses.add(`${supplied.viewSessionId}:${supplied.status}`);
-    const epoch = ++stateStore.viewHydrationEpoch;
     const localChangeVersion = host.persistence.changeVersion;
-    return new Promise<boolean>((resolve) => queueMicrotask(async () => {
-      let ready = false;
-      try {
-        const projection = await host.hydrate();
-        if (disposed || !projection || epoch !== stateStore.viewHydrationEpoch) return;
-        const reopen = host.mode() === "interaction" ? (stateStore.reopenedInteraction || {
-          viewSessionId: projection.viewSessionId,
-          requestId: interactionId(host.latest() || {}) || "",
-        }) : null;
-        if (reopen && (reopen.viewSessionId !== projection.viewSessionId || !workflowIdValid(reopen.requestId) ||
-            projection.kind !== "interaction" || projection.entityType !== "request" || projection.entityId !== reopen.requestId)) {
-          throw new Error("The reopened request does not match this saved interaction view.");
+    let verified: RuntimeViewSessionProjection | null = null;
+    return restorationCoordinator.open({
+      mode: host.mode(), identity: supplied.viewSessionId,
+      domainIdentity: `${supplied.entityType}:${supplied.entityId}`,
+      snapshot: async () => {
+        const projection = showSavedSnapshot
+          ? (host.persistence.restoreSnapshot ? await host.persistence.restoreSnapshot() : await host.hydrate())
+          : supplied;
+        if (!projection) return projection;
+        const restored = host.requiredViewSession(projection);
+        if (restored.viewSessionId !== supplied.viewSessionId || restored.kind !== supplied.kind ||
+            restored.entityType !== supplied.entityType || restored.entityId !== supplied.entityId) {
+          throw new Error("The saved view snapshot does not match this card.");
         }
-        if (reopen && (projection.status === "resolved" || projection.revision > 0 || stateStore.reopenedInteraction) && stateStore.hydratedSessionId !== projection.viewSessionId && host.persistence.changeVersion === localChangeVersion) {
-          if (!await refreshReopenedInteraction(reopen, projection.viewSessionId, epoch)) return;
-        }
-        if (!viewEntityMatches(projection)) return;
-        // A resolved monitor session is only a restoration hint. Re-read the
-        // exact execution once before restoring a completed card so an old
-        // notification cannot make an active run look finished (or vice versa).
-        if (host.mode() === "monitor" && projection.status === "resolved" && stateStore.hydratedSessionId !== projection.viewSessionId &&
-            host.persistence.changeVersion === localChangeVersion && host.flowStore.flow?.stage === "monitor") {
-          const runId = executionId(host.flowStore.flow.result) || safeText(projection.entityId, 64);
-          if (!workflowIdValid(runId)) throw new Error("The resolved monitor view is missing its run identity.");
-          const refreshed = await callTool("loomex_run_get", { runId }, false);
-          const refreshedData = dataOf(refreshed);
-          if (refreshed?.isError || refreshed?.structuredContent?.ok === false || executionId(refreshedData) !== runId) {
-            throw new Error("The resolved run could not be verified.");
-          }
-          acceptRunSnapshot(refreshedData, runId);
-          host.setLatest(refreshedData);
-          render({ structuredContent: { ok: true, data: refreshedData } });
-        }
-        if (stateStore.hydratedSessionId !== projection.viewSessionId && host.persistence.changeVersion === localChangeVersion) {
-          if (await restoreViewState(projection.state)) return;
-          const request = draftRequest();
-          if (request && !await loadInteractionDraft(request, epoch)) throw new Error("The saved answer draft could not be restored.");
-          stateStore.hydratedSessionId = projection.viewSessionId;
-        }
-        const journalReady = await restoreJournalOperation(projection, epoch);
-        if (!journalReady) {
-          refresh.dataset.retryViewHydration = "true";
-          refresh.hidden = false;
-          setAction(refresh, "Retry restore", "refresh");
-          refresh.disabled = !host.connected();
-          return;
-        }
-        if (!disposed && epoch === stateStore.viewHydrationEpoch && viewEntityMatches(projection)) {
-          stateStore.hydratedReadySessionId = projection.viewSessionId;
-          delete refresh.dataset.retryViewHydration;
-          // The first preparation render can occur before the host connection
-          // and durable session finish initializing. Re-render setup and
-          // review cards so Start derives from the authoritative lifecycle
-          // rather than a previously-disabled DOM node. Monitor cards retain
-          // their restored cancellation controls without another DOM reset.
-          if (["setup", "review"].includes(host.flowStore.flow?.stage || "")) renderIntegratedRunFlow();
-          else syncChrome();
-          restoreDisclosures(projection.state?.disclosures);
-          restoreReadingPosition(projection.state, epoch);
-          // Terminal and resolved cards are read-only projections. Persist the
-          // lifecycle status after authoritative hydration so a remount can
-          // request the current domain state before restoring that card.
-          const completedStatus = desiredViewStatus();
-          if (completedStatus) void markCurrentViewStatus(completedStatus);
-          ready = true;
-        }
-      } catch (error) {
-        if (disposed || epoch !== stateStore.viewHydrationEpoch) return;
-        stateStore.hydratedReadySessionId = "";
-        persistenceStatus("load_failed", error instanceof Error ? error : new Error("The saved view could not be restored."));
-        setError(error);
-        refresh.dataset.retryViewHydration = "true";
-        refresh.hidden = false;
-        setAction(refresh, "Retry restore", "refresh");
-        refresh.disabled = !host.connected();
-      } finally {
-        // A forwarded session owns its own loader. A stale hydration must not
-        // reveal content while the destination is still restoring.
-        if (!disposed && epoch === stateStore.viewHydrationEpoch) {
-          stateStore.viewRestoring = false;
-          syncRestorationVisibility();
-        }
-        resolve(ready);
-      }
-    }));
+        return restored;
+      },
+      display: async (projection, fence) => {
+        if (!fence.current() || disposed) return "read_only";
+        const phase = provisionalPhase(projection);
+        if (!showSavedSnapshot) return phase;
+        // Persisted state is presentation-only. Applying it early makes the
+        // card readable while runtime reads happen, and the shell's ready gate
+        // keeps all inputs and actions inert until verification succeeds.
+        renderRestorationSnapshot?.(projection, phase);
+        syncChrome();
+        return phase;
+      },
+      verify: async (projection, fence) => {
+        verified = await verifySnapshot(projection, fence.generation, localChangeVersion, fence, showSavedSnapshot);
+        return desiredViewStatus() ? "read_only" : "ready";
+      },
+      reconcile: async (_, fence) => { if(verified) await reconcileAuthority(verified,fence.generation,fence); },
+      restoreDraft: async (_, fence) => { if(verified) await restoreEditableState(verified,fence.generation,localChangeVersion,fence); },
+      project: async (_, fence) => verified ? projectVerifiedState(verified,fence.generation,fence) : "read_only",
+      ready: () => { if (["setup","review"].includes(host.flowStore.flow?.stage ?? "")) renderIntegratedRunFlow(); },
+      failed: (section, error) => showRetry(section, error),
+    });
   }
 
-return {refreshReopenedInteraction, restoreViewState, followForwardSession, observeViewPersistence,state:stateStore,dispose(){disposed=true;stateStore.viewHydrationEpoch++;}};
+return {refreshReopenedInteraction, restoreViewState, followForwardSession, observeViewPersistence,state:stateStore,lifecycle:restorationCoordinator,dispose(){disposed=true;unsubscribe();restorationCoordinator.dispose();}};
 }

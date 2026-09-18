@@ -1,14 +1,21 @@
+import { beginActionTiming } from "./action-timing.js";
+import { ConcurrentReads } from "./read-coordinator.js";
+import { resolveTransportRequestOptions } from "./transport-policy.js";
+import { createUiElement, type ElementAttributes } from "./components.js";
+import { ContinuationDeliveryController, decodeDeliveryProjection } from "./continuation-delivery.js";
+import {reapplyPresentationEdits} from "./presentation-edits.js";
 // Compose the typed page domains, transport, persistence, and native DOM shell.
-import { decodeUiResult } from "./result-decoder.js";
+import { decodePersistenceResult, decodeUiResult, normalizeUiRpcResult, UiResultDecodeError, type UiResultDiagnostic } from "./result-decoder.js";
 import { setRestoring } from "./lifecycle.js";
 import { RuntimeTransport } from "./runtime-transport.js";
-import { createViewPersistence } from "./persistence.js";
-import { formatFollowContinuationContext, formatFollowContinuationMarkdown } from "../monitoring-contract.js";
+import { createViewPersistence, ViewRestorationCoordinator } from "./persistence.js";
+import { formatFollowContinuationMarkdown } from "../monitoring-contract.js";
 import { ACTIONS, createIcon } from "./shell.js";
 import { eventElement, requireElement, requireMain } from "./dom.js";
 import { createConnectionController } from "./connection-controller.js";
 import { createRuntimeShell } from "./runtime-shell.js";
 import { createBrowserController } from "./browser-controller.js";
+import { createRunListController, type RunListArguments } from "./runs-list-controller.js";
 import { createInteractionFormController, questionCopyValues as presentationQuestionCopyValues } from "./interaction-form.js";
 import { committedPreparationRun, createRunPresentation } from "./run-presentation.js";
 import { createRunSetupController } from "./run-setup.js";
@@ -19,7 +26,6 @@ import { createRunActionsController } from "./run-actions.js";
 import { acceptedDraftRequestId, createInteractionController } from "./interaction-controller.js";
 import { createJournalRestorationController } from "./journal-restoration.js";
 import { createSessionNavigationController } from "./session-navigation.js";
-import { normalizeJsonObject } from "./json-boundary.js";
 import type { PageDefinition } from "./page-definitions.js";
 import {
   createMutationController,
@@ -41,7 +47,7 @@ import type {
 
 declare const __LOOMEX_STATUS_CLASSES__: Readonly<Record<string, string>>;
 
-const UI_MODES = new Set<UiMode>(["browser", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]);
+const UI_MODES = new Set<UiMode>(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]);
 const CONNECTION_STATUS = {
   authenticated: "Signed in", signed_out: "Signed out", verification_pending: "Verification pending",
   verification_expired: "Expired", logout_pending: "Signing out", recovery_pending: "Recovery required",
@@ -62,6 +68,10 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   const supportReference = requireElement<HTMLElement>("support-reference");
   const saveStatus = requireElement<HTMLElement>("save-status");
   const useSavedVersion = requireElement<HTMLButtonElement>("use-saved-version");
+  const reapplyLocal = document.createElement("button");
+  reapplyLocal.type="button";reapplyLocal.id="reapply-local-version";reapplyLocal.className=useSavedVersion.className;
+  reapplyLocal.textContent="Reapply my edits";reapplyLocal.hidden=true;
+  useSavedVersion.after(reapplyLocal);
   const form = requireElement<HTMLFormElement>("form");
   const refresh = requireElement<HTMLButtonElement>("refresh");
   const primary = requireElement<HTMLButtonElement>("primary");
@@ -77,6 +87,10 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   let resizeObserver: ResizeObserver | null = null;
   let nextActivityId = 1;
   let connected = false;
+  // MCP Apps can deliver an initial result before the initialization reply.
+  // Retain only that display payload until the bridge is ready; durable reads
+  // and mutations must never race the host handshake.
+  let pendingInitialResult: RpcResult | null = null;
   let latest: UiData | null = null;
   let latestMethod = "";
   let latestToolName = "";
@@ -85,6 +99,9 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   let authoritativeStateStale = false;
   let hostCapabilities: JsonObject = {};
   let taskWorkspace: TaskWorkspace | null = null;
+  // Diagnostics stay in this card only. They intentionally contain no result
+  // values and are discarded when the card is closed.
+  const uiDiagnostics: UiResultDiagnostic[] = [];
   // Re-entry is deliberately narrower than an unavailable store. A missing
   // server session has no remaining operation authority, so leave the fresh
   // domain projection visible and permit only Refresh to establish a new
@@ -93,6 +110,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   // Connection is intentionally an ephemeral projection. It has no durable
   // presentation session because an organization must never be inferred or
   // scoped before the runner has authenticated the owner.
+  const lifecycle = new ViewRestorationCoordinator();
   const isConnectionView = ["connection", "organizations"].includes(mode);
   // Organization names are a separately refreshable remote read.  The
   // connection projection stays local so that an unavailable organization
@@ -100,6 +118,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   const VIEW_SESSION_TOOLS = {
     create: "loomex_view_session_create",
     get: "loomex_view_session_get",
+    restore: "loomex_view_session_restore",
     update: "loomex_view_session_update",
     operationGet: "loomex_view_operation_get",
     operationSettle: "loomex_view_operation_settle",
@@ -124,23 +143,28 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
         stageLabel: safeText(presentation?.stageLabel),
         status,
         duration,
+        restorationPhase: lifecycle.state.phase,
         restoring: navigationState.viewRestoring,
         persistenceUnavailable: navigationState.viewPersistenceUnavailable,
         reentry: navigationState.viewReentry !== null,
-        mutationReady: mutationHydrationReady(),
-        hasSession: viewPersistence.session !== null,
+        authorityStale: authoritativeStateStale,
+        mutationReady: lifecycle.permissions().mutate || lifecycle.permissions().retryPersistence,
+        editingReady: lifecycle.permissions().edit,
+        hasSession: isConnectionView ? connectionState.viewSession !== null : viewPersistence.session !== null,
         automaticSetupOwnsActivity: Boolean(runSetupController.flow?.stage === "setup" && runSetupController.flow.autoPreparation === "started"),
         isConnectionView,
       };
     },
   });
   const {
-    activeRequests, actionIcon, applyBadgeStyle, applyButtonStyle, hideTooltip, icon, infoButton,
+    activeRequests, actionIcon, applyBadgeStyle, applyButtonStyle, icon,
     setAction, setAnswerAction, setInteractionAction, setMutationAction, syncChrome,
     syncRestorationVisibility, updateActivity, updateClock,
   } = runtimeShell;
 
   const connectionController = createConnectionController({
+    persistenceStatus:(status,error)=>persistenceStatus(status,error,"connection"),
+    lifecycle,
     mode: mode === "organizations" ? "organizations" : "connection",
     elements: { context, title, headerStage, headerStatus, form, refresh, primary, secondary, summary },
     connected: () => connected,
@@ -158,7 +182,6 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     onProjection: (data) => {
       latest = uiData(data) ? data : {};
       authoritativeStateStale = false;
-      navigationState.viewRestoring = false;
     },
     onRender: () => { renderCount += 1; },
   });
@@ -188,6 +211,8 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     if (objectFields.some((key) => supplied[key] !== undefined && record(supplied[key]) === null)) return false;
     if (supplied.humanRequest !== undefined && supplied.humanRequest !== null && record(supplied.humanRequest) === null) return false;
     if (supplied.workflows !== undefined && (!Array.isArray(supplied.workflows) || supplied.workflows.some((item) => record(item) === null))) return false;
+    if (supplied.runs !== undefined && (!Array.isArray(supplied.runs) || supplied.runs.some((item) => record(item) === null))) return false;
+    if (supplied.executions !== undefined && (!Array.isArray(supplied.executions) || supplied.executions.some((item) => record(item) === null))) return false;
     return true;
   }
 
@@ -201,10 +226,9 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   }
 
   function rpcResult(value: unknown): RpcResult {
-    const supplied = record(value);
-    if (supplied === null) return {};
-    const structured = normalizeJsonObject(supplied.structuredContent);
-    const metadata = normalizeJsonObject(supplied._meta);
+    const supplied = normalizeUiRpcResult(value);
+    const structured = record(supplied.structuredContent);
+    const metadata = record(supplied._meta);
     return {
       ...(supplied.isError === true ? { isError: true } : {}),
       ...(structured !== null && Object.values(structured).every(jsonValue)
@@ -226,10 +250,29 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     };
   }
 
+  function incomingRunArguments(value: unknown): RunListArguments | undefined {
+    const supplied = record(value);
+    if (supplied === null) return undefined;
+    return {
+      limit: 5,
+      ...(typeof supplied.cursor === "string" ? { cursor: supplied.cursor } : {}),
+      ...(typeof supplied.status === "string" ? { status: supplied.status } : {}),
+      ...(typeof supplied.workflowId === "string" ? { workflowId: supplied.workflowId } : {}),
+    };
+  }
+
   function resultData(result: unknown): UiData {
-    const decoded = normalizeJsonObject(decodeUiResult(result));
-    if (decoded === null) return {};
-    return uiData(decoded) ? decoded : {};
+    const decoded = decodeUiResult(result);
+    if (!uiData(decoded)) {
+      throw new UiResultDecodeError("The host returned data that this view cannot use.", {
+        format: "loomex/ui-result-diagnostic/v1", stage: "canonical", channel: "root", code: "UI_DATA_SHAPE_INVALID", fields: [],
+      });
+    }
+    return decoded;
+  }
+
+  function normalizeRunPage(data: UiData): UiData {
+    return Array.isArray(data.runs) || !Array.isArray(data.executions) ? data : { ...data, runs: data.executions };
   }
 
   function requiredViewSession(value: unknown): RuntimeViewSessionProjection {
@@ -241,7 +284,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       throw new Error("The saved view session could not be verified.");
     }
     const state = record(supplied.state);
-    const rawOperation = record(supplied.operation);
+    const rawOperation = record(supplied.operation) ?? record(supplied.pendingOperation);
     const operation = rawOperation && typeof rawOperation.operationId === "string"
       ? { operationId: rawOperation.operationId, ...(typeof rawOperation.status === "string" ? { status: rawOperation.status } : {}) }
       : undefined;
@@ -257,17 +300,18 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     };
   }
 
+  const persistenceReads = new ConcurrentReads();
+  const COALESCED_PERSISTENCE_READS = new Set(["loomex_view_session_get", "loomex_view_session_restore", "loomex_view_operation_get", "loomex_interaction_draft_get", "loomex_delivery_get"]);
   async function persistenceTool(name: string, args: JsonObject): Promise<JsonObject> {
     // View and draft persistence is deliberately silent: it must never move the
     // form a person is completing just because a background save is in flight.
-    const result = rpcResult(await send("tools/call", { name, arguments: args }, true, { activity: false }));
-    if (result?.isError || result?.structuredContent?.ok === false) {
-      const error = new Error(result.structuredContent?.error?.message || "The view state could not be saved.") as Error & { code?: string };
-      const code = result.structuredContent?.error?.code;
-      if (typeof code === "string") error.code = code;
-      throw error;
+    const load = async () => decodePersistenceResult(await send("tools/call", { name, arguments: args }, true, { activity: false }));
+    if (COALESCED_PERSISTENCE_READS.has(name)) {
+      const scope = [viewPersistence.session?.viewSessionId, mode, interactionId(latest || {})].join(":");
+      return persistenceReads.read(scope, name, args, load);
     }
-    return decodeUiResult(result);
+    persistenceReads.invalidate();
+    return load();
   }
 
   function viewPersistenceFault(result: unknown): ViewFault | null {
@@ -289,11 +333,10 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     runSetupController.flow?.operations?.clear();
     journalRestorationController.reset();
     navigationState.hydratedSessionId = "";
-    navigationState.hydratedReadySessionId = "";
     navigationState.persistenceConflict = false;
     navigationState.viewPersistenceUnavailable = false;
     navigationState.viewReentry = fault;
-    navigationState.viewRestoring = false;
+    lifecycle.reenter();
   }
 
   function renderSafeViewReentry() {
@@ -322,11 +365,10 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     }
   }
 
-  function persistenceStatus(status: PersistenceStatus, error?: PersistenceError): void {
-    if ((status === "save_failed" || status === "load_failed") && /CONFLICT|STALE/.test(String(error?.code || ""))) {
-      navigationState.persistenceConflict = true;
-    }
-    if (status === "dirty") {
+  function persistenceStatus(status: PersistenceStatus, error?: PersistenceError, store="presentation"): void {
+    lifecycle.persistence(status, error, store);
+    navigationState.persistenceConflict = lifecycle.state.persistence === "conflicted";
+    if (status === "dirty" || status === "saving") {
       saveStatus.classList.add("sr-only");
       saveStatus.hidden = false;
       saveStatus.textContent = "Saving this view…";
@@ -334,8 +376,10 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       saveStatus.classList.remove("sr-only");
       saveStatus.hidden = false;
       saveStatus.textContent = navigationState.persistenceConflict
-        ? "This view changed elsewhere. Your local values remain here. Use the saved version only if you want to replace them."
-        : "This view is not saved yet. Your changes remain here; try the action again to save them.";
+        ? "This view changed elsewhere. Your local values remain here. Load the saved version, or explicitly reapply your edits against it."
+        : error?.message
+          ? `Your changes remain here. ${error.message}`
+          : "This view is not saved yet. Your changes remain here; try the action again to save them.";
     } else {
       saveStatus.classList.remove("sr-only");
       saveStatus.hidden = true;
@@ -344,13 +388,15 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     if (navigationState.persistenceConflict) {
       saveStatus.classList.remove("sr-only");
       saveStatus.hidden = false;
-      saveStatus.textContent = "This view changed elsewhere. Your local values remain here. Use the saved version only if you want to replace them.";
+      saveStatus.textContent = "This view changed elsewhere. Your local values remain here. Load the saved version, or explicitly reapply your edits against it.";
     }
     useSavedVersion.hidden = !navigationState.persistenceConflict;
+    reapplyLocal.hidden = !navigationState.persistenceConflict;
   }
 
   const viewPersistence = createViewPersistence({
     read: async (viewSessionId) => requiredViewSession(await persistenceTool(VIEW_SESSION_TOOLS.get, { viewSessionId })),
+    restore: async (viewSessionId) => requiredViewSession(await persistenceTool(VIEW_SESSION_TOOLS.restore, { viewSessionId })),
     snapshot: () => ({ status: desiredViewStatus() }),
     write: async (viewSessionId, expectedRevision, state, idempotencyKey, options) => requiredViewSession(
       await persistenceTool(VIEW_SESSION_TOOLS.update, {
@@ -456,16 +502,24 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       if (index >= 0) showQuestionStep(index, false);
     },
     beginReview: () => { beginAnswerReview(); },
-    status: (status, error) => persistenceStatus(status, error),
+    status: (status, error) => persistenceStatus(status, error,"draft"),
     markViewDirty,
     flushView: () => viewPersistence.flush(captureViewState()),
+    viewFailure: () => viewPersistence.conflict ?? viewPersistence.attempt?.error ?? null,
     persistenceBlocked,
+    persistenceActionLabel: () => runSetupController.flow?.stage === "review" || runSetupController.flow?.stage === "setup"
+      ? "run preparation"
+      : "answer",
     setError,
   });
   const requestSchemaDigest = (request: HumanRequest | null) => requestDraftController.requestSchemaDigest(request);
   const detachInteractionDraft = () => requestDraftController.detachInteractionDraft();
   const synchronizeInteractionDraftScope = () => requestDraftController.synchronizeInteractionDraftScope();
-  const loadInteractionDraft = (request: HumanRequest, epoch?: number) => requestDraftController.loadInteractionDraft(request, epoch);
+  const loadInteractionDraft = async (request: HumanRequest, epoch?: number) => {
+    const restored = await requestDraftController.loadInteractionDraft(request, epoch);
+    if (!restored && requestDraftController.lastFailure) throw requestDraftController.lastFailure;
+    return restored;
+  };
   const scheduleInteractionDraft = () => requestDraftController.scheduleInteractionDraft();
   const flushInteractionDraft = () => requestDraftController.flushInteractionDraft();
   const scheduleCurrentPersistence = () => requestDraftController.scheduleCurrentPersistence();
@@ -511,18 +565,20 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       persistenceFailure: (error) => persistenceStatus("save_failed", error instanceof Error ? error : undefined),
       lock: (operation, reconciled, message) => lockUncertainOperation(operation, reconciled, message),
       unlock: unlockUncertainOperation,
-      acceptTargetSession: (target) => {
+      acceptTargetSession: async (target) => {
         const sourceSessionId = viewPersistence.session?.viewSessionId;
         if (target.kind === "prepare" && runSetupController.flow?.stage === "review" && sourceSessionId) {
           runSetupController.flow.setupViewSessionId = sourceSessionId;
         }
-        void observeViewPersistence({ _meta: { "loomex/viewSession": jsonObject(target) } });
+        const ready = await observeViewPersistence({ _meta: { "loomex/viewSession": jsonObject(target) } });
+        if (!ready) throw new Error("The durable next view could not be restored before continuing.");
       },
     },
     createIdempotencyKey: uuid,
   });
 
   const browserController = createBrowserController({
+    lifecycle,
     mode: mode === "browser" ? "browser" : "authoring",
     elements: { context, summary, form, primary, secondary, refresh },
     connected: () => connected,
@@ -554,6 +610,24 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     observeViewPersistence: async (result) => Boolean(await observeViewPersistence(rpcResult(result))),
     workflowIdValid,
     beginRunSetup: (id, data) => runActionsController.beginRunSetup(id, data),
+    requestWorkflowAction: async (action, data) => {
+      const workflowId = safeText(data.workflow?.id, 64);
+      if (!workflowIdValid(workflowId)) throw new Error("The selected workflow could not be verified.");
+      const versionId = safeText(data.selectedVersion?.id ?? data.activeVersion?.id ?? data.version?.id, 64);
+      const text = action === "edit"
+        ? `Prepare an edit session for Loomex workflow ${workflowId}. Present the exact binding for my review before applying any workflow update.`
+        : action === "publish"
+          ? `Inspect Loomex workflow ${workflowId} and prepare its publish action for my review. Do not publish until I explicitly approve the exact action.`
+          : workflowIdValid(versionId)
+            ? `Prepare activation of Loomex workflow version ${versionId} for my review. Activation remains a separate approval from publishing.`
+            : "The selected workflow version needs to be refreshed before it can be activated.";
+      if (action === "activate" && !workflowIdValid(versionId)) throw new Error(text);
+      const result = await send("ui/message", { role: "user", content: [{ type: "text", text }] });
+      if (record(result)?.isError === true) throw new Error("The host could not open this workflow action in the conversation.");
+      summary.classList.remove("error");
+      summary.setAttribute("role", "status");
+      summary.textContent = `${action[0]!.toUpperCase()}${action.slice(1)} was opened in the conversation for review.`;
+    },
     taskWorkspaceArguments,
     selectedWorkflowVersion: (data) => selectedWorkflowVersion(data)?.version,
     initializeRunSetup: (data, restoring, sourceIdentity) => initializeRunSetup(data, restoring, safeText(sourceIdentity, 128) || ""),
@@ -587,7 +661,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     syncChrome,
     loadInteractionDraft,
     setError,
-    callTool: (name, args, renderResult) => callTool(name, args, renderResult),
+    callTool: (name, args, renderResult) => renderResult === false ? callTool(name,args,false) : refreshDomain(name,args),
     callMutation: (name, slot, args) => callMutation(name, slot, args),
     currentResponseOperation: () => {
       const operation = currentMutationOperation();
@@ -605,7 +679,69 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     collectAnswer,
   });
 
+  const deliveryController = new ContinuationDeliveryController({
+    scope: () => [viewPersistence.session?.viewSessionId, mode, interactionId(latest || {}), requestSchemaDigest(humanRequest(latest || {}) || {})].join(":"),
+    changed: () => renderDeliveryRecovery(),
+    available: () => Boolean(record(hostCapabilities.message)?.text),
+    uuid,
+    journal: {
+      get: async identity => decodeDeliveryProjection(await persistenceTool("loomex_delivery_get", {identity})),
+      begin: async args => decodeDeliveryProjection(await persistenceTool("loomex_delivery_begin", args)),
+      settle: async args => decodeDeliveryProjection(await persistenceTool("loomex_delivery_settle", args)),
+    },
+    send: text => send("ui/message", {role:"user",content:[{type:"text",text}]}),
+  });
+
+  let deliveryRecoveryListeners = new AbortController();
+  function renderDeliveryRecovery(): void {
+    deliveryRecoveryListeners.abort();
+    deliveryRecoveryListeners = new AbortController();
+    context.querySelector('[data-delivery-recovery]')?.remove();
+    const delivery = deliveryController.record;
+    if (!delivery || !["ready", "sending", "not_sent", "rejected", "unknown", "unsupported"].includes(delivery.status)) return;
+    const box = document.createElement("section");
+    box.dataset.deliveryRecovery = "true";
+    box.className = "ui-callout";
+    box.setAttribute("role", "status");
+    const copy = document.createElement("p");
+    copy.textContent = delivery.status === "sending" ? "Continuing in chat…" : delivery.status === "unsupported" ? "This card’s host did not advertise chat messaging. Use the chat instructions below." : delivery.status === "not_sent" ? "Your action was accepted, but chat continuation has not been sent." : delivery.status === "unknown" ? "Chat delivery could not be confirmed. Your completed action will not be repeated." : "Continue in chat using the instructions below. Your completed action will not be repeated.";
+    const details = document.createElement("details"); details.className = "ui-disclosure";
+    const label = document.createElement("summary"); label.textContent = "Chat instructions";
+    const text = document.createElement("pre"); text.textContent = delivery.text; text.setAttribute("aria-label", "Read-only resume command");
+    details.append(label,text); box.append(copy); if (delivery.status !== "sending") box.append(details);
+    if (delivery.failureCode) {
+      const diagnostic = document.createElement("details"); diagnostic.className = "ui-disclosure";
+      const heading = document.createElement("summary"); heading.textContent = "Support details";
+      const value = document.createElement("p");
+      value.textContent = `Plugin ${document.body.dataset.version || "unknown"} · ${delivery.failureStage || "capability"} · ${delivery.failureCode}`;
+      diagnostic.append(heading,value); box.append(diagnostic);
+    }
+    if (["ready", "not_sent", "rejected", "unsupported"].includes(delivery.status)) {
+      const retry = document.createElement("button"); retry.type = "button"; retry.textContent = "Continue in chat";
+      retry.dataset.persistenceOptional = "true";
+      retry.addEventListener("click", async () => {
+        retry.disabled = true;
+        try {
+          await deliveryController.deliver(delivery, true);
+        } catch (error) { setError(error); } finally { retry.disabled = false; }
+      }, {signal:deliveryRecoveryListeners.signal});
+      box.append(retry);
+    }
+    if (delivery.status === "unknown") {
+      const check = document.createElement("button"); check.type = "button"; check.textContent = "Check chat delivery";
+      check.dataset.persistenceOptional = "true";
+      check.addEventListener("click", async () => {
+        check.disabled = true;
+        try { await deliveryController.reconcile(delivery); } finally { check.disabled = false; }
+      }, {signal:deliveryRecoveryListeners.signal});
+      box.append(check);
+    }
+    context.append(box); context.hidden = false;
+  }
+
   const runMonitorController = createRunMonitorController({
+    deliveryChanged: renderDeliveryRecovery,
+    delivery: deliveryController,
     flowStore: runSetupController,
     elements: { context, form, summary, primary, secondary, refresh, errorDetails },
     forms: interactionForm,
@@ -613,6 +749,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     latest: () => latest,
     setLatest: (value) => { latest = value; },
     capabilities: () => hostCapabilities,
+    canSendFollowUpMessage: () => Boolean(record(hostCapabilities.message)?.text),
     backendDraft: () => requestDraftController.state.draft,
     detachInteractionDraft,
     draftRequest: () => currentDraftRequest() ?? undefined,
@@ -651,7 +788,51 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     runSequence, stalePreparationError,
   } = runMonitorController;
 
+  const runListController = createRunListController({
+    lifecycle,
+    elements: { context, summary, form, primary, secondary, refresh },
+    connected: () => connected,
+    authoritativeStateStale: () => authoritativeStateStale,
+    setAuthoritativeStateStale: (value) => { authoritativeStateStale = value; },
+    viewPersistenceUnavailable: () => navigationState.viewPersistenceUnavailable,
+    flushCurrentPersistence,
+    mutationHydrationReady,
+    markViewDirty,
+    flushViewState: async () => { await viewPersistence.flush(captureViewState()); },
+    callTool: (name, args, renderResult, observeResult) => callTool(name, args, renderResult, observeResult),
+    send: (method, params) => send(method, params),
+    failed: uiResultFailed,
+    dataOf: (result) => resultData(result),
+    executionId,
+    humanRequest,
+    terminalRun,
+    workflowIdValid,
+    setAction,
+    actionIcon,
+    createIcon: (name) => createIcon(name as Parameters<typeof createIcon>[0]),
+    setError,
+    openRunMonitor: (data, cancel) => {
+      initializeRunMonitor(data, null);
+      if (cancel && runSetupController.flow?.stage === "monitor") runSetupController.flow.humanMode = "cancel";
+      renderIntegratedRunFlow();
+    },
+    openInteraction: async (requestId) => {
+      const result = await callTool("loomex_interaction_view", { requestId }, false);
+      if (result.isError || result.structuredContent?.ok === false) throw new Error("The pending question could not be opened. Continue in the conversation.");
+      mode = "interaction";
+      document.body.dataset.mode = mode;
+      render(result);
+    },
+  });
+  const runListState = runListController.state;
+  const {
+    render: renderRuns, refresh: refreshRuns, resetFromIncomingList: resetRunsFromIncomingList,
+    restoreFromPersistence: restoreRunsFromPersistence, dispose: disposeRuns,
+  } = runListController;
+
   const runActionsController = createRunActionsController({
+    deliveryChanged: renderDeliveryRecovery,
+    delivery: deliveryController,
     flowStore: runSetupController,
     browserState,
     summary,
@@ -695,7 +876,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     uuid,
   });
   const {
-    acceptHumanResolution, acceptRunCommit, acceptRunPreparation, acceptRunStatus, acceptWorkspaceGrant,
+    acceptHumanResolution, acceptRunCommit, acceptRunPreparation, acceptRunStatus, acceptWorkspaceGrant, ensureStartHandoff,
     beginRunSetup, beginSetupReview, continueUnsupportedSetup, handleRunFlowPrimary, prepareSetupReview,
     readRunSnapshot, returnToBrowserView, returnToRunSetup, runFlowMutation, setupPreparationArguments,
     stopAutomaticPreparation, validateRunCommitResult, validateRunPreparationResult,
@@ -772,6 +953,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   });
 
   const navigationController = createSessionNavigationController({
+    lifecycle,
     flowStore: runSetupController,
     persistence: viewPersistence,
     elements: { form, refresh },
@@ -797,6 +979,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     viewSessionProjection,
     taskWorkspaceArguments,
     restoreBrowserFromPersistence,
+    restoreRunsFromPersistence,
     restoreDisclosures,
     restoreControls,
     restoreReadingPosition,
@@ -811,12 +994,58 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       const projection = await viewPersistence.hydrate();
       return projection ? requiredViewSession(projection) : projection;
     },
+    renderRestorationSnapshot,
+    renderCanonicalRestoration: () => {
+      const output = latest || {};
+      // The snapshot is a temporary sibling presentation. Remove it before a
+      // controller recreates its authoritative content so a request title or
+      // status cannot be announced twice after verification.
+      context.replaceChildren();
+      context.hidden = true;
+      context.removeAttribute("aria-busy");
+      if (mode === "authoring") authoringController.render(false, output);
+      else if (mode === "interaction") interactionController.render(false, output);
+    },
     viewEntityMatches,
     draftRequest: currentDraftRequest,
     loadInteractionDraft,
+    restoreDelivery: (state) => {
+      const saved = record(state?.continuationDelivery);
+      const flow = runSetupController.flow;
+      const request = flow?.stage === "monitor" && flow.acceptedRequest
+        ? flow.acceptedRequest : humanRequest(latest || {});
+      const runId = safeText(request?.execution?.id,128) || safeText(request?.executionId,128);
+      const requestId = safeText(request?.id,128);
+      const handoff = record(state?.startHandoff);
+      // A saved display reference cannot select a different request or run.
+      const expected = request && humanRequestResolved(request) && runId && requestId ? `follow:${runId}:${requestId}` :
+        request && requestId && saved?.identity === `question:${requestId}` ? `question:${requestId}` :
+        ["approved", "committing", "committed"].includes(String(handoff?.lifecycle)) && typeof handoff?.handoffRef === "string" ? `start:${handoff.handoffRef}` : undefined;
+      const identity = expected && (!saved?.identity || saved.identity === expected) ? expected : undefined;
+      if (identity && (saved?.schemaVersion !== 2 || typeof saved.text === "string")) deliveryController.restore(saved);
+      if (identity) void deliveryController.reconcile({identity, purpose:identity.startsWith("start:") ? "reviewed_start" : identity.startsWith("question:") ? "long_answer" : "accepted_interaction",text:""});
+      queueMicrotask(renderDeliveryRecovery);
+    },
+    projectRetainedOperation: () => {
+      const operation=currentMutationOperation();
+      if(!operation)return;
+      const answer=record(operation.arguments.answer);
+      if(answer){
+        const answers:JsonObject={};
+        if(Array.isArray(answer.answers)){
+          for(const item of answer.answers){const row=record(item);if(row && typeof row.questionId === "string")answers[row.questionId]=row;}
+        }else{
+          const field=form.querySelector<HTMLElement>("fieldset[data-question-id]");
+          if(field?.dataset.questionId)answers[field.dataset.questionId]=answer;
+        }
+        restoreQuestionAnswers(answers);
+      }
+      lockUncertainOperation(operation,operation.reconciled);
+    },
     restoreJournalOperation: (projection, epoch) => journalRestorationController.restore(
       decodeMutationSessionProjection(projection), epoch,
     ),
+    ensureStartHandoff,
     setAction,
     syncChrome,
     desiredViewStatus: () => desiredViewStatus() ?? undefined,
@@ -852,6 +1081,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     if (runSetupController.flow?.stage === "review") return { kind: "prepare", entityType: "preparation", entityId: safeText(runSetupController.flow.prepared?.preparationId, 64) };
     if (runSetupController.flow?.stage === "setup") return { kind: "prepare", entityType: "workflow", entityId: runSetupController.flow.selected?.workflowId };
     if (mode === "browser" && !runSetupController.flow) return { kind: mode, entityType: "catalog", entityId: "00000000-0000-0000-0000-000000000000" };
+    if (mode === "runs" && !runSetupController.flow) return { kind: mode, entityType: "catalog", entityId: "00000000-0000-0000-0000-000000000000" };
     if (mode === "interaction") return { kind: mode, entityType: "request", entityId: interactionId(output) };
     if (mode === "monitor") return { kind: mode, entityType: "execution", entityId: executionId(output) };
     if (mode === "authoring" && builderSessionId(output)) return { kind: mode, entityType: "builderSession", entityId: builderSessionId(output) };
@@ -861,6 +1091,15 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   }
 
   function viewEntityMatches(projection: RuntimeViewSessionProjection | null | undefined): boolean {
+    const committedPreparationId = runSetupController.flow?.stage === "monitor" &&
+      runSetupController.flow.summaryOwner === "preparation"
+      ? safeText(runSetupController.flow.prepared?.preparationId, 64) : undefined;
+    // A preparation session is immutable. When it authoritatively resolves to
+    // a run, the monitor is only its read-only summary and keeps the exact
+    // preparation identity for this verification. Ordinary monitor cards
+    // remain execution-identified through currentViewEntity below.
+    if (committedPreparationId && workflowIdValid(committedPreparationId) && projection?.kind === "prepare" &&
+      projection.entityType === "preparation" && projection.entityId === committedPreparationId) return true;
     const entity = currentViewEntity();
     return projection?.kind === entity.kind && projection?.entityType === entity.entityType &&
       Boolean(entity.entityId) && projection?.entityId === entity.entityId;
@@ -889,7 +1128,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   function restoreReadingPosition(value: unknown, epoch: number): void {
     const state = record(value);
     const position = record(state?.readingPosition);
-    const screen = runSetupController.flow?.stage || (browserState.selected ? "detail" : mode);
+    const screen = runSetupController.flow?.stage || (browserState.selected || runListState.selected ? "detail" : mode);
     if (state?.screen !== screen || position === null || typeof position.top !== "number" || typeof position.left !== "number" ||
         !Number.isFinite(position.top) || !Number.isFinite(position.left)) return;
     const top = position.top;
@@ -921,11 +1160,122 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     }
   }
 
+  /**
+   * Keeps enough non-authoritative, non-sensitive display context for a card
+   * to be useful during its short verification pass. It deliberately omits
+   * form values, answer drafts, workspace paths, bindings, and any mutation
+   * material. The runner validates this state again before returning it.
+   */
+  function captureDisplayProjection(): JsonObject {
+    const execution = runSetupController.flow?.stage === "monitor"
+      ? runSetupController.flow.result?.execution
+      : latest?.execution;
+    const request = humanRequest(latest || {}) || runHumanRequest();
+    if (runSetupController.flow?.stage === "monitor" || mode === "monitor") return {
+      entityId: executionId(runSetupController.flow?.result || latest || {}) || null,
+      screen: "monitor", workflowName: safeText(execution?.workflowName || execution?.name, 160) || null,
+      status: safeText(execution?.status, 64) || null, stageLabel: safeText(execution?.stageLabel, 160) || null,
+      currentNodeName: safeText(execution?.currentNodeName, 160) || null,
+      latestSequence: runSequence(runSetupController.flow?.result || latest || {}) ?? null,
+    };
+    if (runSetupController.flow?.stage === "setup") return {
+      entityId: runSetupController.flow.selected?.workflowId || null, screen: "setup",
+      workflowName: safeText(latest?.workflow?.name, 160) || null,
+      version: workflowVersionNumber(runSetupController.flow.selected?.version) || null,
+      stageLabel: "Run setup",
+    };
+    if (runSetupController.flow?.stage === "review") return {
+      entityId: safeText(runSetupController.flow.prepared?.preparationId, 64) || null, screen: "review",
+      workflowName: safeText(latest?.workflow?.name, 160) || null,
+      version: workflowVersionNumber(runSetupController.flow.selected?.version) || null,
+      stageLabel: "Ready to start",
+    };
+    if (mode === "interaction" || mode === "authoring") return {
+      entityId: mode === "interaction" ? interactionId(latest || {}) || null : builderSessionId(latest || {}) || null,
+      screen: mode, title: safeText(request?.title, 160) || null,
+      stageLabel: safeText(request?.presentation?.stageLabel, 160) || null,
+      status: safeText(request?.status, 64) || null,
+      phase: form.dataset.answerPhase === "review" ? "review" : "answer",
+    };
+    const selected = browserState.selected?.workflow;
+    const selectedRun = runListState.selected?.execution;
+    const rows = Array.isArray(latest?.workflows) ? latest.workflows.slice(0, 5).flatMap((workflow) => {
+      const id = safeText(workflow.id, 64);
+      return id ? [{ id, name: safeText(workflow.name, 160) || "Untitled workflow",
+        description: safeText(workflow.description, 280) || null,
+        version: Number.isSafeInteger(workflow.activeVersion) ? workflow.activeVersion : workflow.latestVersion ?? null,
+        status: safeText(workflow.definitionStatus, 64) || null,
+        nodeCount: Number.isSafeInteger(workflow.nodeCount) ? workflow.nodeCount : null }] : [];
+    }) : [];
+    return {
+      entityId: mode === "runs" ? executionId(runListState.selected || {}) || null : selected?.id || null,
+      screen: selected || selectedRun ? "detail" : "list",
+      workflowName: mode === "runs"
+        ? safeText(selectedRun?.workflowName || selectedRun?.name, 160) || null
+        : safeText(selected?.name, 160) || null,
+      description: mode === "runs" ? safeText(selectedRun?.currentNodeName, 280) || null : safeText(selected?.description, 280) || null,
+      rows: mode === "runs" ? (Array.isArray(latest?.runs) ? latest.runs.slice(0, 5).flatMap((run) => {
+        const id = executionId({ execution: run });
+        return id ? [{ id, name: safeText(run.workflowName || run.name, 160) || "Untitled workflow", description: safeText(run.status, 280) || null }] : [];
+      }) : []) : rows,
+      pageQuery: mode === "runs" ? safeText(runListState.args.status, 160) || null : safeText(browserState.args.query, 160) || null,
+    };
+  }
+
+  /** Paint an explicitly limited snapshot while authoritative reads continue. */
+  function renderRestorationSnapshot(projection: RuntimeViewSessionProjection, phase: "verifying" | "read_only"): void {
+    const state = record(projection.state);
+    const display = record(state?.display);
+    if (display === null || (typeof display.entityId === "string" && display.entityId !== projection.entityId)) return;
+    const wrapper = element("section", { className: "ui-stack", "aria-label": "Saved view" });
+    const heading = element("div", { className: "ui-hero" });
+    const titleText = safeText(display.workflowName || display.title, 160) ||
+      ({ browser: "Workflows", setup: "Run setup", review: "Ready to start", monitor: "Run", interaction: "Your response", authoring: "Authoring" }[String(display.screen)] || "Saved view");
+    heading.append(element("h2", {}, titleText));
+    const stage = safeText(display.stageLabel, 160);
+    const status = safeText(display.status, 64);
+    const caption = stage || status || (phase === "read_only" ? "This saved view is read-only." : "Checking the latest state…");
+    heading.append(element("p", { className: "ui-caption" }, caption));
+    wrapper.append(heading);
+    const description = safeText(display.description, 280);
+    if (description) wrapper.append(element("p", { className: "ui-caption" }, description));
+    const rows = Array.isArray(display.rows) ? display.rows.slice(0, 5).map(record).filter((row): row is JsonObject => row !== null) : [];
+    if (rows.length) {
+      const list = element("ul", { className: "workflow-rows", "aria-label": "Saved workflows" });
+      for (const row of rows) {
+        const item = element("li", { className: "workflow-row" });
+        const copy = element("div", { className: "workflow-row-copy" });
+        copy.append(element("h3", { className: "ui-value" }, safeText(row.name, 160) || "Untitled workflow"));
+        const rowDescription = safeText(row.description, 280); if (rowDescription) copy.append(element("p", { className: "ui-caption" }, rowDescription));
+        item.append(copy); list.append(item);
+      }
+      wrapper.append(list);
+    }
+    context.className = "ui-stack";
+    context.hidden = false;
+    context.setAttribute("aria-busy", "true");
+    context.replaceChildren(wrapper);
+    // The snapshot is the only readable projection during verification. Hide
+    // controller-owned form content so an old question or its title cannot be
+    // shown beside the restored projection. `verifySnapshot` rebuilds and
+    // reveals the canonical form only after its fresh owner-checked read.
+    form.hidden = true;
+    form.inert = false;
+    primary.hidden = true;
+    secondary.hidden = true;
+    refresh.hidden = phase !== "read_only";
+    syncChrome();
+  }
+
   function captureViewStateValue(): unknown {
-    const base = { schemaVersion: 1, screen: runSetupController.flow?.stage || (browserState.selected ? "detail" : mode), disclosures: disclosureState(), readingPosition: { top: window.scrollY, left: window.scrollX } };
+    const base = { schemaVersion: 1, ...(deliveryController.record ? {continuationDelivery: {schemaVersion:2, identity:deliveryController.record.identity, purpose:deliveryController.record.purpose}} : {}), screen: runSetupController.flow?.stage || (browserState.selected || runListState.selected ? "detail" : mode), display: captureDisplayProjection(), disclosures: disclosureState(), readingPosition: { top: window.scrollY, left: window.scrollX } };
     if (mode === "browser" && !runSetupController.flow) return {
       ...base,
       browser: browserController.capture(),
+    };
+    if (mode === "runs" && !runSetupController.flow) return {
+      ...base,
+      runs: runListController.capture(),
     };
     if (runSetupController.flow?.stage === "setup") return {
       ...base,
@@ -938,6 +1288,14 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     if (runSetupController.flow?.stage === "review") return {
       ...base,
       preparationId: safeText(runSetupController.flow.prepared?.preparationId, 64),
+      // Presentation state deliberately retains only typed, non-authorizing
+      // handoff identity and lifecycle. The mutation journal owns exact
+      // handoff arguments and idempotency keys for recovery.
+      startHandoff: {
+        schemaVersion: 3,
+        handoffRef: safeText(runSetupController.flow.startHandoffRef, 64) || null,
+        lifecycle: runSetupController.flow.startHandoffState || "unknown",
+      },
       returnBrowserViewSessionId: runSetupController.flow.returnViewSessionId || null,
       setupViewSessionId: runSetupController.flow.setupViewSessionId || null,
       workflowVersion: workflowVersionNumber(runSetupController.flow.selected?.version) || runSetupController.flow.editWorkflowVersion || null,
@@ -979,12 +1337,12 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   }
 
   function markViewDirty() {
-    if (!navigationState.viewPersistenceUnavailable && mutationHydrationReady()) viewPersistence.markDirty(captureViewState());
+    if (lifecycle.permissions().edit) viewPersistence.markDirty(captureViewState());
   }
 
   function mutationHydrationReady() {
     const sessionId = viewPersistence.session?.viewSessionId;
-    return Boolean(sessionId && navigationState.hydratedReadySessionId === sessionId);
+    return Boolean(sessionId && lifecycle.permissions(sessionId).authority);
   }
 
   function requireMutationHydrationReady() {
@@ -1007,6 +1365,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   }
 
   async function markCurrentViewStatus(status: string): Promise<void> {
+    lifecycle.complete();
     const session = viewPersistence.session;
     if (!session || navigationState.completedViewStatuses.has(`${session.viewSessionId}:${status}`)) return;
     if (await viewPersistence.flushStatus(captureViewState(), status)) {
@@ -1096,13 +1455,25 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       transport.notify(method, params);
       return Promise.resolve();
     }
+    if (method === "tools/call" && !COALESCED_PERSISTENCE_READS.has(String(params.name))) persistenceReads.invalidate();
     const activityId = nextActivityId++;
     const showActivity = options.activity !== false;
     if (showActivity) {
       activeRequests.set(activityId, method === "tools/call" ? safeText(params.name, 240) || method : method);
       updateActivity();
     }
-    return transport.request(method, params, { timeoutMs: method === "tools/call" ? 60_000 : 5_000 })
+    const request = resolveTransportRequestOptions(method, {
+      onSlow: () => {
+        if (runtimeDisposed || method !== "ui/message" || deliveryController.record?.status !== "sending") return;
+        const message = context.querySelector('[data-delivery-recovery] p');
+        if (message) message.textContent = "Waiting for chat. If Codex opened a follow-up dialog, finish or cancel it there.";
+      },
+    });
+    const finishTiming = beginActionTiming(method, params.name);
+    return (method === "ui/message"
+      ? transport.sendFollowUpMessage(params, request)
+      : transport.request(method, params, request))
+      .then(value => { finishTiming("completed"); return value; }, error => { finishTiming("failed"); throw error; })
       .finally(() => {
         if (showActivity) {
           activeRequests.delete(activityId);
@@ -1195,6 +1566,33 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     summary.textContent = error instanceof Error && error.message
       ? error.message
       : "The host could not complete this action.";
+    const diagnostic = error instanceof UiResultDecodeError ? error.diagnostic : undefined;
+    if (!diagnostic) return;
+    uiDiagnostics.push(diagnostic);
+    if (uiDiagnostics.length > 20) uiDiagnostics.shift();
+    const text = [
+      "Loomex UI diagnostic",
+      `code: ${diagnostic.code}`,
+      `stage: ${diagnostic.stage}`,
+      `channel: ${diagnostic.channel}`,
+      `fields: ${diagnostic.fields.join(", ") || "none"}`,
+    ].join("\n");
+    const details = element("details", { className: "ui-card" });
+    details.append(element("summary", {}, "Technical details"));
+    details.append(element("pre", { className: "ui-caption" }, text));
+    const copy = element("button", { type: "button", className: "secondary" }, "Copy diagnostic details");
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard?.writeText(text);
+        copy.textContent = "Copied";
+      } catch {
+        // The static, selectable text remains available in hosts without Clipboard.
+        copy.textContent = "Select diagnostic details";
+      }
+    });
+    details.append(copy);
+    errorDetails.replaceChildren(details);
+    errorDetails.hidden = false;
   }
 
   function structuredError(result: RpcResult): JsonObject | null {
@@ -1251,31 +1649,10 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     attributes: DomAttributes = {},
     text = "",
   ): HTMLElementTagNameMap[Tag] {
-    const node = document.createElement(tag);
-    for (const [name, value] of Object.entries(attributes)) {
-      if (value === undefined || value === null || value === false) continue;
-      if (name === "className" && typeof value === "string") node.className = value;
-      else if (name === "dataset" && typeof value === "object") Object.assign(node.dataset, value);
-      else if (name === "hidden") node.hidden = Boolean(value);
-      else if (name === "tabIndex" && typeof value === "number") node.tabIndex = value;
-      else if (name === "htmlFor" && node instanceof HTMLLabelElement && typeof value === "string") node.htmlFor = value;
-      else if (name === "value" && (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement || node instanceof HTMLOutputElement)) node.value = String(value);
-      else if (name === "checked" && node instanceof HTMLInputElement) node.checked = Boolean(value);
-      else if (name === "disabled" && (node instanceof HTMLButtonElement || node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement)) node.disabled = Boolean(value);
-      else node.setAttribute(name, String(value));
-    }
-    if (text) node.textContent = text;
-    if (node instanceof HTMLButtonElement) {
-      applyButtonStyle(node);
-      if (text) setAction(node, text, "next");
-      else node.classList.add("ui-button-md");
-    } else if (["input", "select", "textarea"].includes(tag) && !["checkbox", "radio"].includes(String(attributes.type || ""))) {
-      node.classList.add("input-field");
-    }
-    if (tag === "fieldset" || ["ui-card", "workflow-row", "answer-review-item", "ui-callout", "notice"].some((name) => node.classList.contains(name))) {
-      node.classList.add("glass-panel");
-    }
-    if (node.classList.contains("ui-badge")) applyBadgeStyle(node);
+    // Keep the existing optional-attribute convention at this call boundary.
+    const normalized = Object.fromEntries(Object.entries(attributes).filter(([, value]) => value !== undefined && value !== null && value !== false)) as ElementAttributes;
+    const node = createUiElement(tag, normalized, text);
+    if (node instanceof HTMLButtonElement && text) setAction(node, text, "next");
     return node;
   }
 
@@ -1293,12 +1670,17 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   }
 
   function render(result: RpcResult, options: { replaceTaskWorkspace?: boolean } = {}): void {
-    try { renderContent(result, options); } finally { renderSafeViewReentry(); syncChrome(); }
+    try { renderContent(result, options); } finally { renderSafeViewReentry(); syncChrome(); renderDeliveryRecovery(); }
   }
 
   function renderContent(result: RpcResult, options: { replaceTaskWorkspace?: boolean } = {}): void {
+    if (!connected) {
+      pendingInitialResult = result;
+      context.setAttribute("aria-busy", "true");
+      return;
+    }
     if (isConnectionView) {
-      void hydrateConnectionView(result).catch(error => { navigationState.viewRestoring = false; syncRestorationVisibility(); setError(error); });
+      void hydrateConnectionView(result).catch(error => { lifecycle.unavailable(); syncRestorationVisibility(); setError(error); });
       return;
     }
     if (runSetupController.flow?.stage === "monitor") captureRunHumanDraft();
@@ -1309,11 +1691,13 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     if (mode === "browser" && !runSetupController.flow) {
       resetFromIncomingList(incomingBrowserArguments(result?._meta?.["loomex/workflowListQuery"]));
     }
+    if (mode === "runs" && !runSetupController.flow) {
+      resetRunsFromIncomingList(incomingRunArguments(result?._meta?.["loomex/runListQuery"]));
+    }
     latestMethod = methodOf(result) || latestMethod;
     const failed = Boolean(result && (result.isError || result.structuredContent?.ok === false));
-    if (failed) navigationState.viewRestoring = false;
-    else observeViewPersistence(result);
-    const incoming = dataOf(result);
+    if (!failed) observeViewPersistence(result);
+    const incoming = mode === "runs" ? normalizeRunPage(dataOf(result)) : dataOf(result);
     const sourceIdentity = setupRequestIdentity(result);
     const incomingSetup = !failed && mode === "prepare" && selectedWorkflowVersion(incoming) && !incoming?.preparationId;
     const setupPending = Boolean(runSetupController.flow?.busy || runSetupController.flow?.operations?.size || Object.hasOwn(runSetupController.flow || {}, "pendingSetupInputs"));
@@ -1351,6 +1735,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       primary.disabled = true;
       secondary.disabled = true;
       if (mode === "browser") renderBrowser();
+      if (mode === "runs") renderRuns();
       return;
     }
     primary.hidden = true;
@@ -1365,6 +1750,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
 
     switch (page().mode) {
       case "browser": renderBrowserPageResult(failed, output); break;
+      case "runs": renderRunsPageResult(failed, output); break;
       case "prepare": renderPreparePageResult(failed, output, matchingSetup, setupPending, sourceIdentity); break;
       case "monitor": renderMonitorPageResult(failed, output); break;
       case "interaction": interactionController.render(failed, output); break;
@@ -1397,6 +1783,25 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     
   }
 
+  function renderRunsPageResult(failed: boolean, output: UiData): void {
+    if (!failed) {
+      if (!Array.isArray(output.runs)) {
+        authoritativeStateStale = true;
+        summary.classList.add("error");
+        summary.setAttribute("role", "alert");
+        summary.textContent = "The run list could not be verified. Continue in the conversation.";
+        context.hidden = false;
+        context.className = "ui-stack";
+        context.replaceChildren(element("p", { className: "notice error", role: "alert" }, "The run list is unavailable in this view. Continue in the conversation."));
+        return;
+      }
+      runListState.page = output;
+      runListState.selected = null;
+    }
+    summary.textContent = failed ? "Runs could not be loaded. Try Refresh again." : "";
+    renderRuns();
+  }
+
   function renderPreparePageResult(
     failed: boolean,
     output: UiData,
@@ -1415,15 +1820,35 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
           renderIntegratedRunFlow();
         } catch (error) { setError(error); }
       } else {
+        const directPreparationId = safeText(output.preparationId, 64);
+        const restoredReview = runSetupController.flow?.stage === "review" &&
+          directPreparationId !== "" &&
+          safeText(runSetupController.flow.prepared?.preparationId, 64) === directPreparationId &&
+          Boolean(runSetupController.flow.startHandoffRef);
+        // An initial tool payload may arrive after presentation hydration. Its
+        // preparation is useful display data, but it cannot make a previously
+        // handed-off Start action actionable again. The runner remains the
+        // authority for reconciliation; this branch only preserves the
+        // durable presentation lock until that reconciliation happens.
+        if (restoredReview) {
+          renderIntegratedRunFlow();
+          return;
+        }
         if (!failed) summary.textContent = "";
         preparationView(output);
         if (!preparationReviewable(output)) summary.textContent = "The execution details could not be verified here. Continue in the conversation to review this preparation before starting.";
         setMutationAction(primary, preparedCommitTool() === "loomex_run_commit" ? "Start run" : "Start authoring", "start");
         refresh.hidden = false; setAction(refresh, "Check runner", "refresh");
         primary.hidden = false;
-        primary.disabled = !connected || !preparationReviewable(output) || !findId(output, "preparationId") || !findId(output, "bindingDigest") || !findId(output, "confirmationKey");
+        // A direct preparation card cannot start until its runner-owned,
+        // non-authorizing handoff reference has been verified.
+        primary.disabled = true;
         if (!failed && preparedCommitTool() === "loomex_run_commit" && preparationReviewable(output)) {
           initializePreparedRunReview(output);
+          // Do not issue a handoff reference until the card has finished its
+          // authoritative presentation hydration. A remount always reconciles
+          // an existing reference before it exposes a new Start action.
+          renderIntegratedRunFlow();
         }
       }
     
@@ -1572,6 +1997,29 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     }
   }
 
+  /** Refresh reads retain local edits only while the exact request and schema remain editable. */
+  async function refreshDomain(name:string,args:JsonObject):Promise<RpcResult> {
+    const identity=currentDraftRequest();
+    const scope=viewPersistence.session?.viewSessionId;
+    let observed:RpcResult|undefined;
+    await lifecycle.refresh("domain-authority",()=>callTool(name,args,false,false),result=>{
+      if(scope!==viewPersistence.session?.viewSessionId)return;
+      const current=currentDraftRequest();
+      const canRetain=identity?.id===current?.id && identity?.schemaDigest===current?.schemaDigest;
+      const incoming=dataOf(result),fresh=humanRequest(incoming);
+      if(!uiResultFailed(result) && !authoritativeStateStale && canRetain && identity && fresh && fresh.id===identity.id && fresh.schemaDigest===identity.schemaDigest && !humanRequestResolved(fresh)){
+        // The schema and request are unchanged. Retain mounted controls,
+        // selection and local draft rather than reconstructing the form.
+        latest=incoming;authoritativeStateStale=false;
+        summary.classList.remove("error");summary.setAttribute("role","status");summary.textContent="";
+        syncChrome();
+      }else render(result);
+      observed=result;
+    });
+    if(!observed)throw new Error("The view changed while refreshing.");
+    return observed;
+  }
+
   function callTool(
     name: string,
     args: JsonObject,
@@ -1614,7 +2062,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     }
     button.dataset.pending = "true";
     button.setAttribute("aria-busy", "true");
-    for (const candidate of actionButtons) candidate.disabled = true;
+    for (const candidate of actionButtons) if(candidate!==refresh || button!==refresh)candidate.disabled = true;
     try {
       await operation();
     } finally {
@@ -1645,34 +2093,34 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     return mutationController.recoverConflictedAttempts(runSetupController.flow?.operations.values());
   }
 
+  reapplyLocal.addEventListener("click", () => withPending(reapplyLocal, async () => {
+    try {
+      if(isConnectionView){await connectionController.reapplyLocalEdits();return;}
+      if(currentMutationOperation() || runSetupController.flow?.operations.size)throw new Error("Reconcile the pending operation before changing its saved state.");
+      const request=currentDraftRequest();
+      if(request?.id){
+        const result=await callTool("loomex_interaction_get",{requestId:request.id},false,false);
+        const fresh=humanRequest(dataOf(result));
+        if(!fresh || fresh.id!==request.id || fresh.schemaDigest!==request.schemaDigest)throw new Error("The question changed. Refresh before editing.");
+        if(humanRequestResolved(fresh)){render(result);return;}
+      }
+      if(!await requestDraftController.reapplyLocal())return;
+      if(viewPersistence.conflict && !await viewPersistence.reapplyLocal(reapplyPresentationEdits))return;
+      navigationState.persistenceConflict=false;
+      persistenceStatus("saved");syncChrome();
+    }catch(error){setError(error);}
+  }),{signal:runtimeEvents.signal});
+
   useSavedVersion.addEventListener("click", () => withPending(useSavedVersion, async () => {
     try {
-      const request = currentDraftRequest();
+      if(isConnectionView){await connectionController.reloadSaved();return;}
       detachInteractionDraft();
-      const epoch = ++navigationState.viewHydrationEpoch;
+      lifecycle.invalidate();
       const projection = await viewPersistence.useSavedVersion();
       if (!projection || !viewEntityMatches(projection)) throw new Error("The saved view could not be verified.");
-      navigationState.hydratedSessionId = projection.viewSessionId;
-      if (await restoreViewState(projection.state)) return;
-      if (epoch !== navigationState.viewHydrationEpoch || viewPersistence.session?.viewSessionId !== projection.viewSessionId || !viewEntityMatches(projection)) {
-        throw new Error("The saved view changed while it was being restored.");
-      }
-      if (request) {
-        requestDraftController.state.draft = null;
-        if (!await loadInteractionDraft(request, epoch)) throw new Error("The saved answer draft could not be verified.");
-      }
+      navigationState.hydratedSessionId = "";
       await recoverConflictedOperationAttempts();
-      if (!await restoreJournalOperation(requiredViewSession(projection), epoch)) {
-        refresh.dataset.retryViewHydration = "true";
-        refresh.hidden = false;
-        setAction(refresh, "Retry restore", "refresh");
-        refresh.disabled = !connected;
-        throw new Error("The saved pending action could not be restored.");
-      }
-      if (epoch !== navigationState.viewHydrationEpoch || viewPersistence.session?.viewSessionId !== projection.viewSessionId || !viewEntityMatches(projection)) {
-        throw new Error("The saved view changed while it was being restored.");
-      }
-      navigationState.hydratedReadySessionId = projection.viewSessionId;
+      await observeViewPersistence({_meta:{"loomex/viewSession":jsonObject(projection)}});
       navigationState.persistenceConflict = false;
       persistenceStatus("saved");
       summary.classList.remove("error");
@@ -1684,6 +2132,10 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
 
   refresh.addEventListener("click", () => withPending(refresh, async () => {
     try {
+      if (!connected) {
+        await initializeHost();
+        return;
+      }
       if (isConnectionView) {
         await refreshConnection();
         return;
@@ -1698,7 +2150,9 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
         summary.textContent = "Retrying saved view restore…";
         return;
       }
-      if (!await flushCurrentPersistence()) return;
+      // Refresh is read-only. A failed presentation write retains local edits
+      // but must not prevent authority recovery.
+      void flushCurrentPersistence();
       if (runSetupController.flow) {
         if (runSetupController.flow.stage === "review") {
           const preparationId = safeText(runSetupController.flow.prepared?.preparationId, 64);
@@ -1728,6 +2182,10 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       const data = latest || {};
       if (mode === "browser") {
         await refreshBrowser();
+        return;
+      }
+      if (mode === "runs") {
+        await refreshRuns();
         return;
       }
       if (mode === "prepare") {
@@ -1765,7 +2223,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
         args = {};
       }
       const operation = currentMutationOperation();
-      const result = await callTool(toolName, args, !operation);
+      const result = operation ? await callTool(toolName,args,false) : await refreshDomain(toolName,args);
       if (operation) await reconcilePendingOperation(result, operation, data);
     } catch (error) {
       if (runSetupController.flow) { authoritativeStateStale = false; renderIntegratedRunFlow(); }
@@ -1797,6 +2255,10 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
         return;
       }
       if (runSetupController.flow?.stage === "monitor") {
+        if (runSetupController.flow.humanMode === "cancel") {
+          delete runSetupController.flow.humanMode;
+          renderIntegratedRunFlow();
+        }
         return;
       }
       const retainedOperation = currentMutationOperation();
@@ -1820,8 +2282,13 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
         await handoffLongQuestionToChat();
         return;
       }
-      if (!runSetupController.flow && runMonitorController.chatHandoff?.status === "failed") {
-        await handoffRunToChat(runMonitorController.chatHandoff.runId, runMonitorController.chatHandoff.continuation);
+      if (runSetupController.flow?.stage === "monitor" && runSetupController.flow.humanMode === "cancel") {
+        const answer = collectAnswer();
+        const reason = safeText(answer.reason, 1000);
+        const runId = executionId(runSetupController.flow.result);
+        if (!reason) throw new Error("Enter a cancellation reason.");
+        if (!workflowIdValid(runId)) throw new Error("The selected run could not be verified for cancellation.");
+        await runFlowMutation("loomex_run_cancel", `run:cancel:${runId}`, "cancellation", { runId, reason }, acceptRunStatus);
         return;
       }
       if (runSetupController.flow) { await handleRunFlowPrimary(); return; }
@@ -1924,6 +2391,9 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       if (mode === "browser" && arguments_) {
         resetFromIncomingList(incomingBrowserArguments(arguments_));
       }
+      if (mode === "runs" && arguments_) {
+        resetRunsFromIncomingList(incomingRunArguments(arguments_));
+      }
     }
     if (message.method === "ui/notifications/tool-result") {
       render(rpcResult(message.params), { replaceTaskWorkspace: topLevelReplacesTaskWorkspace(rpcResult(message.params)) });
@@ -1933,27 +2403,27 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   setAction(refresh, "Refresh", "refresh");
   const clockTimer = setInterval(() => { if (document.visibilityState === "visible") updateClock(); }, 1000);
 
-  let initializationTimer: ReturnType<typeof setTimeout> | undefined;
-
   function disposeRuntime(): void {
     if (runtimeDisposed) return;
     runtimeDisposed = true;
     runtimeEvents.abort();
     clearInterval(clockTimer);
-    clearTimeout(initializationTimer);
-    initializationTimer = undefined;
     resizeObserver?.disconnect();
     resizeObserver = null;
     detachInteractionDraft();
     requestDraftController.dispose();
     interactionForm.dispose();
     disposeBrowser();
+    disposeRuns();
     runSetupController.dispose();
+    deliveryRecoveryListeners.abort();
+    deliveryController.dispose();
     runMonitorController.dispose();
     runActionsController.dispose();
     navigationController.dispose();
     connectionController.dispose();
     runtimeShell.dispose();
+    persistenceReads.invalidate();
     transport.dispose();
   }
 
@@ -1963,48 +2433,66 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     disposeRuntime();
     return;
   }
-  const handshake = send("ui/initialize", {
-    protocolVersion: "2026-01-26",
-    appInfo: { name: "loomex", version: appVersion },
-    appCapabilities: { availableDisplayModes: ["inline"] }
-  });
-  const timeout = new Promise<never>((_, reject) => {
-    initializationTimer = setTimeout(() => reject(new Error("Portable MCP Apps bridge unavailable.")), 3000);
-  });
-  Promise.race([handshake, timeout]).then((result) => {
-    clearTimeout(initializationTimer);
-    initializationTimer = undefined;
-    if (runtimeDisposed) return;
-    hostCapabilities = record(record(result)?.hostCapabilities) ?? {};
-    connected = true;
-    connection.textContent = "Connected";
-    refresh.disabled = false;
-    send("ui/notifications/initialized", {}, false);
-    if (runSetupController.flow?.setup) { renderIntegratedRunFlow(); syncChrome(); }
-    else if (latest) render({ structuredContent: { ok: true, data: latest } });
-    if (!runtimeDisposed && typeof ResizeObserver === "function") {
-      let lastSize = "";
-      const reportSize = () => {
-        if (runtimeDisposed) return;
-        const box = main.getBoundingClientRect();
-        const size = { width: Math.ceil(document.documentElement.clientWidth), height: Math.ceil(box.height) };
-        const key = `${size.width}:${size.height}`;
-        if (key !== lastSize) {
-          lastSize = key;
-          send("ui/notifications/size-changed", size, false);
-        }
-      };
-      resizeObserver = new ResizeObserver(reportSize);
-      resizeObserver.observe(main);
-      reportSize();
+  let sizeReportingStarted = false;
+  async function initializeHost(): Promise<void> {
+    if (runtimeDisposed || transport.initializationStatus() === "connecting") return;
+    lifecycle.loading();
+    summary.classList.remove("error");
+    summary.setAttribute("role", "status");
+    summary.textContent = "";
+    syncRestorationVisibility();
+    syncChrome();
+    try {
+      const result = await transport.initialize({
+        protocolVersion: "2026-01-26",
+        appInfo: { name: "loomex", version: appVersion },
+        appCapabilities: { availableDisplayModes: ["inline"] },
+      }, { timeoutMs: 5_000 });
+      if (runtimeDisposed) return;
+      hostCapabilities = record(record(result)?.hostCapabilities) ?? {};
+      connected = true;
+      connection.textContent = "Connected";
+      refresh.disabled = false;
+      send("ui/notifications/initialized", {}, false);
+      if (runSetupController.flow?.setup) { renderIntegratedRunFlow(); syncChrome(); }
+      else if (pendingInitialResult) {
+        const initialResult = pendingInitialResult;
+        pendingInitialResult = null;
+        render(initialResult);
+      } else if (latest) render({ structuredContent: { ok: true, data: latest } });
+      else {
+          syncRestorationVisibility();
+        syncChrome();
+      }
+      if (!sizeReportingStarted && !runtimeDisposed && typeof ResizeObserver === "function") {
+        sizeReportingStarted = true;
+        let lastSize = "";
+        const reportSize = () => {
+          if (runtimeDisposed) return;
+          const box = main.getBoundingClientRect();
+          const size = { width: Math.ceil(document.documentElement.clientWidth), height: Math.ceil(box.height) };
+          const key = `${size.width}:${size.height}`;
+          if (key !== lastSize) {
+            lastSize = key;
+            send("ui/notifications/size-changed", size, false);
+          }
+        };
+        resizeObserver = new ResizeObserver(reportSize);
+        resizeObserver.observe(main);
+        reportSize();
+      }
+    } catch (error) {
+      if (runtimeDisposed) return;
+      connected = false;
+      connection.textContent = "Headless tools remain available";
+      refresh.hidden = false;
+      setAction(refresh, "Retry connection", "refresh");
+      refresh.disabled = false;
+      setError(error);
+      syncRestorationVisibility();
+      syncChrome();
     }
-  }).catch((error) => {
-    clearTimeout(initializationTimer);
-    initializationTimer = undefined;
-    if (runtimeDisposed) return;
-    connected = false;
-    connection.textContent = "Headless tools remain available";
-    setError(error);
-  });
+  }
+  void initializeHost();
 
 }

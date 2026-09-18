@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src http://127.0.0.1:*; img-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Loomex</title>
   <style>__LOOMEX_DESIGN_SYSTEM__</style>
   <style>
@@ -61,7 +61,7 @@
     .workflow-detail { display: grid; gap: var(--loomex-space-3); }
     .workflow-detail-heading { display: flex; align-items: start; justify-content: space-between; gap: var(--loomex-space-3); }
     .workflow-detail-heading .ui-hero { min-width: 0; }
-    .workflow-detail-heading-actions { display: flex; flex: none; gap: var(--loomex-space-2); }
+    .workflow-detail-heading-actions { display: flex; flex: none; flex-wrap: wrap; max-width: 100%; gap: var(--loomex-space-2); }
     .workflow-detail-list { margin: 0; display: grid; gap: 0; }
     .workflow-detail-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--loomex-space-3); align-items: baseline; padding: var(--loomex-space-2) 0; border-bottom: 1px solid var(--color-line); }
     .workflow-detail-item:last-child { border-bottom: 0; }
@@ -127,8 +127,6 @@
     button.action-with-label svg { width: 1rem; height: 1rem; pointer-events: none; }
     button.icon-button { flex: none; }
     .icon-button svg { width: 1rem; height: 1rem; pointer-events: none; }
-    button.info-button { color: var(--color-gray-400); border-color: transparent; }
-    .tooltip { position: fixed; z-index: 10; max-width: min(300px, calc(100vw - 16px)); padding: 8px 10px; border: 1px solid var(--color-line); border-radius: 0.5rem; background: var(--color-sidebar-bg); color: var(--color-white); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; box-shadow: 0 3px 12px color-mix(in srgb, var(--color-black) 45%, transparent); }
     .inline-info { display: inline-flex; align-items: center; gap: var(--loomex-space-1); }
     .run-meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--loomex-space-2); color: var(--color-gray-400); font-size: 13px; }
     .run-status { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; color: var(--color-white); }
@@ -144,19 +142,10 @@
     .workflow-search { display: flex; align-items: center; gap: var(--loomex-space-2); }
     .workflow-search input { flex: 1; }
     .workflow-search-actions { flex-wrap: nowrap; }
-    .ui-data-table-pagination { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--loomex-space-2); overflow-x: auto; }
-    .ui-data-table-pagination-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .ui-data-table-pagination-actions { min-width: max-content; flex-wrap: nowrap; }
-    @media (max-width: 480px) {
-      /* Search reset plus cursor controls can otherwise consume the grid's
-         whole auto column and collapse the page output to zero width. Keep the
-         page information as one readable line above the compact action row. */
-      .ui-data-table-pagination { grid-template-columns: minmax(0, 1fr); }
-      .ui-data-table-pagination-actions { justify-self: start; }
-    }
-    .workflow-page-size { width: auto; max-width: 100%; min-width: 8.25rem; min-height: var(--loomex-control-height); }
     .workflow-loading-host { position: relative; isolation: isolate; }
     .workflow-loading-host > :not(.workflow-skeleton, .workflow-loading-status) { visibility: hidden; }
+    .workflow-loading-host[data-retain-content="true"] > :not(.workflow-skeleton) { visibility: visible; }
+    .workflow-loading-host[data-retain-content="true"] > .workflow-skeleton { display: none; }
     .workflow-loading-status { position: absolute; inset: 0 auto auto 0; z-index: 2; min-height: var(--loomex-control-height); background: var(--color-bg-dark); }
     .workflow-loading-status:focus { outline: 2px solid var(--color-brand-teal); outline-offset: 3px; }
     .workflow-skeleton { position: absolute; inset: 0; z-index: 1; display: grid; align-content: start; gap: var(--loomex-space-2); min-height: 100%; padding: calc(var(--loomex-control-height) + var(--loomex-space-2)) 0 0; background: var(--color-bg-dark); pointer-events: none; }

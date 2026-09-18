@@ -13,6 +13,8 @@ export const PLUGIN_COMPONENT_EXPORT_SCHEMA = "loomex.plugin-compatibility-compo
 type JsonRecord = Record<string, unknown>;
 
 export interface RunnerCatalogMethod {
+  readonly mutating: boolean;
+  readonly appOnly: boolean;
   readonly name: string;
   readonly inputSchema: {
     readonly properties: Record<string, unknown>;
@@ -185,6 +187,7 @@ function toolComponent(definition: ToolDefinition, runnerOutputSchemaSha256?: st
     rpcMethod: definition.rpcMethod,
     mutating: definition.mutating,
     destructive: definition.destructive,
+    ...(definition.appOnly === true ? { appOnly: true } : {}),
     ...(definition.uiUri === undefined ? {} : { uiResourceUri: definition.uiUri }),
     inputSchema: evaluated.schema,
     localOnlyInputKeys: localOnly,
@@ -219,6 +222,8 @@ export function validateToolMappings(methods: readonly RunnerCatalogMethod[]): v
     const component = toolComponent(definition);
     const method = byMethod.get(definition.rpcMethod);
     if (method === undefined) fail(`${definition.name} maps to unknown runner method ${definition.rpcMethod}`);
+    if (definition.mutating !== method.mutating) fail(`${definition.name} mutability differs from runner contract`);
+    if ((definition.appOnly === true) !== method.appOnly) fail(`${definition.name} app-only visibility differs from runner contract`);
     runnerOutputSchemaDigest(method.outputSchema);
     const expectedProperties = Object.keys(method.inputSchema.properties).filter((key) => !((component.omittedRunnerInputKeys as string[]).includes(key))).sort();
     const expectedRequired = [...(method.inputSchema.required ?? [])].filter((key) => !((component.omittedRunnerInputKeys as string[]).includes(key))).sort();
@@ -259,12 +264,15 @@ export function validateUiResourceRegistry(): void {
   void names; void uris; void modes;
   const allIdentities = new Set<string>();
   for (const resource of UI_RESOURCE_REGISTRY) {
-    if (!/^ui:\/\/loomex\/[a-z]+\.html$/.test(resource.uri)) fail(`invalid canonical resource URI ${resource.uri}`);
+    if (!/^ui:\/\/loomex\/[a-z]+-\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?-[a-f0-9]{12}-[a-f0-9]{12}-[a-f0-9]{12}\.html$/.test(resource.uri)) {
+      fail(`invalid content-addressed canonical resource URI ${resource.uri}`);
+    }
     if (!allIdentities.add(resource.uri)) fail(`duplicate UI resource identity ${resource.uri}`);
     for (const alias of resource.aliases) {
       if (alias.deprecated !== true || alias.replacementUri !== resource.uri) fail(`invalid alias declaration for ${alias.uri}`);
-      if (!/^ui:\/\/loomex\/[a-z]+-0\.2\.[3-7]\.html$/.test(alias.uri)) fail(`invalid legacy resource URI ${alias.uri}`);
-      if (!alias.uri.startsWith(`ui://loomex/${resource.mode}-`)) fail(`legacy resource URI has the wrong view ${alias.uri}`);
+      const unversioned = `ui://loomex/${resource.mode}.html`;
+      const released = new RegExp(`^ui://loomex/${resource.mode}-0\\.2\\.[3-7]\\.html$`);
+      if (alias.uri !== unversioned && !released.test(alias.uri)) fail(`invalid legacy resource URI ${alias.uri}`);
       if (!allIdentities.add(alias.uri)) fail(`duplicate UI resource identity ${alias.uri}`);
     }
   }

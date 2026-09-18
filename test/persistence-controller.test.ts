@@ -1,6 +1,6 @@
 import * as assert from "node:assert/strict";
 import { test } from "node:test";
-import { createViewPersistence, type ViewPersistenceController, type ViewPersistenceOptions } from "../src/ui-app/persistence.js";
+import { createViewPersistence, ViewRestorationCoordinator, type ViewPersistenceController, type ViewPersistenceOptions } from "../src/ui-app/persistence.js";
 
 type State = Record<string, unknown>;
 type Projection = { viewSessionId: string; revision: number; state: State; status?: string };
@@ -83,6 +83,28 @@ test("edits arriving during a slow save drain serially without another user acti
   assert.equal(store.pendingState, undefined);
 });
 
+test("an acknowledged presentation state is not rewritten before an unrelated mutation", async () => {
+  const calls: WriteCall[] = [];
+  const store = createViewPersistence<State>({
+    read: async () => saved(7, { screen: "interaction", phase: "review" }),
+    write: async (...args) => {
+      calls.push(args);
+      return saved(args[1] + 1, args[2], typeof args[4]?.status === "string" ? args[4].status : "active");
+    },
+  });
+  store.configure(saved(7, { screen: "interaction", phase: "review" }));
+
+  assert.equal(await store.flush({ screen: "interaction", phase: "review" }), true);
+  store.markDirty({ screen: "interaction", phase: "review" });
+  assert.equal(await store.flush(), true);
+  assert.equal(calls.length, 0, "a submit-time presentation flush must not manufacture a new revision");
+
+  assert.equal(await store.flushStatus({ screen: "interaction", phase: "review" }, "resolved"), true);
+  assert.equal(calls.length, 1, "a real lifecycle transition remains durable");
+  assert.equal(calls[0]?.[1], 7);
+  assert.deepEqual(calls[0]?.[4], { status: "resolved" });
+});
+
 test("a durable status transition survives a later ordinary edit without another status request", async () => {
   let release: (value: Projection) => void = () => undefined;
   const calls: WriteCall[] = [];
@@ -160,4 +182,90 @@ test("retiring an expired session ignores a delayed read and never writes a repl
   assert.equal(store.session, null);
   assert.equal(await store.flush({ screen: "fresh" }), true);
   assert.equal(writes, 0);
+});
+
+test("a restoration displays the owner-checked snapshot before independent verification completes", async () => {
+  const phases: string[] = [];
+  let releaseVerification: (phase: "ready" | "read_only") => void = () => undefined;
+  const coordinator = new ViewRestorationCoordinator({ onPhase: (state) => { phases.push(state.phase); } });
+  const begun = coordinator.begin("saved-card", {
+    snapshot: async () => ({ screen: "monitor" }),
+    display: (snapshot) => { assert.equal(snapshot.screen, "monitor"); return "read_only"; },
+    verify: () => new Promise<"ready" | "read_only">((resolve) => { releaseVerification = resolve; }),
+    failed: () => assert.fail("the saved snapshot should remain readable"),
+  });
+  assert.equal(await begun, true);
+  assert.deepEqual(phases, ["loading_snapshot", "verifying"]);
+  releaseVerification("ready");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(phases, ["loading_snapshot", "verifying", "ready"]);
+});
+
+test("request fences isolate unrelated verification reads", async () => {
+  let captured = "";
+  const coordinator = new ViewRestorationCoordinator({ onPhase: (state) => { captured = state.phase; } });
+  await coordinator.begin("card", {
+    snapshot: async () => ({ id: "saved" }),
+    display: () => "verifying",
+    verify: async (_snapshot, fence) => {
+      const first = fence.request("interaction");
+      const other = fence.request("journal");
+      const newer = fence.request("interaction");
+      assert.equal(fence.currentRequest(first), false);
+      assert.equal(fence.currentRequest(other), true);
+      assert.equal(fence.currentRequest(newer), true);
+      return "ready";
+    },
+    failed: () => assert.fail("verification should succeed"),
+  });
+  await Promise.resolve();
+  assert.equal(captured, "ready");
+});
+
+test("verification timeout preserves the displayed snapshot and identifies the retry section", async () => {
+  const phases: string[] = [];
+  let failedSection = "";
+  let finished!:()=>void;
+  const failure=new Promise<void>(resolve=>{finished=resolve;});
+  const coordinator = new ViewRestorationCoordinator({
+    verificationTimeoutMs: 2,
+    onPhase: (state) => { phases.push(state.phase); },
+  });
+  assert.equal(await coordinator.begin("card", {
+    snapshot: async () => ({ screen: "monitor" }),
+    display: () => "read_only",
+    verify: () => new Promise<"ready" | "read_only">(() => undefined),
+    failed: (section) => { failedSection = section; finished(); },
+  }), true);
+  await failure;
+  assert.deepEqual(phases, ["loading_snapshot", "verifying", "verification_failed"]);
+  assert.equal(failedSection, "verification");
+  assert.equal(coordinator.state.failedSection, "verification");
+});
+
+test("restore snapshots do not adopt a revision before authoritative hydration", async () => {
+  const store = controller({
+    restore: async () => saved(2, { screen: "cached" }),
+    read: async () => saved(3, { screen: "authoritative" }),
+    write: async () => saved(4, {}),
+  });
+  const snapshot = await store.restoreSnapshot();
+  assert.equal(snapshot?.revision, 2);
+  assert.equal(store.session?.revision, 0);
+  const authoritative = await store.hydrate();
+  assert.equal(authoritative?.revision, 3);
+  assert.equal(store.session?.revision, 3);
+});
+
+test("explicit reapplication uses the newly read revision and retains local edits on another conflict",async()=>{
+ let remote=saved(2,{screen:"setup",answer:"remote"});let reject=true;
+ const store=createViewPersistence<State>({read:async()=>remote,write:async(id,revision,state)=>{
+   assert.equal(revision,reject?1:2);
+   if(reject)throw Object.assign(new Error("conflict"),{code:"REVISION_CONFLICT"});
+   remote=saved(3,state);return remote;
+ }});
+ store.configure(saved(1,{screen:"setup",answer:"before"}));store.markDirty({screen:"setup",answer:"local"});
+ assert.equal(await store.flush(),false);assert.equal(store.pendingState?.answer,"local");reject=false;
+ assert.equal(await store.reapplyLocal((saved,local)=>({...saved,answer:local.answer})),true);
+ assert.equal(remote.state?.answer,"local");assert.equal(store.conflict,null);
 });

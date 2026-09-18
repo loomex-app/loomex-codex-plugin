@@ -208,6 +208,9 @@ export interface BuilderSession extends MutableJson {
 }
 
 export interface UiData extends WorkflowData {
+  runs?: readonly ExecutionProjection[];
+  /** Canonical `runs.list` entries, normalized to `runs` at the UI boundary. */
+  executions?: readonly ExecutionProjection[];
   execution?: ExecutionProjection;
   executionId?: string;
   humanRequest?: HumanRequest | null;
@@ -382,10 +385,23 @@ export interface RunFlow {
   error?: unknown;
   errorMessage?: string;
   prepared?: PreparedRun;
+  /** A non-secret runner reference. It is identity data, never authorization. */
+  startHandoffRef?: string;
+  /**
+   * Display-only lifecycle mirrored from the runner.  The runner remains the
+   * authority for approval and commit; this value only controls safe UI state.
+   */
+  startHandoffState?: StartHandoffLifecycle;
+  /** A redacted, durable reconciliation projection for a saved review card. */
+  startHandoffOperation?: JsonObject;
+  /** Volatile browser-only approval material is available for this card. Never persist it. */
+  startHandoffReady?: boolean;
   result?: UiData;
   baselineRequired?: boolean;
   cancellationRequested?: boolean;
   preparationStale?: boolean;
+  /** The immutable presentation entity that owns a restored monitor summary. */
+  summaryOwner?: "preparation";
   editWorkflowVersion?: number;
   pendingSetupInputs?: JsonObject;
   setupViewSessionId?: string;
@@ -397,6 +413,17 @@ export interface RunFlow {
   humanMode?: string;
   readEpoch?: number;
 }
+
+export type StartHandoffLifecycle =
+  | "prepared"
+  | "approving"
+  | "approved"
+  | "committing"
+  | "ambiguous"
+  | "committed"
+  | "expired"
+  | "rejected"
+  | "unknown";
 
 export type SetupRunFlow = RunFlow & {
   stage: "setup";

@@ -1,4 +1,4 @@
 interface:
   display_name: "Browse Loomex Workflows"
   short_description: "Browse and search available workflows"
-  default_prompt: "Use $loomex-browse to browse my available workflows."
+  default_prompt: "Browse my available Loomex workflows."

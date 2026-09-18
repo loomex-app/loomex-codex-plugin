@@ -193,9 +193,6 @@
   .pointer-events-none {
     pointer-events: none;
   }
-  .collapse {
-    visibility: collapse;
-  }
   .visible {
     visibility: visible;
   }
@@ -219,6 +216,9 @@
   .relative {
     position: relative;
   }
+  .static {
+    position: static;
+  }
   .inset-y-0 {
     inset-block: calc(var(--spacing) * 0);
   }
@@ -227,24 +227,6 @@
   }
   .isolate {
     isolation: isolate;
-  }
-  .container {
-    width: 100%;
-    @media (width >= 40rem) {
-      max-width: 40rem;
-    }
-    @media (width >= 48rem) {
-      max-width: 48rem;
-    }
-    @media (width >= 64rem) {
-      max-width: 64rem;
-    }
-    @media (width >= 80rem) {
-      max-width: 80rem;
-    }
-    @media (width >= 96rem) {
-      max-width: 96rem;
-    }
   }
   .m-4 {
     margin: calc(var(--spacing) * 4);
@@ -392,6 +374,9 @@
   .tabular-nums {
     --tw-numeric-spacing: tabular-nums;
     font-variant-numeric: var(--tw-ordinal,) var(--tw-slashed-zero,) var(--tw-numeric-figure,) var(--tw-numeric-spacing,) var(--tw-numeric-fraction,);
+  }
+  .filter {
+    filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,) var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,) var(--tw-drop-shadow,);
   }
   .transition {
     transition-property: color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to, opacity, box-shadow, transform, translate, scale, rotate, filter, -webkit-backdrop-filter, backdrop-filter, display, content-visibility, overlay, pointer-events;
@@ -661,7 +646,7 @@ html[data-locale-font='Vazirmatn'] body {
     white-space: nowrap;
   }
   .ui-select-placeholder, .ui-select-chevron {
-    color: rgb(107 114 128);
+    color: rgb(156 163 175);
   }
   .ui-select-chevron {
     width: 1rem;
@@ -712,7 +697,7 @@ html[data-locale-font='Vazirmatn'] body {
     outline: none;
   }
   .ui-select-search-input::placeholder {
-    color: rgb(75 85 99);
+    color: rgb(156 163 175);
   }
   .ui-select-empty {
     padding: 0.75rem 1rem;
@@ -848,7 +833,7 @@ html[data-locale-font='Vazirmatn'] body {
     max-width: 42rem;
     font-size: 0.875rem;
     line-height: 1.625;
-    color: rgb(107 114 128);
+    color: rgb(156 163 175);
   }
   .page-shell-actions {
     display: flex;
@@ -880,7 +865,7 @@ html[data-locale-font='Vazirmatn'] body {
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: rgb(107 114 128);
+    color: rgb(156 163 175);
   }
   .ui-data-table {
     display: flex;
@@ -971,7 +956,7 @@ html[data-locale-font='Vazirmatn'] body {
     font-size: 0.75rem;
     line-height: 1rem;
     font-weight: 600;
-    color: rgb(107 114 128);
+    color: var(--color-gray-400);
   }
   .ui-data-table-pagination-actions {
     display: flex;
@@ -1040,6 +1025,59 @@ html[data-locale-font='Vazirmatn'] body {
   inherits: false;
 }
 @property --tw-numeric-fraction {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-blur {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-brightness {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-contrast {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-grayscale {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-hue-rotate {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-invert {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-opacity {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-saturate {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-sepia {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-drop-shadow {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-drop-shadow-color {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-drop-shadow-alpha {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 100%;
+}
+@property --tw-drop-shadow-size {
   syntax: "*";
   inherits: false;
 }
@@ -1133,6 +1171,19 @@ html[data-locale-font='Vazirmatn'] body {
       --tw-numeric-figure: initial;
       --tw-numeric-spacing: initial;
       --tw-numeric-fraction: initial;
+      --tw-blur: initial;
+      --tw-brightness: initial;
+      --tw-contrast: initial;
+      --tw-grayscale: initial;
+      --tw-hue-rotate: initial;
+      --tw-invert: initial;
+      --tw-opacity: initial;
+      --tw-saturate: initial;
+      --tw-sepia: initial;
+      --tw-drop-shadow: initial;
+      --tw-drop-shadow-color: initial;
+      --tw-drop-shadow-alpha: 100%;
+      --tw-drop-shadow-size: initial;
       --tw-ease: initial;
       --tw-font-weight: initial;
       --tw-tracking: initial;

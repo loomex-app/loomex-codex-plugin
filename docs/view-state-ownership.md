@@ -53,18 +53,81 @@ A browser regression reproduces the setup-forward-session remount, waits for
 both authoritative restoration and persistence hydration, and verifies that
 Start submits the original preparation ID, binding digest, and confirmation key.
 
-## Restoration loading (0.13.3)
+## Progressive restoration (0.14.7)
 
-All cards start with a single restoration skeleton. Content and actions remain
-inert and visually hidden while the exact session, domain state, answer draft,
-and pending operation are reconciled. Forward-session transitions retain the
-loader until the destination finishes hydration. Stale hydration callbacks
-cannot reveal a newer session. Errors release the loader so retry controls are
-accessible. This loader is separate from background autosave, which stays quiet.
-The reserved initial height reduces collapse; the host still owns iframe sizing.
+All cards start with one skeleton only while the bounded owner-checked snapshot
+is loading. Once it arrives, a bounded display projection replaces the generic
+loader while the full session, domain state, answer draft, and pending operation
+are reconciled. The projection has no editable answer, workspace, credential,
+or mutation material. Controls remain inert until the exact authoritative read
+completes. Resolved cards are displayed read-only.
+
+Forward-session transitions retain this safe display state until the destination
+finishes hydration. Stale callbacks cannot reveal a newer session. Snapshot and
+verification failures preserve the readable projection and expose a retry for
+the failed section. This is separate from quiet background autosave. The host
+still owns iframe sizing.
 
 The 2048 follow incident (01207e75-77bf-4731-af29-ca8fcb836380) again ended
 with an active runner nextAction at sequence 69. No recovery or automation calls
 were present in the follow task. Durable recovery support is available but was
 not invoked by the host model. This release does not claim that host behavior is
 fixed or that a schedule was registered for that run.
+
+## Unified lifecycle (integration Phase 3)
+
+`ViewRestorationCoordinator` is the lifecycle owner for all eight resources.
+`SessionNavigationController` supplies the domain adapter for workflow, run,
+setup/review, interaction and authoring pages; `ConnectionController` supplies
+an adapter backed by the dedicated pre-enrollment connection store. Connection
+hydration no longer has independent ready/loading flags.
+
+The adapter stages are snapshot, display, authoritative verification, journal
+reconciliation, permitted draft restoration, final projection, and readiness.
+A display-only snapshot never grants authority, including a cached read-only
+snapshot. A successful verification callback enables setup auto-preparation;
+rendering a provisional snapshot cannot do so. Journal recovery is projected
+again after draft restoration so an unresolved response keeps its exact answers
+and retry identity locked.
+
+Restoration, persistence, completion and refresh have independent state. The
+Phase 2 mutation controller remains the sole owner of mutation stages and exact
+operation tuples. The lifecycle does not copy journal arguments into display
+state. Save status is aggregated across draft, presentation and connection
+stores: a successful draft save cannot hide a presentation conflict. A save
+retry may be offered with verified identity, but the mutation pipeline must
+finish required durable writes before dispatch.
+
+List navigation and refresh do not wait for presentation writes. Refresh keeps
+existing content, and an unchanged request/schema retains mounted answer
+controls. Different request or schema identities replace the form and invalidate
+its draft scope. Conflict recovery offers explicit reload or reapplication;
+reapplication reads the current revision, preserves saved recovery references,
+and refuses a completed/forwarded view or unresolved saved operation. It never
+changes an ambiguous domain operation's key.
+
+The coordinator owns restoration/refresh deadlines, request lanes and cleanup.
+A timeout fences late results; disposal settles local waits and releases polling
+resources. Authentication polling is independently fenced by flow and request,
+remains alive during copy/browser actions, and stops when hidden, expired,
+replaced or disposed. Run monitoring remains owned by chat.
+
+No persisted shape meaning changed in this phase. Connection search, page and
+candidate are optional additions to its existing state object. Normal presentation
+state remains version 1, and unknown declared versions fail closed. No browser
+storage or additional home-directory store is used.
+
+### Continuation delivery
+
+The presentation session may contain a version-1 `continuationDelivery` record.
+It stores only safe continuation text, purpose/identity, attempt ID and observed
+host-delivery status. Sending is persisted before the host call; remount converts
+an unfinished Sending to Unknown. Acknowledged does not prove execution or
+monitoring. Unknown never automatically retries. Explicit rejection permits a
+user-initiated delivery-only retry after an authoritative read. Domain journals,
+accepted answers and approved Start remain independent of this record.
+
+Start and interaction continuation use the same service and a self-contained
+Markdown `ui/message`, including the JSON context block. They do not depend on a
+separate `ui/update-model-context` attachment. Read-only completion remains intact
+when presentation persistence or host delivery fails.

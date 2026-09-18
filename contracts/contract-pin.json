@@ -3,7 +3,15 @@
   "version": "0.3.0",
   "source": "../runner/contracts",
   "files": {
-    "local-control.schema.json": "1ca84ca11ccd9398c8fb00f37a5e0dff94c4432363967d82d56117af50d16690",
-    "method-catalog.json": "097bfdf0c2a31ae2e340b4fe3934db0b06461341ae9119e03584318d780728aa"
+    "local-control.schema.json": "71b9478cfc5b35c2088a63cadf57af70dc9f46d9de5a4e4f39ff3d4c6b6ee00e",
+    "method-catalog.json": "8faf1f98185f8f182098f4627dd7fc442809991a78a537980c566201bef471e5",
+    "error-recovery.json": "11b87b9793ec8aaaacd9f281f8b9eeb3bd5db6e62fda4421bc7d645e06af871b",
+    "mutation-recovery.json": "87e38f4c727f8cef5d107718c0aebcd4cb02cf4e307b0977d339e119cb63e1a1"
+  },
+  "runnerContractSha256": {
+    "local-control.schema.json": "71b9478cfc5b35c2088a63cadf57af70dc9f46d9de5a4e4f39ff3d4c6b6ee00e",
+    "method-catalog.json": "8faf1f98185f8f182098f4627dd7fc442809991a78a537980c566201bef471e5",
+    "error-recovery.json": "11b87b9793ec8aaaacd9f281f8b9eeb3bd5db6e62fda4421bc7d645e06af871b",
+    "mutation-recovery.json": "87e38f4c727f8cef5d107718c0aebcd4cb02cf4e307b0977d339e119cb63e1a1"
   }
 }

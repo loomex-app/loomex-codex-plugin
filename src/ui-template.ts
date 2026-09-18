@@ -13,7 +13,7 @@ const provenance = validateDesignSystem(JSON.parse(asset("frontend-design-system
 
 /** One offline renderer for every MCP resource and the browser harness. */
 export function renderUiHtml(mode: string): string {
-  if (!["browser", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"].includes(mode)) throw new Error("Unknown UI mode");
+  if (!["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"].includes(mode)) throw new Error("Unknown UI mode");
   return template.replace("__LOOMEX_DESIGN_SYSTEM__", () => foundation)
     .replace("__LOOMEX_APPLICATION__", () => browserAsset.replace(/<\/script/gi, "<\\/script"))
     .replace("__LOOMEX_STATUS_CLASSES__", () => JSON.stringify(provenance.statusClasses).replaceAll("<", "\\u003c"))

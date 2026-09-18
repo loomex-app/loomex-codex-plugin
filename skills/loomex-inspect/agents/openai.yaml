@@ -1,4 +1,0 @@
-interface:
-  display_name: "Inspect Loomex Workflow"
-  short_description: "Inspect workflow inputs and behavior"
-  default_prompt: "Use $loomex-inspect to inspect the workflow I select."

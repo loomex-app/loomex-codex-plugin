@@ -1,6 +1,6 @@
 {
   "name": "@loomex/codex-plugin",
-  "version": "0.14.7",
+  "version": "0.14.40",
   "private": true,
   "description": "Local Loomex MCP bridge for Codex desktop and CLI",
   "type": "module",
@@ -12,16 +12,17 @@
     "typecheck": "tsc --noEmit && npm run ui:coverage",
     "compatibility:export": "npm run build && node dist/compatibility-check.mjs --package-root . --source-root .",
     "compatibility:check": "npm run build && node dist/compatibility-check.mjs --package-root . --source-root . --check",
-    "test:compile": "esbuild test/*.test.ts --bundle --packages=external --platform=node --format=esm --target=node24 --outdir=.test-dist",
+    "test:compile": "node -e \"require('node:fs').rmSync('.test-dist', {recursive:true, force:true})\" && esbuild test/*.test.ts --bundle --packages=external --platform=node --format=esm --target=node24 --outdir=.test-dist",
     "test": "npm run build && npm run test:compile && node --test --test-concurrency=1 .test-dist/*.test.js",
-    "test:ui": "npm run test:compile && LOOMEX_REQUIRE_BROWSER=1 node --test .test-dist/ui-browser.test.js",
+    "test:ui": "npm run design:sync && npm run build && npm run test:compile && LOOMEX_REQUIRE_BROWSER=1 node --test .test-dist/ui-browser.test.js",
     "design:sync": "node scripts/sync-design-system.mjs",
     "design:check": "node scripts/sync-design-system.mjs --check",
     "ui:sync": "node scripts/sync-ui-assets.mjs",
     "ui:check": "node scripts/sync-ui-assets.mjs --check",
     "package:check": "node dist/compatibility-check.mjs --package-root . --check",
     "ui:coverage": "node scripts/check-browser-coverage.mjs",
-    "test:coverage": "node --test scripts/test-browser-coverage.mjs scripts/test-browser-build.mjs scripts/test-design-consumers.mjs"
+    "test:coverage": "node --test scripts/test-browser-coverage.mjs scripts/test-browser-build.mjs scripts/test-design-consumers.mjs scripts/test-retired-ui-paths.mjs",
+    "test:cross-boundary": "cargo build --manifest-path ../runner/Cargo.toml --example presentation-fixture && npm run test:compile && LOOMEX_PRESENTATION_FIXTURE=../runner/target/debug/examples/presentation-fixture node --test .test-dist/runner-journal-integration.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

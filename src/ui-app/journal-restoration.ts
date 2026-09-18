@@ -73,6 +73,12 @@ export function restoredOperationSlot(operation: RestoredMutationOperation): str
   if (name === "loomex_run_prepare") {
     return `prepare:${String(operation.params.versionId ?? "")}:${String(operation.params.workspacePath ?? "")}`;
   }
+  if (name === "loomex_run_start_handoff_issue") {
+    return `start-handoff:issue:${String(operation.params.preparationId ?? "")}`;
+  }
+  if (name === "loomex_run_start_handoff_approve") {
+    return `start-handoff:approve:${String(operation.params.handoffRef ?? "")}`;
+  }
   return `restored:${operation.operationId}`;
 }
 

@@ -1,3 +1,4 @@
+import { errorRecovery } from "./protocol.js";
 import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -49,7 +50,7 @@ export class LocalControlError extends Error {
     super(safeErrorMessage(options.code));
     this.name = "LocalControlError";
     this.code = options.code;
-    this.correlationId = options.correlationId;
+    this.correlationId = options.correlationId ?? options.requestId ?? randomUUID();
     this.retryable = options.retryable ?? false;
     this.requestId = options.requestId;
     this.idempotencyKey = options.idempotencyKey;
@@ -378,6 +379,7 @@ export function toolErrorOutput(method: string, error: unknown): ToolOutput {
       message: safeErrorMessage(local.code),
       ...(local.correlationId === undefined ? {} : { correlationId: local.correlationId }),
       retryable: local.retryable,
+      ...errorRecovery(local.code),
       ...(local.validationIssues === undefined
         ? {}
         : { validationIssueVersion: VALIDATION_ISSUE_VERSION }),

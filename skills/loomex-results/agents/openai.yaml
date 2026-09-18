@@ -1,4 +1,0 @@
-interface:
-  display_name: "Loomex Run Results"
-  short_description: "Read run results and download artifacts"
-  default_prompt: "Use $loomex-results to show results for the run I select."

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { runSummary } from "../src/run-summary.js";
-import { MONITORING_CONTRACT_VERSION, RECOVERY_CADENCE, RECOVERY_MARKER_TEMPLATE } from "../src/monitoring-contract.js";
+import { monitoringContract, MONITORING_CONTRACT_VERSION, RECOVERY_CADENCE, RECOVERY_MARKER_TEMPLATE } from "../src/monitoring-contract.js";
 import { checkMonitoringTranscript, type TranscriptEntry } from "./monitoring-transcript.js";
 
 const runId = "adc7b3ba-1979-47d2-ac14-638ed91c5f82";
@@ -146,14 +146,14 @@ test("one-off status and advisory recovery do not become schedule evidence", () 
       observedLifecycle: "unchecked",
       evidence: "host_schedule_not_observed",
       requiredLifecycle: "verified",
-      registrationState: "ambiguous",
-      requiredAction: "report_ambiguous",
+      registrationState: "not_observed",
+      requiredAction: "read_registration_journal",
       initialization: "ready_to_initialize",
       appliesTo: "explicit_follow_or_continuation",
       markerTemplate: RECOVERY_MARKER_TEMPLATE,
       cadence: RECOVERY_CADENCE,
     },
-    liveFollow: { mode: "continue_when_explicit", nextAction: "authoritative_runner_action" },
+    liveFollow: { mode: "continue_when_explicit", disposition: "continue", nextAction: "authoritative_runner_action" },
   });
 
   const oneOff: TranscriptEntry[] = [
@@ -164,7 +164,7 @@ test("one-off status and advisory recovery do not become schedule evidence", () 
   assert.deepEqual(checkMonitoringTranscript(oneOff), []);
 
   const claimedWithoutReceipt = [...oneOff, { kind: "assistant_final", text: "I will keep watching this run.", recoveryEstablished: true } satisfies TranscriptEntry];
-  assert.deepEqual(checkMonitoringTranscript(claimedWithoutReceipt).map((issue) => issue.code), ["final_before_poll", "recovery_initialization_missing", "recovery_claim_unverified"]);
+  assert.deepEqual(checkMonitoringTranscript(claimedWithoutReceipt).map((issue) => issue.code), ["final_before_poll", "recovery_claim_unverified"]);
 
   const createdButUnverified = [
     ...oneOff,
@@ -216,7 +216,7 @@ test("transcript checker catches duplicate request cards and final answers that 
     { kind: "projection", method: "runs.wait", projection: summarize("runs.wait", { execution: { id: runId, status: "running" } }) as never },
     { kind: "assistant_final", text: "The run is still in progress." },
   ];
-  assert.deepEqual(checkMonitoringTranscript(transcript).map((issue) => issue.code), ["duplicate_request_presentation", "final_before_poll", "recovery_initialization_missing"]);
+  assert.deepEqual(checkMonitoringTranscript(transcript).map((issue) => issue.code), ["duplicate_request_presentation", "final_before_poll"]);
 });
 
 test("recovery verification cannot cross task/run boundaries or turn a paused heartbeat into active recovery", () => {
@@ -264,7 +264,7 @@ test("the follow identity and first create result bind later recovery verificati
     projection("runs.get", { execution: { id: requestB, status: "running" } }),
     { kind: "assistant_final", text: "Recovery is configured for this run." },
   ];
-  assert.deepEqual(checkMonitoringTranscript(wrongProjection).map((issue) => issue.code), ["follow_identity_unverified", "final_before_poll", "recovery_initialization_missing", "recovery_claim_unverified"]);
+  assert.deepEqual(checkMonitoringTranscript(wrongProjection).map((issue) => issue.code), ["follow_identity_unverified", "final_before_poll", "recovery_claim_unverified"]);
 });
 
 test("durable registration state governs creation independently of continuation trigger", () => {
@@ -310,9 +310,28 @@ test("host automation events normalize to an ID-only view and failed answers rem
   assert.deepEqual(checkMonitoringTranscript(failed).map((issue) => issue.code), ["duplicate_request_presentation"]);
 });
 
-test("redacted incident transcript flags premature final and missing recovery handling", async () => {
+test("redacted incident transcript flags a premature final without requiring hook recovery", async () => {
   const fixture = JSON.parse(await readFile(join(process.cwd(), "test/fixtures/monitoring-incident-2026-09-11.json"), "utf8")) as TranscriptEntry[];
-  assert.deepEqual(checkMonitoringTranscript(fixture).map((issue) => issue.code), ["final_before_poll", "recovery_initialization_missing"]);
+  assert.deepEqual(checkMonitoringTranscript(fixture).map((issue) => issue.code), ["final_before_poll"]);
+});
+
+test("hook-free live-follow transcript survives quiet and provider-completion intervals until the terminal result", async () => {
+  const fixture = JSON.parse(await readFile(join(process.cwd(), "test/fixtures/monitoring-hook-free-follow.json"), "utf8")) as TranscriptEntry[];
+  assert.deepEqual(checkMonitoringTranscript(fixture), []);
+});
+
+test("poll retries require a fresh authoritative observation after a failed wait", async () => {
+  const invalid = JSON.parse(await readFile(join(process.cwd(), "test/fixtures/monitoring-failed-observation-retry.json"), "utf8")) as TranscriptEntry[];
+  assert.deepEqual(checkMonitoringTranscript(invalid).map((issue) => issue.code), ["poll_retry_without_observation", "final_before_poll"]);
+
+  const valid: TranscriptEntry[] = [
+    { kind: "follow", runId, taskId: "task", trigger: "explicit_follow" },
+    projection("runs.get", { execution: { id: runId, status: "running" } }),
+    { kind: "tool", name: "loomex_run_wait", result: { error: { code: "OBSERVATION_FAILED" } } },
+    projection("runs.get", { execution: { id: runId, status: "running" } }),
+    { kind: "tool", name: "loomex_run_wait" },
+  ];
+  assert.deepEqual(checkMonitoringTranscript(valid), []);
 });
 
 test("run projections stay compact as event history grows", () => {
@@ -328,4 +347,20 @@ test("run projections stay compact as event history grows", () => {
   assert.ok(serialized.length < 3_000, `projection grew to ${serialized.length} bytes`);
   assert.equal(serialized.includes(marker), false);
   assert.equal((result as Record<string, unknown>).eventCount, 400);
+});
+
+
+test("an unobserved recovery record requires lookup rather than pretending a create was ambiguous", () => {
+  const summary = summarize("runs.get", { execution: { id: runId, status: "running" }, latestSequence: 33 });
+  const monitoring = summary?.monitoring as { recovery: { registrationState: string; requiredAction: string } };
+  assert.equal(monitoring.recovery.registrationState, "not_observed");
+  assert.equal(monitoring.recovery.requiredAction, "read_registration_journal");
+});
+
+
+test("journaled ambiguity remains distinct from an unobserved registration", () => {
+  const value = monitoringContract({ state: "active", recoveryRegistrationState: "ambiguous" });
+  assert.equal(value.recovery.registrationState, "ambiguous");
+  assert.equal(value.recovery.requiredAction, "report_ambiguous");
+  assert.equal(value.liveFollow.mode, "continue_when_explicit");
 });

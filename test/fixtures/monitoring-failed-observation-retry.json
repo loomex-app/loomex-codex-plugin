@@ -1,0 +1,11 @@
+[
+  { "kind": "follow", "runId": "retry-run", "taskId": "retry-task", "trigger": "explicit_follow" },
+  { "kind": "projection", "method": "runs.get", "projection": {
+    "execution": { "id": "retry-run", "status": "running" },
+    "monitoring": { "state": "active", "liveFollow": { "mode": "continue_when_explicit" } },
+    "nextAction": { "tool": "loomex_run_wait", "arguments": { "runId": "retry-run", "timeoutSeconds": 30 } }
+  } },
+  { "kind": "tool", "name": "loomex_run_wait", "result": { "error": { "code": "OBSERVATION_FAILED" } } },
+  { "kind": "tool", "name": "loomex_run_wait", "result": { "error": { "code": "OBSERVATION_FAILED" } } },
+  { "kind": "assistant_final", "text": "The run is still active." }
+]

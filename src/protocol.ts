@@ -1,3 +1,4 @@
+import recoveryContract from "../contracts/error-recovery.json" with { type: "json" };
 import { z } from "zod";
 
 export const LOCAL_PROTOCOL = "loomex.local-control/v2" as const;
@@ -115,12 +116,21 @@ export const RpcRequestSchema = z
   })
   .strict();
 
+export const RecoverySchema = z.enum(["correct_input", "retry_exact_operation", "reconcile_outcome", "refresh_authority", "unavailable"]);
+export const OutcomeSchema = z.enum(["not_dispatched", "rejected", "unknown", "completed"]);
+export function errorRecovery(code: string): {recovery: z.infer<typeof RecoverySchema>; outcome: z.infer<typeof OutcomeSchema>} {
+ const rules: Record<string, unknown> = recoveryContract.codes;
+ return z.object({recovery: RecoverySchema, outcome: OutcomeSchema}).parse(rules[code] ?? recoveryContract.default);
+}
+
 export const RpcErrorSchema = z
   .object({
     code: RpcErrorCodeSchema,
     message: z.string().min(1).max(1024),
     correlationId: z.string().min(1).max(128),
     retryable: z.boolean(),
+    recovery: RecoverySchema.optional(),
+    outcome: OutcomeSchema.optional(),
     data: RpcErrorDataSchema.optional(),
   })
   .strict()
@@ -170,6 +180,8 @@ export const ToolErrorSchema = z
     message: z.string(),
     correlationId: z.string().optional(),
     retryable: z.boolean(),
+    recovery: RecoverySchema.optional(),
+    outcome: OutcomeSchema.optional(),
     validationIssueVersion: z.literal(VALIDATION_ISSUE_VERSION).optional(),
     validationIssues: z.array(ValidationIssueSchema).min(1).max(32).optional(),
   })

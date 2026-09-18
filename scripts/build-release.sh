@@ -47,10 +47,16 @@ if [[ "$mode" == "--production" ]]; then
 fi
 source_manifest="$temporary/source-content.json"
 source_snapshot="$temporary/source-snapshot"
+# A release consumes the committed offline design export. Frontend provenance
+# is qualified separately before cutting the release revision; the standalone
+# builder verifies consumers, compiled bytes and hashes without a sibling repo.
+# Bootstrap locked tooling before invoking source checks on a clean CI host.
+(cd "$repo" && npm ci && npm run ui:check)
 python3 "$build_root/scripts/artifact.py" source-manifest --root "$build_root" --output "$source_manifest" --snapshot "$source_snapshot" --source-revision "$revision"
 build_root="$temporary/build-root"
 mkdir "$build_root"
 cp -R "$source_snapshot/." "$build_root/"
+# Tracked UI assets are already bound to the immutable source snapshot.
 (cd "$build_root" && npm ci && npm run test:coverage && npm run typecheck && npm run ui:check && npx --no-install playwright install chromium && LOOMEX_REQUIRE_BROWSER=1 npm test)
 payload="$temporary/payload"
 mkdir -p "$payload/plugin/.codex-plugin" "$payload/plugin/assets" "$payload/plugin/hooks" "$payload/plugin/runtime/bin"
@@ -69,14 +75,33 @@ cp "$build_root/dist/compatibility-check.mjs" "$payload/plugin/dist/compatibilit
 
 runtime_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$build_root/scripts/node-runtime.lock.json")"
 runtime_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$build_root/scripts/node-runtime.lock.json")"
-runtime_archive="${LOOMEX_NODE_ARCHIVE:-$temporary/node.tar.gz}"
-if [[ -z "${LOOMEX_NODE_ARCHIVE:-}" ]]; then curl --fail --show-error --location --retry 5 --retry-all-errors --continue-at - "$runtime_url" -o "$runtime_archive"; fi
-echo "$runtime_sha  $runtime_archive" | shasum -a 256 -c -
-mkdir -p "$temporary/node"
-tar -xzf "$runtime_archive" -C "$temporary/node" --strip-components=1
-cp "$temporary/node/bin/node" "$payload/plugin/runtime/bin/node"
+runtime_binary_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["binarySha256"])' "$build_root/scripts/node-runtime.lock.json")"
+if [[ -n "${LOOMEX_NODE_RUNTIME_ROOT:-}" ]]; then
+  [[ "$mode" == "--unsigned-development" ]] || { echo "LOOMEX_NODE_RUNTIME_ROOT is only allowed for unsigned development builds" >&2; exit 1; }
+  runtime_root="$(cd "$LOOMEX_NODE_RUNTIME_ROOT" && pwd -P)"
+  runtime_binary="$runtime_root/bin/node"
+  runtime_license="$runtime_root/LICENSE"
+  [[ -f "$runtime_binary" && ! -L "$runtime_binary" && -x "$runtime_binary" && -f "$runtime_license" && ! -L "$runtime_license" ]] || {
+    echo "LOOMEX_NODE_RUNTIME_ROOT must contain regular bin/node and LICENSE files" >&2; exit 1;
+  }
+  [[ "$(shasum -a 256 "$runtime_binary" | awk '{print $1}')" == "$runtime_binary_sha" ]] || {
+    echo "LOOMEX_NODE_RUNTIME_ROOT node binary digest mismatch" >&2; exit 1;
+  }
+  [[ "$("$runtime_binary" --version)" == "v$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$build_root/scripts/node-runtime.lock.json")" ]] || {
+    echo "LOOMEX_NODE_RUNTIME_ROOT node version mismatch" >&2; exit 1;
+  }
+  cp "$runtime_binary" "$payload/plugin/runtime/bin/node"
+  cp "$runtime_license" "$payload/plugin/runtime/LICENSE"
+else
+  runtime_archive="${LOOMEX_NODE_ARCHIVE:-$temporary/node.tar.gz}"
+  if [[ -z "${LOOMEX_NODE_ARCHIVE:-}" ]]; then curl --fail --show-error --location --retry 5 --retry-all-errors --continue-at - "$runtime_url" -o "$runtime_archive"; fi
+  echo "$runtime_sha  $runtime_archive" | shasum -a 256 -c -
+  mkdir -p "$temporary/node"
+  tar -xzf "$runtime_archive" -C "$temporary/node" --strip-components=1
+  cp "$temporary/node/bin/node" "$payload/plugin/runtime/bin/node"
+  cp "$temporary/node/LICENSE" "$payload/plugin/runtime/LICENSE"
+fi
 chmod 0755 "$payload/plugin/runtime/bin/node"
-cp "$temporary/node/LICENSE" "$payload/plugin/runtime/LICENSE"
 mkdir -p "$payload/.agents/plugins"
 python3 - "$version" "$payload/.agents/plugins/marketplace.json" <<'PY'
 import json,sys

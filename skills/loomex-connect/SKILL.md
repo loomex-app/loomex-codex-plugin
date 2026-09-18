@@ -5,11 +5,12 @@ description: Check Loomex connection, sign in safely, and report the selected or
 
 # Connect Loomex
 
-Read [the shared operation contract](../loomex-workflows/references/common.md) before using tools.
+Read [the operation contract](references/common.md) before using tools.
+Read [the visual delivery contract](references/visual-delivery.md) when using the connection card.
 
-Use the connection view for an interactive request when the host supports it: call `loomex_connection_view`, which reads the authoritative connection state and presents sign-in, recovery, and sign-out actions. It shows the selected organization only as context; it never presents organization selection or switching. Route organization management to `$loomex-organizations`. The view is a convenience surface and does not authorize an action by itself. If a visual view cannot be opened or the user asks for a headless result, use `loomex_connection_get` and the focused headless tools below.
+Use the connection view for an interactive request when the host supports it: call `loomex_connection_view`, which reads the authoritative connection state and presents sign-in, recovery, sign-out and organization selection actions in one flow. The view is a convenience surface and does not authorize an action by itself. If a visual view cannot be opened or the user asks for a headless result, use `loomex_connection_get` and the focused headless tools below.
 
-For a headless check, call `loomex_readiness` and `loomex_auth_status`. If the runner is already ready and authenticated, report its selected organization and do not restart sign-in. Organization scope is runner-wide; it is not chosen implicitly for each request. If there is no selected organization, use `$loomex-organizations` or ask the user to choose one before continuing.
+For a headless check, call `loomex_readiness` and `loomex_auth_status`. If the runner is already ready and authenticated, report its selected organization and do not restart sign-in. Organization scope is runner-wide; it is not chosen implicitly for each request. If there is no selected organization, call `loomex_organizations_list`, ask the user to choose one, then call `loomex_organization_select` for that choice.
 
 For requested sign-in, use `loomex_auth_start`, show only the returned verification URI, user code, expiry and polling interval, then poll `loomex_auth_poll` at that interval until completion, expiry or a concrete error. The user completes authentication in the browser or device flow. Never request, receive or paste credentials, tokens, recovery codes or provider secrets into chat. Do not use a web organization-admin page as a plugin fallback; organization membership and selection belong to the runner's connection flow.
 

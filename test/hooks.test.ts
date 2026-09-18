@@ -1,5 +1,5 @@
 import * as assert from "node:assert/strict";
-import { chmod, readFile } from "node:fs/promises";
+import { chmod, readFile, symlink } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,7 +8,6 @@ import { afterEach, test } from "node:test";
 import { FakeRunner, type FakeRequest } from "./fake-runner.js";
 import {
   formatFollowContinuationMarkdown,
-  formatFollowContinuationContext,
   formatManualFollowInstruction,
   parseFollowContinuation as parseContractContinuation,
 } from "../src/monitoring-contract.js";
@@ -30,12 +29,16 @@ function hookInput(event: string, additions: Record<string, unknown> = {}): Reco
   };
 }
 
-async function invoke(input: Record<string, unknown>, stateDir?: string): Promise<{
+async function invoke(
+  input: Record<string, unknown>,
+  stateDir?: string,
+  adapterPath = join(process.cwd(), "hooks", "lifecycle-adapter.mjs"),
+): Promise<{
   code: number | null;
   stdout: string;
   stderr: string;
 }> {
-  const child = spawn(process.execPath, [join(process.cwd(), "hooks", "lifecycle-adapter.mjs")], {
+  const child = spawn(process.execPath, [adapterPath], {
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -82,7 +85,7 @@ test("Stop blocks only an explicit runner continue decision", async () => {
     assertLifecycleParams(request.params, {
       schemaVersion: "loomex.follow-session.lifecycle/v1",
       event: "Stop",
-      session: { id: "sess-bridge-1", cwd: process.cwd(), turnId: "turn-bridge-1" },
+      session: { id: "sess-bridge-1", turnId: "turn-bridge-1" },
     });
     runner.respond(socket, request, {
       schemaVersion: "loomex.follow-session.decision/v1",
@@ -93,6 +96,29 @@ test("Stop blocks only an explicit runner continue decision", async () => {
   running.push(runner);
 
   const result = await invoke(hookInput("Stop"), runner.stateDir);
+  assert.equal(result.code, 0);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), {
+    decision: "block",
+    reason: "Loomex follow session requested continuation.",
+  });
+});
+
+test("a symlinked adapter path still starts its lifecycle bridge", async () => {
+  let runner: FakeRunner;
+  runner = new FakeRunner((request, socket) => {
+    assert.equal(request.method, "follow.session.lifecycle");
+    runner.respond(socket, request, {
+      schemaVersion: "loomex.follow-session.decision/v1",
+      decision: "continue",
+    });
+  });
+  await runner.start();
+  running.push(runner);
+
+  const link = join(runner.stateDir, "lifecycle-adapter-link.mjs");
+  await symlink(join(process.cwd(), "hooks", "lifecycle-adapter.mjs"), link);
+  const result = await invoke(hookInput("Stop"), runner.stateDir, link);
   assert.equal(result.code, 0);
   assert.equal(result.stderr, "");
   assert.deepEqual(JSON.parse(result.stdout), {
@@ -179,7 +205,7 @@ test("Stop fails open for unavailable, malformed, and allow runner responses", a
   assert.equal(allowed.stderr, "");
 });
 
-test("bare and generated Markdown continuations use the versioned lifecycle contract", async () => {
+test("receipt-bound $loomex-runs continuations and complete legacy receipts use the lifecycle contract", async () => {
   const requests: FakeRequest[] = [];
   let runner: FakeRunner;
   runner = new FakeRunner((request, socket) => {
@@ -193,40 +219,37 @@ test("bare and generated Markdown continuations use the versioned lifecycle cont
   running.push(runner);
 
   const runId = "86cc409f-2337-4c1e-93a0-92a2609f1f37";
-  const prompt = `$loomex-follow ${runId}`;
   const generated = formatFollowContinuationMarkdown(runId, "A".repeat(16));
-  assert.deepEqual(parseContractContinuation(prompt), {
-    schemaVersion: "loomex.follow-session.continuation/v1", source: "bare_command", runId,
-  });
+  const legacy = `$loomex-follow ${runId}\n\n<!-- loomex-follow-continuation/v1 receipt=${"B".repeat(16)} -->\n\nFollow this exact Loomex run: first call \`loomex_run_get\` with this run ID, then follow its authoritative \`nextAction\`.\n\nDo not start another run or resubmit an accepted response.`;
+  assert.match(generated, new RegExp(`^\\$loomex-runs follow-existing-run ${runId}\\n\\n<!-- loomex-runs-follow-existing-run-continuation/v2 receipt=`));
   assert.deepEqual(parseContractContinuation(generated), {
-    schemaVersion: "loomex.follow-session.continuation/v1", source: "generated_markdown", runId, receipt: "A".repeat(16),
+    schemaVersion: "loomex-runs-follow-existing-run-continuation/v2", source: "generated_markdown", runId, receipt: "A".repeat(16),
   });
-  const promptResult = await invoke(hookInput("UserPromptSubmit", { prompt }), runner.stateDir);
-  const generatedResult = await invoke(hookInput("UserPromptSubmit", { prompt: generated }), runner.stateDir);
+  assert.deepEqual(parseContractContinuation(legacy), {
+    schemaVersion: "loomex.follow-session.continuation/v1", source: "generated_markdown", runId, receipt: "B".repeat(16),
+  });
+  const generatedResult = await invoke(hookInput("UserPromptSubmit", {
+    prompt: generated,
+    // These host-adjacent values are not a documented lifecycle task binding.
+    // The adapter must preserve only the native session/turn association.
+    task_id: "task-must-not-forward",
+    host_task_id: "host-task-must-not-forward",
+  }), runner.stateDir);
+  const legacyResult = await invoke(hookInput("UserPromptSubmit", { prompt: legacy }), runner.stateDir);
   const toolResult = await invoke(hookInput("PostToolUse", {
     tool_name: "mcp__loomex__loomex_run_wait",
     tool_use_id: "tool-use-1",
     tool_input: { runId, ignored: "must-not-forward" },
     tool_response: { structuredContent: { data: { execution: { id: runId }, ignored: "must-not-forward" } } },
   }), runner.stateDir);
-  assert.equal(promptResult.stdout, "");
   assert.equal(generatedResult.stdout, "");
+  assert.equal(legacyResult.stdout, "");
   assert.equal(toolResult.stdout, "");
   assert.equal(requests.length, 3);
   assertLifecycleParams(requests[0]?.params, {
     schemaVersion: "loomex.follow-session.lifecycle/v1",
     event: "UserPromptSubmit",
-    session: { id: "sess-bridge-1", cwd: process.cwd(), turnId: "turn-bridge-1" },
-    continuation: {
-      schemaVersion: "loomex.follow-session.continuation/v1",
-      source: "bare_command",
-      runId,
-    },
-  });
-  assertLifecycleParams(requests[1]?.params, {
-    schemaVersion: "loomex.follow-session.lifecycle/v1",
-    event: "UserPromptSubmit",
-    session: { id: "sess-bridge-1", cwd: process.cwd(), turnId: "turn-bridge-1" },
+    session: { id: "sess-bridge-1", turnId: "turn-bridge-1" },
     continuation: {
       schemaVersion: "loomex.follow-session.continuation/v1",
       source: "generated_markdown",
@@ -234,10 +257,21 @@ test("bare and generated Markdown continuations use the versioned lifecycle cont
       receipt: "A".repeat(16),
     },
   });
+  assertLifecycleParams(requests[1]?.params, {
+    schemaVersion: "loomex.follow-session.lifecycle/v1",
+    event: "UserPromptSubmit",
+    session: { id: "sess-bridge-1", turnId: "turn-bridge-1" },
+    continuation: {
+      schemaVersion: "loomex.follow-session.continuation/v1",
+      source: "generated_markdown",
+      runId,
+      receipt: "B".repeat(16),
+    },
+  });
   assertLifecycleParams(requests[2]?.params, {
     schemaVersion: "loomex.follow-session.lifecycle/v1",
     event: "PostToolUse",
-    session: { id: "sess-bridge-1", cwd: process.cwd(), turnId: "turn-bridge-1" },
+    session: { id: "sess-bridge-1", turnId: "turn-bridge-1" },
     tool: {
       name: "mcp__loomex__loomex_run_wait",
       useId: "tool-use-1",
@@ -250,14 +284,8 @@ test("bare and generated Markdown continuations use the versioned lifecycle cont
     },
   });
   assert.doesNotMatch(JSON.stringify(requests), /must-not-forward/);
-});
-
-test("model continuation context is labelled fenced JSON", () => {
-  const context = { schema: "loomex/chat-continuation/v2", runId: "86cc409f-2337-4c1e-93a0-92a2609f1f37" };
-  assert.equal(
-    formatFollowContinuationContext(context),
-    `Loomex continuation context:\n\n\`\`\`json\n${JSON.stringify(context)}\n\`\`\``,
-  );
+  assert.doesNotMatch(JSON.stringify(requests), new RegExp(process.cwd().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(JSON.stringify(requests), /task-must-not-forward|host-task-must-not-forward/);
 });
 
 test("interaction lifecycle associations use strict request input and response run identity", async () => {
@@ -315,6 +343,25 @@ test("interaction lifecycle associations use strict request input and response r
   assert.doesNotMatch(JSON.stringify(requests), /must-not-forward/);
 });
 
+test("server-local Loomex tool names normalize to the lifecycle contract", async () => {
+  const requests: FakeRequest[] = [];
+  let runner: FakeRunner;
+  runner = new FakeRunner((request, socket) => {
+    requests.push(request);
+    runner.respond(socket, request, { schemaVersion: "loomex.follow-session.decision/v1", decision: "allow" });
+  });
+  await runner.start();
+  running.push(runner);
+  const runId = "86cc409f-2337-4c1e-93a0-92a2609f1f37";
+  await invoke(hookInput("PostToolUse", {
+    tool_name: "loomex_run_wait", tool_use_id: "local-tool-name",
+    tool_input: { runId },
+    tool_response: { structuredContent: { data: { execution: { id: runId } } } },
+  }), runner.stateDir);
+  assert.equal(requests.length, 1);
+  assert.equal((requests[0]?.params.tool as { name?: string }).name, "mcp__loomex__loomex_run_wait");
+});
+
 test("quoted, edited, and mismatched continuations are inert", async () => {
   const runId = "86cc409f-2337-4c1e-93a0-92a2609f1f37";
   const generated = formatFollowContinuationMarkdown(runId, "A".repeat(16));
@@ -322,11 +369,13 @@ test("quoted, edited, and mismatched continuations are inert", async () => {
     parseFollowContinuation(value: unknown): unknown;
   };
   for (const value of [
+    `$loomex-runs follow-existing-run ${runId}`,
     `> $loomex-follow ${runId}`,
     `\`$loomex-follow ${runId}\``,
     `\`\`\`\n$loomex-follow ${runId}\n\`\`\``,
     `$loomex-follow ${runId}\nPlease continue`,
-    generated.replace("Follow this exact", "Please follow this exact"),
+    `$loomex-follow ${runId}`,
+    generated.replace("Follow the exact", "Please follow the exact"),
     `${generated}\n`,
     formatManualFollowInstruction(runId),
   ]) {

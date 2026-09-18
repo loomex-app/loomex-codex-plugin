@@ -2,6 +2,7 @@ import type { JsonObject, JsonValue } from "./contracts.js";
 import type { InteractionFormController } from "./interaction-form.js";
 import type { HumanRequest, InputSpec } from "./page-models.js";
 import type { ActionId } from "./shell.js";
+import { PresentationPersistenceError, persistenceSaveError } from "./action-errors.js";
 
 export type InteractionMutationName = "loomex_interaction_respond" | "loomex_interaction_decide";
 
@@ -139,7 +140,14 @@ export function createInteractionController(host: InteractionControllerServices)
     output: JsonObject,
   ): Promise<void> {
     const outcome = await host.callVerifiedInteractionMutation(name, slot, args, output);
-    if (outcome.accepted === true) await host.handoffAcceptedInteraction(output, outcome.result);
+    if (outcome.accepted === true) {
+      await host.handoffAcceptedInteraction(output, outcome.result);
+      return;
+    }
+    if (name === "loomex_interaction_respond") {
+      throw new Error("The answer was not submitted. Refresh to verify the current question before trying again.");
+    }
+    throw new Error("The decision was not submitted. Refresh to verify the current request before trying again.");
   }
 
   function render(failed: boolean, outputValue: unknown): void {
@@ -227,7 +235,15 @@ export function createInteractionController(host: InteractionControllerServices)
       }, page.output);
       return true;
     } catch (error) {
-      host.setError(error);
+      const message = error instanceof Error ? error.message : "";
+      // A response cannot be delivered until its exact draft receipt is
+      // durable. Keep store internals out of the person-facing status while
+      // retaining the answer locally for a safe retry.
+      if (error instanceof PresentationPersistenceError) {
+        host.setError(error);
+      } else if (/durable view store|saved answer draft|view state/i.test(message)) {
+        host.setError(persistenceSaveError("answers", error instanceof Error ? error : new Error("The answer state could not be saved.")));
+      } else host.setError(error);
       return false;
     }
   }

@@ -32,5 +32,5 @@ export function createIcon(name: ActionIcon): SVGSVGElement {
 }
 
 export function initialTitle(mode: UiMode): string {
-  return ({ browser: "Browse workflows", authoring: "Authoring review", prepare: "Review run", monitor: "Run monitor", interaction: "Your response", connection: "Connection", organizations: "Organizations" } as const)[mode];
+  return ({ browser: "Browse workflows", runs: "Workflow runs", authoring: "Authoring review", prepare: "Review run", monitor: "Run monitor", interaction: "Your response", connection: "Connection", organizations: "Organizations" } as const)[mode];
 }

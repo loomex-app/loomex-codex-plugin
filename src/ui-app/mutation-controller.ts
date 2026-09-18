@@ -1,5 +1,8 @@
+import mutationRecovery from "../../contracts/mutation-recovery.json" with { type: "json" };
+import { errorRecovery } from "../protocol.js";
 import type { JsonObject } from "./contracts.js";
 import type { RpcResult, UiData } from "./page-models.js";
+import { normalizeUiRpcResult } from "./result-decoder.js";
 
 export const MUTATION_PERSISTENCE_TOOLS = Object.freeze({
   create: "loomex_view_session_create",
@@ -19,6 +22,11 @@ export const MUTATION_JOURNAL_METHODS = Object.freeze({
   loomex_editor_commit: "editor.commit",
   loomex_workspace_grant: "workspaces.grant",
   loomex_run_prepare: "runs.prepare",
+  // Start handoffs carry the sealed preparation arguments and an idempotency
+  // key.  They must use the durable operation journal rather than the
+  // presentation-state snapshot.
+  loomex_run_start_handoff_issue: "runs.start_handoff.issue",
+  loomex_run_start_handoff_approve: "runs.start_handoff.approve",
 } as const);
 
 export type MutationToolName = keyof typeof MUTATION_JOURNAL_METHODS;
@@ -29,7 +37,7 @@ export type PersistenceToolName = typeof MUTATION_PERSISTENCE_TOOLS[keyof typeof
 const JOURNAL_TOOLS = new Map<MutationJournalMethod, MutationToolName>(
   Object.entries(MUTATION_JOURNAL_METHODS).map(([tool, method]) => [method, tool as MutationToolName]),
 );
-const AMBIGUOUS_CODES = new Set(["NETWORK_AMBIGUOUS", "IDEMPOTENCY_REQUEST_IN_PROGRESS"]);
+
 const RESOLVED_INTERACTION_STATUSES = new Set(["resolved", "completed", "answered", "approved", "rejected"]);
 const TRANSITION_TO_INACTIVE = new Set<MutationToolName>([
   "loomex_run_prepare", "loomex_run_commit", "loomex_builder_commit", "loomex_editor_commit",
@@ -40,7 +48,7 @@ const MUTATION_OPERATION_BRAND: unique symbol = Symbol("loomex.mutation-operatio
 export type OperationArguments = Readonly<JsonObject> & { readonly idempotencyKey: string };
 
 export interface MutationReconciliation {
-  readonly method: "interactions.get" | "builder.get" | "runs.get";
+  readonly method: string;
   readonly params: Readonly<JsonObject>;
 }
 
@@ -92,7 +100,10 @@ export interface MutationSessionProjection {
   readonly operation?: Readonly<JsonObject>;
 }
 
+export type OperationStage = "not_journaled" | "journal_write_uncertain" | "journaled" | "dispatched" | "outcome_uncertain" | "settled";
+
 export interface MutationOperation {
+  stage: OperationStage;
   readonly [MUTATION_OPERATION_BRAND]: true;
   readonly name: MutationToolName;
   readonly slot: string;
@@ -148,7 +159,12 @@ export interface MutationPresentation {
   persistenceFailure(error: unknown): void;
   lock(operation: Readonly<MutationOperation>, reconciled: boolean, message?: string): void;
   unlock(operation: Readonly<MutationOperation>): void;
-  acceptTargetSession(target: MutationSessionProjection): void;
+  /**
+   * Switch the live presentation to a completed mutation's target session.
+   * Implementations may need to hydrate that session before a successor
+   * mutation is safe to journal, so callers must await the returned promise.
+   */
+  acceptTargetSession(target: MutationSessionProjection): void | Promise<void>;
 }
 
 export interface MutationControllerServices {
@@ -211,6 +227,7 @@ export function createMutationOperation(
     slot,
     arguments: immutableCopy({ ...args, idempotencyKey }),
     ...(label !== undefined ? { label } : {}),
+    stage: "not_journaled",
     uncertain: false,
     reconciled: false,
     settlementAttempts: new Map(),
@@ -266,7 +283,7 @@ export function exactJsonEqual(left: unknown, right: unknown): boolean {
 }
 
 function rpcResult(value: unknown): RpcResult {
-  return object(value) === undefined ? {} : value as RpcResult;
+  return normalizeUiRpcResult(value) as RpcResult;
 }
 
 function resultFailed(result: RpcResult): boolean {
@@ -331,14 +348,13 @@ function viewSessionProjection(result: RpcResult): MutationSessionProjection | u
 }
 
 function reconciliationFor(name: MutationToolName, args: Readonly<JsonObject>): MutationReconciliation | undefined {
-  if (name === "loomex_interaction_respond" || name === "loomex_interaction_decide") {
-    return { method: "interactions.get", params: immutableCopy({ requestId: args.requestId }) };
-  }
-  if (name === "loomex_builder_respond") {
-    return { method: "builder.get", params: immutableCopy({ sessionId: args.sessionId }) };
-  }
-  if (name === "loomex_run_cancel") return { method: "runs.get", params: immutableCopy({ runId: args.runId }) };
-  return undefined;
+  const method = MUTATION_JOURNAL_METHODS[name];
+  const rules: Readonly<Record<string, {method:string;identity:string}>> = mutationRecovery.reconciliation;
+  const rule=rules[method];
+  if (!rule) return undefined;
+  const identity=args[rule.identity];
+  if (typeof identity !== "string") throw new Error("The reconciliation identity is missing.");
+  return {method:rule.method,params:immutableCopy({[rule.identity]:identity})};
 }
 
 function normalizedReconciliation(value: unknown): JsonObject | null {
@@ -359,6 +375,9 @@ function operationReference(result: RpcResult, operation: MutationOperation, dat
     executionId: stringValue(data.executionId, 64) || executionId(data) || null,
     preparationId: stringValue(data.preparationId, 64) || null,
     builderSessionId: builderId || null,
+    handoffRef: stringValue(data.handoffRef, 64) || null,
+    lifecycle: stringValue(data.lifecycle, 32) || null,
+    runId: stringValue(data.runId, 64) || null,
     nextViewSessionId: operation.targetSession?.viewSessionId ?? null,
   });
 }
@@ -374,6 +393,8 @@ function operationSlot(record: RestoredMutationOperation): string {
   }
   if (tool === "loomex_workspace_grant") return `workspace:${String(record.params.workspacePath ?? "")}`;
   if (tool === "loomex_run_prepare") return `prepare:${String(record.params.versionId ?? "")}:${String(record.params.workspacePath ?? "")}`;
+  if (tool === "loomex_run_start_handoff_issue") return `start-handoff:issue:${String(record.params.preparationId ?? "")}`;
+  if (tool === "loomex_run_start_handoff_approve") return `start-handoff:approve:${String(record.params.handoffRef ?? "")}`;
   return `restored:${record.operationId}`;
 }
 
@@ -453,6 +474,7 @@ export class MutationController {
       slot,
       arguments: immutableCopy({ ...record.params, idempotencyKey: record.idempotencyKey }),
       ...(options.label !== undefined ? { label: options.label } : {}),
+      stage: record.status === "completed" ? "settled" : "outcome_uncertain",
       uncertain: record.status !== "completed",
       reconciled: false,
       operationId: record.operationId,
@@ -541,11 +563,13 @@ export class MutationController {
       persisted = projection(await this.#services.persistence.call(MUTATION_PERSISTENCE_TOOLS.update, immutableCopy({ ...attempt })));
     } catch (error: unknown) {
       const code = errorCode(error);
-      if (!AMBIGUOUS_CODES.has(code)) {
-        if (/CONFLICT|STALE/.test(code)) operation.journalConflict = true;
+      if (errorRecovery(code || "INTERNAL").outcome !== "unknown") {
+        operation.stage = "not_journaled";
+        if (/CONFLICT|STALE/.test(code) || code === "OPERATION_PENDING") operation.journalConflict = true;
         this.#services.presentation.persistenceFailure(error);
         throw error;
       }
+      operation.stage = "journal_write_uncertain";
       persisted = await this.#reconcileLostJournalWrite(attempt);
     }
     const reference = object(persisted.operation);
@@ -553,6 +577,7 @@ export class MutationController {
     if (!operationId) throw new Error("The pending action was not durably recorded.");
     this.#services.persistence.acceptRevision(persisted.viewSessionId, persisted.revision);
     operation.operationId = operationId;
+    operation.stage = "journaled";
     operation.journalStatus = stringValue(reference?.status, 40);
     operation.viewSessionId = attempt.viewSessionId;
     operation.sessionRevision = persisted.revision;
@@ -563,6 +588,7 @@ export class MutationController {
   async settle(operation: Readonly<MutationOperation>, status: MutationSettlementStatus, result: RpcResult): Promise<void> {
     const retained = this.#mutable(operation);
     if (retained.operationId === undefined || retained.viewSessionId === undefined) return;
+    if (status === "completed" && !resultFailed(result)) retained.successfulResult = immutableCopy(result);
     const resultReference = operationReference(result, retained, this.#services.dataOf(result));
     const signature = JSON.stringify([status, resultReference]);
     let attempt = retained.settlementAttempts.get(signature);
@@ -578,11 +604,13 @@ export class MutationController {
     }
     await this.#services.persistence.call(MUTATION_PERSISTENCE_TOOLS.operationSettle, immutableCopy({ ...attempt }));
     retained.journalStatus = status;
+    retained.stage = status === "completed" ? "settled" : "outcome_uncertain";
   }
 
   async transitionAfterSuccess(operation: Readonly<MutationOperation>): Promise<void> {
     const retained = this.#mutable(operation);
     if (!TRANSITION_TO_INACTIVE.has(retained.name) || retained.viewSessionId === undefined) return;
+    if (retained.journalStatus !== "completed") throw new Error("The predecessor must be settled before changing view sessions.");
     const target = retained.targetSession;
     if (target == null || target.viewSessionId === retained.viewSessionId) {
       throw new Error("The completed action could not be linked to its durable next view.");
@@ -608,7 +636,11 @@ export class MutationController {
       }
       const updated = await this.#exactSessionUpdate(retained.transitionAttempt);
       this.#services.persistence.acceptRevision(retained.viewSessionId, updated.revision);
-      this.#services.presentation.acceptTargetSession(target);
+      // A successor mutation must belong to the target card.  In particular,
+      // do not let run-start handoff issuance race the source card's completed
+      // preparation operation, which the runner correctly keeps exclusive
+      // until its transition has landed.
+      await this.#services.presentation.acceptTargetSession(target);
     } catch (error: unknown) {
       if (/CONFLICT|STALE/.test(errorCode(error))) retained.transitionConflict = true;
       this.#services.presentation.persistenceFailure(error);
@@ -627,12 +659,12 @@ export class MutationController {
     await this.journal(operation);
     let result = operation.successfulResult !== undefined
       ? immutableCopy(operation.successfulResult)
-      : await this.callTool(operation.name, operation.arguments, {
+      : await dispatchJournaledOperation(operation, () => this.callTool(operation.name, operation.arguments, {
         present: false,
         observe: !["loomex_run_commit", "loomex_builder_commit", "loomex_editor_commit"].includes(operation.name),
-      });
+      }));
     const mutationResult = result;
-    const uncertain = AMBIGUOUS_CODES.has(errorCodeOf(result) ?? "");
+    const uncertain = resultFailed(result) && errorRecovery(errorCodeOf(result) ?? "INTERNAL").outcome === "unknown";
     if (!uncertain && !resultFailed(result)) result = await this.#verifySuccessfulTarget(operation, result);
     await this.settle(operation, uncertain ? "ambiguous" : "completed", mutationResult);
     this.#services.presentation.present(result);
@@ -656,8 +688,8 @@ export class MutationController {
     this.#requireReady();
     const operation = this.#operation(name, slot, args);
     await this.journal(operation);
-    const result = await this.callTool(operation.name, operation.arguments, { present: false });
-    const uncertain = AMBIGUOUS_CODES.has(errorCodeOf(result) ?? "");
+    const result = await dispatchJournaledOperation(operation, () => this.callTool(operation.name, operation.arguments, { present: false }));
+    const uncertain = resultFailed(result) && errorRecovery(errorCodeOf(result) ?? "INTERNAL").outcome === "unknown";
     if (resultFailed(result)) {
       await this.settle(operation, uncertain ? "ambiguous" : "completed", result);
       this.#services.presentation.present(result);
@@ -887,7 +919,7 @@ export class MutationController {
     try {
       return projection(await this.#services.persistence.call(MUTATION_PERSISTENCE_TOOLS.update, immutableCopy({ ...attempt })));
     } catch (error: unknown) {
-      if (!AMBIGUOUS_CODES.has(errorCode(error))) throw error;
+      if (errorRecovery(errorCode(error) || "INTERNAL").outcome !== "unknown") throw error;
       const current = projection(await this.#services.persistence.call(MUTATION_PERSISTENCE_TOOLS.get, {
         viewSessionId: attempt.viewSessionId,
       }));
@@ -1058,4 +1090,20 @@ function errorCode(error: unknown): string {
 
 export function createMutationController(services: MutationControllerServices): MutationController {
   return new MutationController(services);
+}
+
+/** One dispatch boundary for controller-owned and page-owned journal attempts. */
+export async function dispatchJournaledOperation(operation: MutationOperation, dispatch: () => Promise<RpcResult>): Promise<RpcResult> {
+  if (!operation.operationId || !operation.viewSessionId) throw new Error("The operation must be journaled before dispatch.");
+  if (operation.successfulResult) return immutableCopy(operation.successfulResult);
+  operation.stage = "dispatched";
+  try {
+    const result = await dispatch();
+    if (resultFailed(result) && errorRecovery(errorCodeOf(result) ?? "INTERNAL").outcome === "unknown") operation.stage = "outcome_uncertain";
+    return result;
+  } catch (error) {
+    operation.stage = "outcome_uncertain";
+    operation.uncertain = true;
+    throw error;
+  }
 }

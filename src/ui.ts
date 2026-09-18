@@ -11,6 +11,8 @@ function resourceContents(uri: string, mode: string) {
     uri,
     mimeType: "text/html;profile=mcp-app",
     text: renderUiHtml(mode),
+    // All UI mutations use the MCP Apps bridge. No browser-network exception
+    // is needed for Start approval.
     _meta: { ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [], frameDomains: [] } } },
   }] };
 }
@@ -32,6 +34,17 @@ export function registerUiResources(server: McpServer): void {
     const resource = typeof view === "string" && typeof version === "string"
       ? uiResourceForLegacyAlias(uri.href)
       : undefined;
+    if (!resource) {
+      throw new McpError(ErrorCode.InvalidParams, "Unsupported Loomex UI resource");
+    }
+    return resourceContents(uri.href, resource.mode);
+  });
+  server.registerResource("loomex-unversioned-ui", new ResourceTemplate("ui://loomex/{view}.html", { list: undefined }), {
+    description: "Compatibility for unversioned UI references retained by earlier Codex tasks.",
+    mimeType: "text/html;profile=mcp-app",
+  }, async (uri, variables) => {
+    const view = variables.view;
+    const resource = typeof view === "string" ? uiResourceForLegacyAlias(uri.href) : undefined;
     if (!resource) {
       throw new McpError(ErrorCode.InvalidParams, "Unsupported Loomex UI resource");
     }

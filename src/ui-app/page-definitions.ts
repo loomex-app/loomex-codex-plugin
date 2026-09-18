@@ -8,6 +8,7 @@ export interface PageDefinition {
 }
 const definitions: Readonly<Record<UiMode,PageDefinition>> = Object.freeze({
   browser: {mode:'browser',title:'Browse workflows',domain:'catalog'},
+  runs: {mode:'runs',title:'Workflow runs',domain:'execution'},
   authoring: {mode:'authoring',title:'Authoring review',domain:'workflow'},
   prepare: {mode:'prepare',title:'Review run',domain:'workflow'},
   monitor: {mode:'monitor',title:'Run monitor',domain:'execution'},

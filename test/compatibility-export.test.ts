@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import * as assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { join } from "node:path";
@@ -51,9 +52,12 @@ test("plugin component export is deterministic and covers the evaluated public c
   const second = createPluginCompatibilityComponents(packageJson, layout, runnerCatalog.methods);
   assert.equal(JSON.stringify(first), JSON.stringify(second));
   assert.equal(first.schemaVersion, "loomex.plugin-compatibility-components/v1");
-  assert.equal(first.tools.length, 71);
-  assert.equal(first.resources.length, 7);
-  assert.equal(first.skills.length, 17);
+  // The public surface is derived from the strict catalog. Keep this test
+  // coupled to that source of truth so adding a reviewed helper cannot leave
+  // a stale, manually maintained count behind.
+  assert.equal(first.tools.length, TOOL_DEFINITIONS.length);
+  assert.equal(first.resources.length, 8);
+  assert.equal(first.skills.length, 4);
   assert.equal(first.hooks.length, 5);
   assert.ok(first.resources.every((resource) => Array.isArray(resource.aliases)));
   assert.ok(first.tools.every((tool) => tool.inputSchema !== undefined));
@@ -66,7 +70,7 @@ test("plugin component export is deterministic and covers the evaluated public c
 
 test("component export rejects stale skill tools and hook entrypoints", async () => {
   const layout = await packageLayout();
-  const staleSkill = layout.skills.find((skill) => skill.path === "skills/loomex-answer/SKILL.md");
+  const staleSkill = layout.skills.find((skill) => skill.path === "skills/loomex-browse/SKILL.md");
   assert.ok(staleSkill);
   assert.throws(() => validateSkillAndHookReferences({
     ...layout,
@@ -80,7 +84,7 @@ test("component export rejects stale skill tools and hook entrypoints", async ()
 
 test("tool mapping validation fences mapped field schema drift", async () => {
   const runnerCatalog = JSON.parse(await readFile("contracts/method-catalog.json", "utf8")) as {
-    methods: Array<{ name: string; inputSchema: { properties: Record<string, unknown> }; outputSchema: unknown }>;
+    methods: Array<{ name: string; mutating: boolean; appOnly: boolean; inputSchema: { properties: Record<string, unknown> }; outputSchema: unknown }>;
   };
   const update = TOOL_DEFINITIONS.find(({ name }) => name === "loomex_view_session_update");
   assert.ok(update);
@@ -103,6 +107,8 @@ test("component export changes when a mapped runner output schema changes", asyn
   const runnerCatalog = JSON.parse(await readFile("contracts/method-catalog.json", "utf8")) as { methods: Parameters<typeof validateToolMappings>[0] };
   const changedMethods = structuredClone(runnerCatalog.methods) as Array<{
     name: string;
+    mutating: boolean;
+    appOnly: boolean;
     inputSchema: { properties: Record<string, unknown>; required?: readonly string[] };
     outputSchema: unknown;
   }>;
@@ -143,20 +149,41 @@ test("cached-package compatibility checker evaluates its bundled exporter", asyn
   const result = JSON.parse(stdout) as { toolCount: number; resourceCount: number; skillCount: number; hookCount: number; sha256: string };
   assert.deepEqual({ ...result, sha256: typeof result.sha256 }, {
     schemaVersion: "loomex.plugin-compatibility-components/v1",
-    toolCount: 71,
-    resourceCount: 7,
-    skillCount: 17,
+    toolCount: TOOL_DEFINITIONS.length,
+    resourceCount: 8,
+    skillCount: 4,
     hookCount: 5,
     sha256: "string",
   });
   assert.equal("source" in result, false);
+  const browserPath = join(cachedRoot, "assets/browser-application.js");
+  const originalCode = await readFile(browserPath, "utf8");
+  const retiredCode = originalCode + "\nconst tooltipCloseTimer = null;";
+  const assetManifest = JSON.parse(await readFile(join(cachedRoot, "assets/ui-artifacts.json"), "utf8"));
+  assetManifest.browserCodeSha256 = createHash("sha256").update(retiredCode).digest("hex");
+  await writeFile(browserPath, retiredCode);
+  await writeFile(join(cachedRoot, "assets/ui-artifacts.json"), JSON.stringify(assetManifest));
+  await assert.rejects(execFile(process.execPath, [
+    join(cachedRoot, "dist/compatibility-check.mjs"), "--package-root", cachedRoot, "--check",
+  ]), /Retired tooltip/);
   await rm(join(cachedRoot, "assets/browser-application.js"));
   await assert.rejects(execFile(process.execPath, [
     join(cachedRoot, "dist/compatibility-check.mjs"), "--package-root", cachedRoot, "--check",
   ]), /browser-application|ENOENT/);
 });
 
-test("source compatibility export binds identity only to the exported source tree", async () => {
+test("source compatibility export binds identity only to the exported source tree", async (t) => {
+  // Release builds deliberately test an immutable source-content snapshot with
+  // no `.git` directory. Its provenance is verified by the release envelope,
+  // while this check specifically verifies the checkout-only Git identity.
+  // Skipping there preserves both guarantees instead of making a release
+  // snapshot pretend to be a working tree.
+  try {
+    await execFile("git", ["-C", process.cwd(), "rev-parse", "--verify", "HEAD"]);
+  } catch {
+    t.skip("Git source identity is unavailable in the verified release snapshot");
+    return;
+  }
   const { stdout } = await execFile(process.execPath, [
     "dist/compatibility-check.mjs",
     "--package-root", process.cwd(),
@@ -178,4 +205,13 @@ test("source compatibility export binds identity only to the exported source tre
   } finally {
     await rm(unrelated, { recursive: true, force: true });
   }
+});
+
+test("tool mappings reject mutability and app-only contract drift", async () => {
+ const catalog=JSON.parse(await readFile("contracts/method-catalog.json","utf8")) as {methods:Array<{name:string;mutating:boolean;appOnly:boolean;inputSchema:{properties:Record<string,unknown>};outputSchema:unknown}>};
+ const method=catalog.methods.find(m=>m.name==="runs.start_handoff.approve")!;
+ method.appOnly=false;
+ assert.throws(()=>validateToolMappings(catalog.methods),/app-only visibility/);
+ method.appOnly=true;method.mutating=false;
+ assert.throws(()=>validateToolMappings(catalog.methods),/mutability/);
 });

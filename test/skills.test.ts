@@ -10,20 +10,16 @@ const SOURCE_SKILLS_ROOT = resolve(import.meta.dirname, "../skills");
 
 const VISUAL_SKILL_NAMES = [
   "loomex-browse",
-  "loomex-inspect",
-  "loomex-status",
-  "loomex-run",
-  "loomex-answer",
-  "loomex-follow",
-  "loomex-results",
   "loomex-create",
-  "loomex-edit",
+  "loomex-runs",
+  "loomex-connect",
 ] as const;
 
 const VISUAL_TOOL_PAIRS = [
   ["loomex_workflows_view", "loomex_workflows_list"],
   ["loomex_workflow_view", "loomex_workflow_get"],
   ["loomex_run_setup", "loomex_workflow_get"],
+  ["loomex_runs_view", "loomex_runs_list"],
   ["loomex_run_view", "loomex_run_get"],
   ["loomex_interaction_view", "loomex_interaction_get"],
 ] as const;
@@ -141,6 +137,7 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
   const rootEntries = await readdir(skillsRoot, { withFileTypes: true });
   const skillFolders = rootEntries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
   assert.ok(skillFolders.length > 0, "packaged skills must contain at least one skill");
+  assert.deepEqual(skillFolders, ["loomex-browse", "loomex-connect", "loomex-create", "loomex-runs"]);
 
   await t.test("skill manifests and optional UI metadata identify their own skill", async () => {
     for (const folderName of skillFolders) {
@@ -162,7 +159,11 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
         );
         const defaultPrompt = yamlScalar(openAi, "default_prompt")?.trim();
         assert.ok(defaultPrompt, `${folderName}/agents/openai.yaml needs default_prompt`);
-        assert.ok(defaultPrompt.includes(`$${folderName}`), `${folderName}/agents/openai.yaml default_prompt must mention $${folderName}`);
+        assert.doesNotMatch(
+          defaultPrompt,
+          new RegExp(`\\$${folderName}\\b`),
+          `${folderName}/agents/openai.yaml must describe the selected action instead of recursively invoking an unqualified skill`,
+        );
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         // Skills without UI metadata use Codex's natural implicit routing.
@@ -192,33 +193,31 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
   });
 
   await t.test("execution entry points carry local task workspace context", async () => {
-    const common = await readFile(join(skillsRoot, "loomex-workflows/references/common.md"), "utf8");
+    const common = await readFile(join(skillsRoot, "loomex-browse/references/common.md"), "utf8");
     assert.match(common, /actual current working directory/);
     assert.match(common, /taskContext\.cwd/);
     assert.match(common, /workspacePath/);
     assert.match(common, /remote or cloud task/i);
     assert.match(common, /never derive a path from the plugin process working directory/i);
 
-    for (const skill of ["loomex-run", "loomex-browse", "loomex-inspect", "loomex-create", "loomex-edit"]) {
+    for (const skill of ["loomex-browse", "loomex-create"]) {
       const source = await readFile(join(skillsRoot, skill, "SKILL.md"), "utf8");
       assert.match(source, /local Codex task cwd/, `${skill} must use the active local task workspace when available`);
     }
 
-    const authoring = await readFile(join(skillsRoot, "loomex-workflows/references/authoring.md"), "utf8");
+    const authoring = await readFile(join(skillsRoot, "loomex-create/references/authoring.md"), "utf8");
     assert.match(authoring, /Do not add a project-directory input or `settings\.workspaceInputField`/);
     assert.match(authoring, /Existing stored versions.*remain valid and readable/);
     assert.match(authoring, /"source": "execution_context", "value": "workspace\.path"/);
   });
 
-  await t.test("accepted interaction continuations route through the focused follow skill", async () => {
-    const monitoring = await readFile(join(skillsRoot, "loomex-workflows/references/monitoring.md"), "utf8");
-    const follow = await readFile(join(skillsRoot, "loomex-follow/SKILL.md"), "utf8");
-    const answer = await readFile(join(skillsRoot, "loomex-answer/SKILL.md"), "utf8");
-    const workflows = await readFile(join(skillsRoot, "loomex-workflows/SKILL.md"), "utf8");
+  await t.test("accepted interaction continuations route through the runs skill", async () => {
+    const monitoring = await readFile(join(skillsRoot, "loomex-runs/references/monitoring.md"), "utf8");
+    const runs = await readFile(join(skillsRoot, "loomex-runs/SKILL.md"), "utf8");
     const interactionView = TOOL_DEFINITIONS.find(({ name }) => name === "loomex_interaction_view");
     const runGet = TOOL_DEFINITIONS.find(({ name }) => name === "loomex_run_get");
 
-    assert.match(monitoring, /\$loomex-follow/);
+    assert.match(monitoring, /explicit follow request/);
     assert.match(monitoring, /loomex\/chat-continuation\/v2/);
     assert.match(monitoring, /trigger: "interaction_accepted" \| "run_started" \|\s*"follow_requested"/);
     assert.match(monitoring, /acceptedInteraction\?: \{requestId, status\}/);
@@ -230,21 +229,32 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(monitoring, /fresh `loomex_run_get`/);
     assert.match(monitoring, /live `nextAction`/);
     assert.match(monitoring, /different request ID.*new request/is);
-    assert.match(follow, /acceptance is a trigger to verify/i);
-    assert.match(answer, /invoke `\$loomex-follow`/);
-    assert.match(workflows, /`loomex\/chat-continuation\/v2`/);
-    assert.match(workflows, /separate explicit `\$loomex-follow \$\{runId\}` message/i);
-    assert.match(workflows, /older v1 handoff/i);
+    assert.match(monitoring, /Monitoring mechanics are internal/);
+    assert.match(monitoring, /Stay silent while the authoritative state is\s+unchanged/);
+    assert.match(monitoring, /quiet timeout/i);
+    assert.match(runs, /monitoring guidance/);
     assert.match(runGet?.description ?? "", /accepted-interaction continuation/);
-    assert.match(runGet?.description ?? "", /live nextAction/);
+    assert.match(runGet?.description ?? "", /authoritative nextAction/);
+    assert.match(runGet?.description ?? "", /liveFollow\.disposition/);
     assert.match(interactionView?.description ?? "", /different pending request ID.*new interaction/i);
   });
 
-  await t.test("follow recovery is packaged and distinct from one-off reads", async () => {
-    const recovery = await readFile(join(skillsRoot, "loomex-workflows/references/recovery.md"), "utf8");
-    const monitoring = await readFile(join(skillsRoot, "loomex-workflows/references/monitoring.md"), "utf8");
-    const follow = await readFile(join(skillsRoot, "loomex-follow/SKILL.md"), "utf8");
-    assert.match(follow, /recovery\.md/);
+  await t.test("bare run browsing chooses the native list without starting a follow", async () => {
+    const runs = await readFile(join(skillsRoot, "loomex-runs/SKILL.md"), "utf8");
+    const visual = TOOL_DEFINITIONS.find(({ name }) => name === "loomex_runs_view");
+    const headless = TOOL_DEFINITIONS.find(({ name }) => name === "loomex_runs_list");
+    assert.match(runs, /bare `\$loomex-runs`[\s\S]*`loomex_runs_view` directly/i);
+    assert.match(runs, /Do not first call `loomex_runs_list`/);
+    assert.match(runs, /or create a continuation/i);
+    assert.match(headless?.description ?? "", /explicit chat\/data request/i);
+    assert.match(visual?.description ?? "", /Default interactive/i);
+  });
+
+  await t.test("run recovery is packaged and distinct from one-off reads", async () => {
+    const recovery = await readFile(join(skillsRoot, "loomex-runs/references/recovery.md"), "utf8");
+    const monitoring = await readFile(join(skillsRoot, "loomex-runs/references/monitoring.md"), "utf8");
+    const runs = await readFile(join(skillsRoot, "loomex-runs/SKILL.md"), "utf8");
+    assert.match(runs, /monitoring guidance/);
     assert.match(monitoring, /recovery\.md/);
     assert.match(recovery, /automation_update/);
     assert.match(recovery, /scheduled_recovery/);
@@ -254,15 +264,12 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(recovery, /notificationPolicy/);
     assert.match(recovery, /ambiguous/);
     assert.match(recovery, /no documented atomic uniqueness/);
-    for (const name of ["loomex-cancel", "loomex-delete-run"]) {
-      assert.match(await readFile(join(skillsRoot, name, "SKILL.md"), "utf8"), /recovery\.md/);
-    }
   });
 
   await t.test("visual entry points link the shared delivery contract", async () => {
-    const contractPath = join(skillsRoot, "loomex-workflows/references/visual-delivery.md");
+    const contractPath = join(skillsRoot, "loomex-browse/references/visual-delivery.md");
     const contract = await readFile(contractPath, "utf8");
-    const common = await readFile(join(skillsRoot, "loomex-workflows/references/common.md"), "utf8");
+    const common = await readFile(join(skillsRoot, "loomex-browse/references/common.md"), "utf8");
     assert.match(common, /visual-delivery\.md/);
 
     for (const skillName of VISUAL_SKILL_NAMES) {

@@ -1,13 +1,22 @@
+import { continuationMessage, type ContinuationDeliveryController } from "./continuation-delivery.js";
 import { createUiElement as element } from "./components.js";
-import { formatFollowContinuationContext, formatFollowContinuationMarkdown } from "../monitoring-contract.js";
+import { formatFollowContinuationMarkdown, formatManualFollowInstruction } from "../monitoring-contract.js";
 import type { JsonObject } from "./contracts.js";
 import type { ActionId } from "./shell.js";
 import type { InteractionFormController } from "./interaction-form.js";
 import type { UiData, HumanRequest, InputSpec, RunFlow, MonitorRunFlow, RpcResult, InteractionDraft, MutationOperationState, ExecutionProjection, RunPresentation } from "./page-models.js";
 export interface ContinuationEvent { trigger?: string; acceptedInteraction?: {requestId?: unknown;status?: unknown}; followContinuation?: unknown; }
-export interface Continuation extends JsonObject { schema: string; intent: string; runId: string; trigger: string; state:string; acceptedInteraction?: {requestId:string;status:string}; followContinuation?: {schemaVersion:string;source:string;runId:string;receipt:string}; }
-export interface RunChatHandoff {runId:string;status:"sending"|"sent"|"manual"|"failed";continuation:Continuation;}
+export interface Continuation extends JsonObject { schema: string; intent: string; runId: string; trigger: string; state:string; acceptedInteraction?: {requestId:string;status:string}; followContinuation?: {schemaVersion:"loomex-runs-follow-existing-run-continuation/v2";source:string;runId:string;receipt:string}; }
+/**
+ * A chat handoff records only what the browser can prove. In particular,
+ * acknowledgement means that the host accepted the MCP Apps request; it does
+ * not prove that a model turn began. Unknown delivery is deliberately not
+ * retryable because the host might already have posted the continuation.
+ */
+export interface RunChatHandoff {runId:string;status:"not_sent"|"sending"|"acknowledged"|"manual"|"rejected"|"unknown";continuation:Continuation;}
 export interface RunMonitorServices {
+  deliveryChanged?():void;
+  readonly delivery: ContinuationDeliveryController;
   readonly flowStore: {flow: RunFlow | null};
   readonly elements: {context:HTMLElement;form:HTMLFormElement;summary:HTMLElement;primary:HTMLButtonElement;secondary:HTMLButtonElement;refresh:HTMLButtonElement;errorDetails:HTMLElement};
   readonly forms: Pick<InteractionFormController,"typedForm"|"appendRequestCopy"|"hidePersistentBatchReview"|"answerActionLabel"|"submittedAnswerReview">;
@@ -15,6 +24,8 @@ export interface RunMonitorServices {
   latest(): UiData | null;
   setLatest(value:UiData):void;
   capabilities(): Record<string,unknown>;
+  /** True when the host advertises the standard MCP Apps message bridge. */
+  canSendFollowUpMessage():boolean;
   backendDraft(): InteractionDraft | null;
   detachInteractionDraft():void;
   draftRequest(): HumanRequest | undefined;
@@ -94,6 +105,10 @@ export function createRunMonitorController(host:RunMonitorServices) {
       baselineRequired: Boolean(acceptedCommit),
       returnToBrowser: Boolean(previous?.returnToBrowser),
     };
+    // A normal accepted commit retains its preparation as provenance, but the
+    // execution remains the owner of the monitor card. Restored preparation
+    // summaries set this marker explicitly after initialization.
+    delete candidate.summaryOwner;
     delete candidate.humanMode;
     host.flowStore.flow = candidate;
     try {
@@ -289,22 +304,19 @@ export function createRunMonitorController(host:RunMonitorServices) {
       schema: "loomex/chat-continuation/v2", intent: "monitor_existing_run", runId,
       trigger: event.trigger === "interaction_accepted" ? "interaction_accepted" : event.trigger === "run_started" ? "run_started" : "follow_requested",
       ...(event.trigger === "interaction_accepted" && requestId && status ? { acceptedInteraction: { requestId, status } } : {}),
-      ...(issuedReceipt ? { followContinuation: { schemaVersion: "loomex.follow-session.continuation/v1", source: "generated_markdown", runId, receipt: issuedReceipt } } : {}),
+      ...(issuedReceipt ? { followContinuation: { schemaVersion: "loomex-runs-follow-existing-run-continuation/v2", source: "generated_markdown", runId, receipt: issuedReceipt } } : {}),
       state: "requires_fresh_read",
     };
   }
 
-  // Keep the manual copy and acknowledged host message byte-for-byte aligned.
-  // The first line is intentionally a bare command so the host can route it;
-  // the remainder is compact Markdown and contains only the facts needed to
-  // resume this exact run.
   function formatChatContinuationMarkdown(runId: string, continuation: Partial<Continuation> = {}) {
     const receipt = continuation.followContinuation?.receipt;
-    if (!receipt) return `To continue monitoring this exact Loomex run, submit \`$loomex-follow ${runId}\`.`;
+    if (!receipt) return formatManualFollowInstruction(runId);
     return formatFollowContinuationMarkdown(runId, receipt);
   }
 
   function chatCapability(name: string) {
+    if (name === "message") return host.canSendFollowUpMessage();
     return Boolean(record(host.capabilities()[name])?.text);
   }
 
@@ -319,7 +331,7 @@ export function createRunMonitorController(host:RunMonitorServices) {
     context.hidden = false;
     summary.classList.remove("error");
     summary.setAttribute("role", "status");
-    summary.textContent = "Response received. This request is complete.";
+    summary.textContent = "";
     refresh.hidden = false;
     refresh.disabled = !host.connected();
   }
@@ -332,48 +344,13 @@ export function createRunMonitorController(host:RunMonitorServices) {
     secondary.hidden = true;
     // Once the handoff was delivered, the accepted response is the complete
     // card state. Do not leave a second successful-handoff card beside it.
-    if (!host.flowStore.flow && ["sending", "sent"].includes(chatHandoff.status)) {
+    if (!host.flowStore.flow && ["sending", "acknowledged"].includes(chatHandoff.status)) {
       const request = humanRequest(host.latest() || {});
       if (request) renderSubmittedInteraction(request);
       return;
     }
-    context.querySelectorAll('[aria-label="Chat handoff"]').forEach((item) => item.remove());
-    const callout = element("section", { className: "ui-callout", "aria-label": "Chat handoff", role: chatHandoff.status === "failed" ? "alert" : "status" });
-    const statusCopy = chatHandoff.status === "sent"
-      ? "Continue there for updates."
-      : chatHandoff.status === "sending"
-        ? "Sending this run to chat…"
-        : chatHandoff.status === "manual"
-          ? "This host cannot send the run to chat automatically. Use the read-only command below in chat."
-          : "The run was accepted, but the chat handoff did not complete. The run or response will not be submitted again.";
-    callout.append(element("h3", {}, chatHandoff.status === "sent" ? "Sent to chat" : "Continue in chat"));
-    callout.append(element("p", {}, statusCopy));
-    if (["manual", "failed"].includes(chatHandoff.status)) {
-      const instructions = element("details", { className: "ui-disclosure", open: true });
-      instructions.append(element("summary", {}, "Manual monitoring instructions"));
-      const command = element("p", { className: "workspace-path" }, formatChatContinuationMarkdown(chatHandoff.runId, chatHandoff.continuation));
-      command.setAttribute("aria-label", "Read-only resume command");
-      instructions.append(command);
-      callout.append(instructions);
-    }
-    if (!host.flowStore.flow) {
-      context.className = "ui-stack";
-      // Keep a resolved response review visible after handoff. The handoff is
-      // supplemental status, never a replacement for the accepted answer.
-      if (context.hidden || !context.childElementCount) context.replaceChildren(callout);
-      else context.append(callout);
-      context.hidden = false;
-    } else context.append(callout);
-    summary.classList.remove("error");
-    summary.setAttribute("role", "status");
-    summary.textContent = "";
-    refresh.hidden = !host.flowStore.flow;
-    refresh.disabled = !host.connected() || ["sending", "failed"].includes(chatHandoff.status);
-    if (chatHandoff.status === "failed") {
-      primary.hidden = false;
-      setAction(primary, "Retry chat handoff", "chat");
-      primary.disabled = !host.connected();
-    }
+    const request = humanRequest(host.latest() || {});
+    if (request && humanRequestResolved(request)) renderSubmittedInteraction(request);
   }
 
   async function handoffRunToChat(runId: string, event: ContinuationEvent = {}) {
@@ -385,38 +362,18 @@ export function createRunMonitorController(host:RunMonitorServices) {
     chatHandoff = attempt;
     if (host.flowStore.flow) renderIntegratedRunFlow();
     else renderChatHandoffState();
-    // Generated Markdown is accepted by the lifecycle hook only when the
-    // runner issued an opaque receipt. Without one, keep the copyable manual
-    // instruction in the card and do not send an activatable follow message.
-    if (!continuation.followContinuation?.receipt) {
-      attempt.status = "manual";
-      if (host.flowStore.flow) renderIntegratedRunFlow(); else renderChatHandoffState();
-      return;
-    }
-    if (!chatCapability("updateModelContext") || !chatCapability("message")) {
-      attempt.status = "manual";
-      if (host.flowStore.flow) renderIntegratedRunFlow(); else renderChatHandoffState();
-      return;
-    }
-    const text = formatChatContinuationMarkdown(safeRunId, continuation);
-    try {
-      const contextResult = await send("ui/update-model-context", { content: [{ type: "text", text: formatFollowContinuationContext(continuation) }] });
-      if (disposed || chatHandoff !== attempt) return;
-      if (record(contextResult)?.isError === true) throw new Error("The host rejected the model context update.");
-      const messageResult = await send("ui/message", { role: "user", content: [{ type: "text", text }] });
-      if (disposed || chatHandoff !== attempt) return;
-      if (record(messageResult)?.isError === true) throw new Error("The host rejected the chat message.");
-      attempt.status = "sent";
-    } catch {
-      if (disposed || chatHandoff !== attempt) return;
-      attempt.status = "failed";
-    }
+    const text = continuationMessage(formatChatContinuationMarkdown(safeRunId, continuation), continuation);
+    const identity = `follow:${safeRunId}:${continuation.acceptedInteraction?.requestId || continuation.trigger}`;
+    const status = await host.delivery.deliver({ identity, purpose: continuation.acceptedInteraction ? "accepted_interaction" : "follow_run", text }, false, true);
+    if (disposed || chatHandoff !== attempt) return;
+    attempt.status = status === "unsupported" ? "manual" : status === "ready" ? "unknown" : status;
     if (host.flowStore.flow) renderIntegratedRunFlow(); else renderChatHandoffState();
+    host.deliveryChanged?.();
   }
 
   async function handoffAcceptedInteraction(authoritativeData: UiData, result: RpcResult) {
     if (result?.isError || result?.structuredContent?.ok === false) return;
-    const requestRunId = safeText(humanRequest(authoritativeData)?.execution?.id, 128);
+    const requestRunId = safeText(humanRequest(authoritativeData)?.execution?.id, 128) || safeText(humanRequest(authoritativeData)?.executionId, 128);
     const resultData = dataOf(result);
     const returnedRunId = safeText(resultData?.executionId, 128) || safeText(executionId(resultData), 128);
     if (requestRunId && returnedRunId && requestRunId !== returnedRunId) {
@@ -434,18 +391,27 @@ export function createRunMonitorController(host:RunMonitorServices) {
     const request = draftRequest() || humanRequest(host.latest() || {});
     const requestId = safeText(request?.id, 64);
     if (!workflowIdValid(requestId)) throw new Error("This question cannot be bound to a verified request.");
-    const messageResult = await send("ui/message", {
-      role: "user",
-      content: [{
-        type: "text",
-        text: `$loomex-answer ${requestId}\nOpen this exact pending Loomex question in chat and collect my long-form answer there. Read the current request before presenting it. Do not answer it for me or reuse an earlier draft.`,
-      }],
-    });
+    const status = await host.delivery.deliver({identity: `question:${requestId}`, purpose: "long_answer", text: continuationMessage(
+      `Open the pending Loomex question ${requestId} in chat and collect my long-form answer there. Read the current authoritative request before presenting it. Do not answer it for me or reuse an earlier draft.`,
+      {schema:"loomex/question-continuation/v1", requestId, state:"requires_fresh_read"})});
     if (disposed) return;
-    if (record(messageResult)?.isError) throw new Error("The host could not send this question to the conversation.");
+    if (status !== "acknowledged") { setError(new Error("The question remains available. Copy its request reference to continue in chat.")); return; }
     summary.classList.remove("error");
     summary.setAttribute("role", "status");
     summary.textContent = "The question was sent to the conversation for your answer.";
+  }
+
+  function renderRunCancellation() {
+    const flow = activeFlow();
+    const operation = flow.operations.values().next().value;
+    renderRun(flow.result.execution || {});
+    const cancelling = operation?.name === "loomex_run_cancel";
+    typedForm({ properties: { reason: { type: "string", title: "Cancellation reason" } }, required: ["reason"] }, cancelling ? { reason: operation.arguments.reason } : {});
+    if (cancelling) for (const control of form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input, textarea, select")) control.disabled = true;
+    secondary.hidden = false; setAction(secondary, "Back to run", "back"); secondary.disabled = flow.busy || flow.operations.size > 0;
+    primary.hidden = false; primary.className = "danger"; setMutationAction(primary, operation ? "Retry exact cancellation" : "Cancel run", "cancel");
+    primary.disabled = !host.connected() || flow.busy;
+    summary.textContent = "Cancel this run separately from the workflow response.";
   }
 
   function renderRunHumanRequest(request: HumanRequest) {
@@ -455,17 +421,7 @@ export function createRunMonitorController(host:RunMonitorServices) {
     const schema = request.responseSchema || request.outputSchema;
     const operation = flow.operations.values().next().value;
     const responding = operation && ["loomex_interaction_respond", "loomex_interaction_decide"].includes(operation.name);
-    if (flow.humanMode === "cancel") {
-      renderRun(flow.result.execution || {});
-      const cancelling = operation?.name === "loomex_run_cancel";
-      typedForm({ properties: { reason: { type: "string" } } }, cancelling ? { reason: operation.arguments.reason } : {});
-      if (cancelling) for (const control of form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input, textarea, select")) control.disabled = true;
-      secondary.hidden = false; setAction(secondary, "Back to question", "back"); secondary.disabled = flow.busy || flow.operations.size > 0;
-      primary.hidden = false; primary.className = "danger"; setMutationAction(primary, operation ? "Retry exact cancellation" : "Cancel run", "cancel");
-      primary.disabled = !host.connected() || flow.busy;
-      summary.textContent = "Cancel this run separately from the workflow response.";
-      return;
-    }
+    if (flow.humanMode === "cancel") { renderRunCancellation(); return; }
     renderHumanPresentation(request, request.inputSpec);
     if (!humanPresentation(request)) renderRun(flow.result.execution || {});
     appendRunCancelAction(request);
@@ -508,7 +464,12 @@ export function createRunMonitorController(host:RunMonitorServices) {
   function renderRunStarted() {
     const flow = activeFlow();
     form.hidden = true; form.replaceChildren(); secondary.hidden = true; primary.hidden = true; primary.className = "";
-    refresh.hidden = false; setAction(refresh, "Refresh run", "refresh"); refresh.disabled = !host.connected() || flow.busy;
+    // A run reached through a saved preparation remains owned by that
+    // immutable preparation card. A normal accepted commit also retains its
+    // preparation for provenance, so require the explicit ownership marker.
+    const preparationId = safeText(flow.prepared?.preparationId, 64);
+    refresh.hidden = flow.summaryOwner === "preparation" && Boolean(preparationId && workflowIdValid(preparationId));
+    setAction(refresh, "Refresh run", "refresh"); refresh.disabled = !host.connected() || flow.busy;
     if (flow.baselineRequired) {
       renderRun(flow.result.execution || {});
       context.setAttribute("aria-busy", String(flow.busy));
@@ -530,9 +491,9 @@ export function createRunMonitorController(host:RunMonitorServices) {
     summary.textContent = terminal ? `${formatStatus(flow.result.execution?.status)}. Review the result below.`
       : chatHandoff?.status === "sending"
         ? "Run started. Opening monitoring in chat…"
-      : chatHandoff?.status === "sent"
-        ? "Sent to chat."
-      : ["manual", "failed"].includes(chatHandoff?.status || "")
+      : chatHandoff?.status === "acknowledged"
+        ? ""
+      : ["manual", "rejected", "unknown"].includes(chatHandoff?.status || "")
         ? "Run started. The chat continuation could not be opened automatically."
       : waitingForResponse
         ? "This run needs a response in chat."
@@ -544,7 +505,7 @@ export function createRunMonitorController(host:RunMonitorServices) {
 
   function renderIntegratedRunFlow() {
     if (disposed) return;
-    try { renderIntegratedRunFlowContent(); } finally { syncChrome(); }
+    try { renderIntegratedRunFlowContent(); } finally { syncChrome(); host.deliveryChanged?.(); }
   }
 
   function renderIntegratedRunFlowContent() {
@@ -555,8 +516,9 @@ export function createRunMonitorController(host:RunMonitorServices) {
     if (!host.flowStore.flow.errorMessage) delete host.flowStore.flow.error;
     if (host.flowStore.flow.stage === "setup") renderRunSetup();
     else if (host.flowStore.flow.stage === "review") renderRunReview();
+    else if (host.flowStore.flow.humanMode === "cancel") renderRunCancellation();
     else renderRunStarted();
   }
 
-return {stalePreparationError, runHumanRequest, initializeRunMonitor, runSequence, retainedInteractionOperation, consumeResolvedRunRequest, acceptRunSnapshot, captureRunHumanDraft, restoreRunHumanDraft, appendRunCancelAction, chatContinuation, formatChatContinuationMarkdown, chatCapability, renderSubmittedInteraction, renderChatHandoffState, handoffRunToChat, handoffAcceptedInteraction, handoffLongQuestionToChat, renderRunHumanRequest, renderRunStarted, renderIntegratedRunFlow, renderIntegratedRunFlowContent, get chatHandoff(){return chatHandoff;}, set chatHandoff(value:RunChatHandoff|null){chatHandoff=value;}, dispose(){disposed=true;listeners.abort();}};
+return {stalePreparationError, runHumanRequest, initializeRunMonitor, runSequence, retainedInteractionOperation, consumeResolvedRunRequest, acceptRunSnapshot, captureRunHumanDraft, restoreRunHumanDraft, appendRunCancelAction, chatContinuation, formatChatContinuationMarkdown, chatCapability, renderSubmittedInteraction, renderChatHandoffState, handoffRunToChat, handoffAcceptedInteraction, handoffLongQuestionToChat, renderRunCancellation, renderRunHumanRequest, renderRunStarted, renderIntegratedRunFlow, renderIntegratedRunFlowContent, get chatHandoff(){return chatHandoff;}, set chatHandoff(value:RunChatHandoff|null){chatHandoff=value;}, dispose(){disposed=true;listeners.abort();}};
 }

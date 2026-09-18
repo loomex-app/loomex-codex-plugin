@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** Print a deterministic plugin component contract from a source or cached package. */
+import { checkRetiredUiPaths } from "./retired-ui-paths.mjs";
 import { createHash } from "node:crypto";
 import { readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -45,6 +46,8 @@ async function verifyUiAssets(packageRoot) {
     readFile(join(assetsRoot, "frontend-design-system.css"), "utf8"),
     readFile(join(assetsRoot, "browser-application.js"), "utf8"),
   ]);
+  const retired = checkRetiredUiPaths((await filesUnder(assetsRoot)).map(path => `assets/${path}`), browserCode, template);
+  if (retired.length) throw new Error(retired.join("\n"));
   if (manifest.schema !== "loomex/plugin-ui-assets/v2") throw new Error("packaged UI asset manifest has an unsupported schema");
   const hash = (value) => createHash("sha256").update(value).digest("hex");
   for (const [key, value] of [["templateSha256", template], ["foundationSha256", foundation], ["browserCodeSha256", browserCode]]) {
@@ -117,7 +120,12 @@ const components = exporter.createPluginCompatibilityComponents(packageJson, {
   skills,
 }, catalog.methods);
 const source = await sourceIdentity(options.packageRoot, options.sourceRoot);
-const exported = source === undefined ? components : { ...components, source };
+const recoveryContracts = Object.fromEntries(await Promise.all(
+  ["error-recovery.json", "mutation-recovery.json"].map(async name => [
+    name, createHash("sha256").update(await readFile(join(options.packageRoot, "contracts", name))).digest("hex"),
+  ]),
+));
+const exported = { ...components, recoveryContracts, ...(source === undefined ? {} : { source }) };
 const artifact = canonicalJson(exported);
 if (options.output !== undefined) await writeFile(options.output, artifact, { flag: "wx" });
 if (options.check) {

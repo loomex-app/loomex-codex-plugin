@@ -101,6 +101,37 @@ test("chat continuation advances the exact run through baseline, bounded waits, 
   assert.doesNotMatch(JSON.stringify(runSummary("runs.wait", active)), /loomex_workflows_list|loomex_run_commit|loomex_run_prepare/);
 });
 
+test("terminal failures retain actionable diagnostics without raw provider output", () => {
+  const result = runSummary("runs.result", {
+    execution: {
+      id: runId, status: "failed", organizationId,
+      error: {
+        code: "WORKFLOW_RUNTIME_NODE_FAILED", message: "private provider output",
+        provider: "codex", model: "gpt-5.6-luna", nodeKey: "requirements_agent",
+        retryable: false, rawOutput: "private-token and command output",
+        details: { pluginAgentError: { details: { error: {
+          code: "PROVIDER_USAGE_LIMIT", message: "You've hit your usage limit: private-token", provider: "codex", model: "gpt-5.6-luna",
+        } } } },
+      },
+    }, latestSequence: 20, hasMoreEvents: false, timedOut: false, events: [],
+  });
+  assert.deepEqual(result?.failure, {
+    code: "PROVIDER_USAGE_LIMIT", message: "The provider usage limit was reached. Wait for provider availability, then start a new run.",
+    provider: "codex", model: "gpt-5.6-luna", nodeKey: "requirements_agent", retryable: false,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /private-token/);
+});
+
+test("provider completion remains distinct from authoritative workflow completion", () => {
+  const result = runSummary("runs.wait", {
+    execution: { id: runId, status: "running", organizationId }, latestSequence: 18,
+    hasMoreEvents: false, timedOut: false, events: [],
+    progress: { version: 1, activeNodes: [], latestActivity: { kind: "activity.completed", summary: "Provider completed work" } },
+  });
+  assert.equal(result?.providerCompletionPending, true);
+  assert.deepEqual(result?.nextAction, { tool: "loomex_run_wait", arguments: { runId, timeoutSeconds: 30, afterSequence: 18 } });
+});
+
 test("invalid question identities and organization substitutions pause chat continuation", () => {
   for (const humanRequest of [
     { ...data.humanRequest, id: "invalid" },
@@ -256,4 +287,32 @@ test("progress summaries preserve silence and omitted backend activity", () => {
   assert.equal(progress.hasMore,true);
   assert.equal(progress.latestActivity,null);
   assert.equal(progress.activeNodes[0].lastActivity,null);
+});
+
+
+test("monitoring observations stay bounded, categorical, and private", () => {
+  const records = Array.from({length: 10}, (_, i) => ({
+    binding: {hostId:"codex",hostSessionId:`session-${i}`,hostTaskId:`task-${i}`,kind:"host_session_unverified_task",verifiedHostTask:false},
+    lifecycle:"active",hookCount:0,hostHookObserved:false,activationState:"hook_not_observed",requiredAction:"wait",privatePrompt:"must-not-appear",
+  }));
+  const input = {execution:{id:runId,status:"running",organizationId}, details:{monitoring:{schemaVersion:"loomex.monitoring-observation/v1",runId,
+    follow:{records,recordCount:10,hookDiagnostics:{records:[
+      {event:"UserPromptSubmit",outcome:"accepted",code:"CONTINUATION_RECEIVED",observedAt:9,privatePayload:"must-not-appear"},
+      {event:"PostToolUse",outcome:"rejected",code:"TOOL_ASSOCIATION_REJECTED",observedAt:8},
+      {event:"PostToolUse",outcome:"rejected",code:"RUNNER_INTERNAL_ERROR",observedAt:7},
+    ]}},
+    recovery:{records:[{binding:{hostId:"codex",hostTaskId:"task-private"},registrationState:"registered",recordedLifecycle:"verified",automationIdRecorded:true,hostEvidenceRecorded:true}]},
+  }}};
+  const output = runSummary("runs.get",input);
+  const evidence = output?.monitoringEvidence as {guarantee:string;follow:{records:Array<{activation:string;binding:{kind:string}}>;truncated:boolean;hookDiagnostics:{records:Array<{classification:string}>}};recovery:{records:Array<{bindingRecorded:boolean}>}};
+  assert.equal(evidence.guarantee,"none");
+  assert.equal(evidence.follow.records.length,3);
+  assert.equal(evidence.follow.truncated,true);
+  assert.deepEqual(evidence.follow.records[0], {binding:{kind:"host_session_unverified_task",verifiedHostTask:false},activation:"hook_not_observed",hookObserved:false,lifecycle:"active",requiredAction:"wait"});
+  assert.deepEqual(evidence.follow.hookDiagnostics.records.map((row) => row.classification), ["runner_accepted","payload_or_association_rejected","runner_error"]);
+  assert.deepEqual(evidence.recovery.records[0]?.bindingRecorded, true);
+  assert.doesNotMatch(JSON.stringify(evidence),/must-not-appear/);
+  assert.doesNotMatch(JSON.stringify(evidence),/session-0|task-private|task-0/);
+  input.details.monitoring.runId = requestId;
+  assert.equal(runSummary("runs.get",input)?.monitoringEvidence,undefined);
 });

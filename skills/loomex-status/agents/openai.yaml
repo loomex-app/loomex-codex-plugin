@@ -1,4 +1,0 @@
-interface:
-  display_name: "Loomex Run Status"
-  short_description: "Check one run without continuous polling"
-  default_prompt: "Use $loomex-status to check the current status of the run I select."

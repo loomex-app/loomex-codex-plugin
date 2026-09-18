@@ -1,4 +1,0 @@
-interface:
-  display_name: "Run Loomex Workflow"
-  short_description: "Prepare and start a workflow safely"
-  default_prompt: "Use $loomex-run to prepare and run the workflow I select."

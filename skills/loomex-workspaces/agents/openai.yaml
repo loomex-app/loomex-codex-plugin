@@ -1,4 +1,0 @@
-interface:
-  display_name: "Loomex Workspaces"
-  short_description: "Manage Loomex workspace access"
-  default_prompt: "Use $loomex-workspaces to show my Loomex workspace grants."

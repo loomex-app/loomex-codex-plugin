@@ -18,3 +18,12 @@ test('login projection requires safe verification URI and bounded poll timing',(
  assert.equal(normalizedConnection({...data,login:{...data.login,intervalSeconds:0}}),undefined);
  assert.equal(normalizedConnection({...data,login:null}),undefined);
 });
+
+test('connection presentation restores only bridge-elided nullable fields',()=>{
+ const data=projection();
+ const bridgeShape={...data,organization:{status:'organization_required'},};
+ delete (bridgeShape as {login?: unknown}).login;
+ assert.ok(normalizedConnection(bridgeShape), 'absent null fields are restored for MCP Apps presentation');
+ assert.equal(normalizedConnection({...data,login:'not-null'}),undefined, 'present malformed values remain invalid');
+ assert.equal(normalizedConnection({...data,organization:{status:'organization_required',selected:'not-null'}}),undefined);
+});

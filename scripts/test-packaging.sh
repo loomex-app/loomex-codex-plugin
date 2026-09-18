@@ -166,14 +166,14 @@ grep -Fq "$base/current/plugin/dist/server.js" "$root/plugin/.mcp.json"
 # This uses the installed payload's bundled checker, exporter, contract, and
 # pinned runtime. It must not depend on this source checkout or PATH Node.
 "$root/plugin/runtime/bin/node" "$root/plugin/dist/compatibility-check.mjs" --package-root "$root/plugin" --check > "$fixture/cached-components.json"
-python3 - "$fixture/cached-components.json" <<'PY'
+"$root/plugin/runtime/bin/node" "$repo/dist/compatibility-check.mjs" --package-root "$repo" --check > "$fixture/source-components.json"
+python3 - "$fixture/cached-components.json" "$fixture/source-components.json" <<'PY'
 import json,sys
 result=json.load(open(sys.argv[1]))
 assert result["schemaVersion"] == "loomex.plugin-compatibility-components/v1"
-assert result["toolCount"] == 71
-assert result["resourceCount"] == 7
-assert result["skillCount"] == 17
-assert result["hookCount"] == 5
+expected=json.load(open(sys.argv[2]))
+for field in ("toolCount", "resourceCount", "skillCount", "hookCount"):
+    assert result[field] == expected[field], field
 assert isinstance(result["sha256"], str) and len(result["sha256"]) == 64
 PY
 # Codex caches the plugin directory alone. Its MCP and hook launchers must

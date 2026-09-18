@@ -1,3 +1,4 @@
+import type { ViewRestorationCoordinator } from "./persistence.js";
 import type { ActionIcon, JsonObject } from "./contracts.js";
 import { createPagination, createUiElement as element } from "./components.js";
 import type { ActionId } from "./shell.js";
@@ -17,10 +18,11 @@ export interface BrowserControllerState {
 }
 
 type BrowserAction = () => Promise<void> | void;
-type DetailOptions = { onBack?: BrowserAction; onPrepare?: BrowserAction };
+type DetailOptions = { onBack?: BrowserAction; onPrepare?: BrowserAction; onEdit?: BrowserAction; onPublish?: BrowserAction; onActivate?: BrowserAction };
 type PagedOptions = { onBack?: BrowserAction };
 
 export interface BrowserControllerServices {
+  readonly lifecycle: ViewRestorationCoordinator;
   readonly mode: "browser" | "authoring";
   readonly elements: {
     readonly context: HTMLElement;
@@ -57,6 +59,7 @@ export interface BrowserControllerServices {
   observeViewPersistence(result: unknown): Promise<boolean>;
   workflowIdValid(value: unknown): value is string;
   beginRunSetup(workflowId: string, detail: WorkflowData | null): Promise<void>;
+  requestWorkflowAction(action: "edit" | "publish" | "activate", data: WorkflowData): Promise<void>;
   taskWorkspaceArguments(): JsonObject;
   selectedWorkflowVersion(data: UiData): WorkflowVersion | undefined;
   initializeRunSetup(data: UiData, restoring: boolean, sourceIdentity: unknown): void;
@@ -166,12 +169,12 @@ export function createBrowserController(host: BrowserControllerServices) {
 
   async function runBrowserAction(action: BrowserAction, allowWithoutPersistence: boolean): Promise<void> {
     if (state.busy || !host.connected()) return;
-    if (!(host.viewPersistenceUnavailable() && allowWithoutPersistence) &&
-        (host.viewPersistenceUnavailable() || !await host.flushCurrentPersistence())) return;
+    if (!allowWithoutPersistence && (host.viewPersistenceUnavailable() || !await host.flushCurrentPersistence())) return;
+    if (allowWithoutPersistence && !host.viewPersistenceUnavailable()) void host.flushViewState().catch(() => undefined);
     await action();
   }
 
-  function showBrowserSkeleton(label: string): void {
+  function showBrowserSkeleton(label: string, retainContent=false): void {
     const active = document.activeElement;
     const focusReturn = active instanceof HTMLElement && (context.contains(active) || active === refreshButton)
       ? { id: active.id, label: active.getAttribute("aria-label") }
@@ -180,6 +183,7 @@ export function createBrowserController(host: BrowserControllerServices) {
     const height = context.getBoundingClientRect().height;
     context.style.minHeight = `${height}px`;
     context.classList.add("workflow-loading-host");
+    context.dataset.retainContent=String(retainContent);
     context.setAttribute("aria-busy", "true");
     const skeleton = element("div", { className: "workflow-skeleton", "aria-hidden": "true", "data-loading-label": label });
     const controlHeight = Number.parseFloat(getComputedStyle(context).getPropertyValue("--loomex-control-height")) || 36;
@@ -193,15 +197,17 @@ export function createBrowserController(host: BrowserControllerServices) {
     context.querySelector(".workflow-loading-status")?.remove();
     const status = element("p", { className: "activity workflow-loading-status", role: "status", "aria-live": "polite", tabIndex: -1 }, `${label}…`);
     context.append(status, skeleton);
-    status.focus({ preventScroll: true });
+    if(retainContent)status.classList.add("sr-only");
+    else status.focus({ preventScroll: true });
     host.updateActivity();
-    refreshButton.disabled = true;
+    if(!retainContent)refreshButton.disabled = true;
   }
 
   function clearBrowserSkeleton(): void {
     context.querySelector(".workflow-skeleton")?.remove();
     context.querySelector(".workflow-loading-status")?.remove();
     context.classList.remove("workflow-loading-host");
+    delete context.dataset.retainContent;
     context.style.minHeight = "";
     host.updateActivity();
   }
@@ -223,12 +229,13 @@ export function createBrowserController(host: BrowserControllerServices) {
 
   async function browserRead(name: "loomex_workflows_list" | "loomex_workflow_get", args: JsonObject, commit: (data: UiData) => void): Promise<void> {
     if (state.busy || !host.connected()) return;
+    const retainedSearch=refreshButton.dataset.pending === "true" ? capture().searchDraft : undefined;
     const epoch = ++state.epoch;
     state.busy = true;
-    showBrowserSkeleton(name === "loomex_workflow_get" ? "Loading workflow details" : "Loading workflows");
+    showBrowserSkeleton(name === "loomex_workflow_get" ? "Loading workflow details" : "Loading workflows", refreshButton.dataset.pending === "true");
     summary.classList.remove("error");
     try {
-      const result = await host.callTool(name, args, false, false);
+      await host.lifecycle.refresh("workflows", () => host.callTool(name,args,false,false), async result => {
       if (epoch !== state.epoch) return;
       if (host.failed(result)) throw new Error("Workflows could not be loaded. Try Refresh again.");
       if (host.viewSessionProjection(result) && !await host.observeViewPersistence(result)) throw new Error("The saved workflow view could not be restored before applying this result.");
@@ -246,6 +253,7 @@ export function createBrowserController(host: BrowserControllerServices) {
       }
       host.setAuthoritativeStateStale(false);
       summary.textContent = state.selected ? "" : "";
+      });
     } catch (error: unknown) {
       if (epoch === state.epoch) { host.setAuthoritativeStateStale(true); host.setError(error); }
     } finally {
@@ -253,6 +261,8 @@ export function createBrowserController(host: BrowserControllerServices) {
         state.busy = false;
         clearBrowserSkeleton();
         renderBrowser();
+        const search=document.getElementById("workflow-search");
+        if(retainedSearch!==undefined && search instanceof HTMLInputElement)search.value=retainedSearch;
         if (host.mutationHydrationReady()) { host.markViewDirty(); await host.flushViewState(); }
         restoreBrowserFocus(name === "loomex_workflow_get");
       }
@@ -307,7 +317,7 @@ export function createBrowserController(host: BrowserControllerServices) {
     context.setAttribute("aria-busy", String(state.busy));
     context.replaceChildren(); form.hidden = true; primary.hidden = true; secondary.hidden = true;
     refreshButton.disabled = !host.connected() || state.busy;
-    if (options.onBack) context.append(browserButton("Back to workflows", options.onBack, "back"));
+    if (options.onBack) context.append(browserButton("Back to workflows", options.onBack, "back", false, "secondary", false, true));
     context.append(element("p", { className: "ui-caption" }, "This workflow response is too large for the inline view. Read the complete response in the conversation."));
     context.append(browserButton("View complete response", () => requestCompleteWorkflowResponse(paged, () => renderWorkflowPagedResponse(paged, options)), "results", host.authoritativeStateStale(), "secondary", false, true));
   }
@@ -326,10 +336,13 @@ export function createBrowserController(host: BrowserControllerServices) {
     if (nodes.length) meta.push(`${nodes.length} step${nodes.length === 1 ? "" : "s"}`);
     hero.append(element("p", { className: "ui-meta" }, meta.filter((value): value is string => Boolean(value)).join(" · ")));
     heading.append(hero);
-    if (options.onBack || options.onPrepare) {
+    if (options.onBack || options.onPrepare || options.onEdit || options.onPublish || options.onActivate) {
       const actions = element("div", { className: "workflow-detail-heading-actions" });
-      if (options.onBack) actions.append(browserButton("Back to workflows", options.onBack, "back"));
+      if (options.onBack) actions.append(browserButton("Back to workflows", options.onBack, "back", false, "secondary", false, true));
       if (options.onPrepare) actions.append(browserButton("Prepare run", options.onPrepare, "start", host.authoritativeStateStale(), ""));
+      if (options.onEdit) actions.append(browserButton("Edit", options.onEdit, "edit", host.authoritativeStateStale()));
+      if (options.onPublish) actions.append(browserButton("Publish", options.onPublish, "review", host.authoritativeStateStale()));
+      if (options.onActivate) actions.append(browserButton("Activate", options.onActivate, "start", host.authoritativeStateStale()));
       heading.append(actions);
     }
     root.append(heading);
@@ -390,7 +403,12 @@ export function createBrowserController(host: BrowserControllerServices) {
     const paged = host.pagedResponse(data);
     if (paged) { renderWorkflowPagedResponse(paged); return; }
     const workflow = data.workflow ?? {};
-    renderWorkflowDetail(data, { onPrepare: () => requestWorkflowPreparation(workflow.id ?? "", data) });
+    renderWorkflowDetail(data, {
+      onPrepare: () => requestWorkflowPreparation(workflow.id ?? "", data),
+      onEdit: () => host.requestWorkflowAction("edit", data),
+      onPublish: () => host.requestWorkflowAction("publish", data),
+      onActivate: () => host.requestWorkflowAction("activate", data),
+    });
   }
 
   function renderBrowser(): void {
@@ -411,7 +429,13 @@ export function createBrowserController(host: BrowserControllerServices) {
     }
     if (state.selected) {
       const workflow = state.selected.workflow ?? {};
-      renderWorkflowDetail(state.selected, { onBack: () => { state.selected = null; renderBrowser(); summary.textContent = ""; }, onPrepare: () => requestWorkflowPreparation(workflow.id ?? "") });
+      renderWorkflowDetail(state.selected, {
+        onBack: () => { state.selected = null; renderBrowser(); summary.textContent = ""; },
+        onPrepare: () => requestWorkflowPreparation(workflow.id ?? ""),
+        onEdit: () => host.requestWorkflowAction("edit", state.selected ?? {}),
+        onPublish: () => host.requestWorkflowAction("publish", state.selected ?? {}),
+        onActivate: () => host.requestWorkflowAction("activate", state.selected ?? {}),
+      });
       return;
     }
     const search = element("form", { className: "workflow-search", role: "search" });
@@ -427,7 +451,7 @@ export function createBrowserController(host: BrowserControllerServices) {
     search.addEventListener("submit", (event) => { event.preventDefault(); void searchWorkflows(input.value); });
     context.append(search);
     const workflows = Array.isArray(state.page?.workflows) ? state.page.workflows : [];
-    if (!workflows.length) context.append(element("p", { className: "ui-callout" }, state.args.query ? "No workflows match this search." : "No workflows are available in the selected organization."));
+    if (Array.isArray(state.page?.workflows) && !workflows.length) context.append(element("p", { className: "ui-callout" }, state.args.query ? "No workflows match this search." : "No workflows are available in the selected organization."));
     const rows = element("ul", { className: "workflow-rows", "aria-label": "Workflows" });
     for (const workflow of workflows) {
       const row = element("li", { className: "workflow-row" });
@@ -442,27 +466,25 @@ export function createBrowserController(host: BrowserControllerServices) {
       copy.append(meta);
       const actions = element("div", { className: "workflow-row-actions" });
       const invalid = !host.workflowIdValid(workflow.id) || host.authoritativeStateStale();
-      actions.append(browserButton("View", () => browserRead("loomex_workflow_get", { workflowId: workflow.id ?? "" }, (data) => { state.selected = data; }), "results", invalid));
+      actions.append(browserButton("View", () => browserRead("loomex_workflow_get", { workflowId: workflow.id ?? "" }, (data) => { state.selected = data; }), "results", !host.workflowIdValid(workflow.id), "secondary", false, true));
       actions.append(browserButton("Prepare run", () => requestWorkflowPreparation(workflow.id ?? ""), "start", invalid));
       for (const button of [...actions.children]) if (button instanceof HTMLButtonElement) button.setAttribute("aria-label", `${button.textContent}: ${workflowRowName(workflow.name)}`);
       row.append(copy, actions); rows.append(row);
     }
     context.append(rows);
     const pageSummary = `Page ${state.history.length + 1} · ${workflows.length} workflow${workflows.length === 1 ? "" : "s"}`;
-    const leading: HTMLButtonElement[] = [];
-    if (state.args.query) leading.push(browserButton("Reset search", () => {
+    if (state.args.query) search.lastElementChild?.append(browserButton("Reset search", () => {
       const args = { ...state.args }; delete args.query; delete args.cursor; return loadBrowserPage(args, []);
-    }, "clear", false, "secondary", true));
-    const previous = browserButton("Previous", () => loadBrowserPage(state.history.at(-1) ?? { limit: WORKFLOW_PAGE_SIZE }, state.history.slice(0, -1)), "back", !state.history.length || host.authoritativeStateStale(), "secondary", true);
+    }, "clear", false, "secondary", false, true));
+    const previous = browserButton("Previous", () => loadBrowserPage(state.history.at(-1) ?? { limit: WORKFLOW_PAGE_SIZE }, state.history.slice(0, -1)), "back", !state.history.length, "secondary", true, true);
     const next = browserButton("Next", () => {
         const next = state.page?.nextCursor;
         return loadBrowserPage({ ...state.args, ...(next ? { cursor: next } : {}) }, [...state.history, state.args]);
-      }, "next", !state.page?.nextCursor || host.authoritativeStateStale(), "secondary", true);
-    context.append(createPagination({ ariaLabel: "Workflow pages", summary: pageSummary, summaryId: "workflow-page-info", summaryLive: "polite", leading, previous, next }));
+      }, "next", !state.page?.nextCursor, "secondary", true, true);
+    context.append(createPagination({ ariaLabel: "Workflow pages", summary: pageSummary, summaryId: "workflow-page-info", summaryLive: "polite", previous, next }));
   }
 
   async function searchWorkflows(query: string): Promise<void> {
-    if (!await host.flushCurrentPersistence()) return;
     const args = { ...state.args, query: query.trim() }; delete args.cursor;
     await loadBrowserPage(args, []);
   }

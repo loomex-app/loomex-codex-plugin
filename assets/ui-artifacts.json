@@ -1,6 +1,6 @@
 {
   "schema": "loomex/plugin-ui-assets/v2",
-  "templateSha256": "2a38a1934ef3e6c224b90bbefc1f87970e99ba4f944fb9d6bfe7d5eadd4b9bfb",
-  "foundationSha256": "e377f2f8d72f9543339c03c72321c6c505426e0e38a51d8875e4e6f3fa35cb99",
-  "browserCodeSha256": "fb26b1abb61a9597865b5663817d47939e41a4651a3ecb6383536e9ee1762629"
+  "templateSha256": "3cf7151a832979094a90af6483a9efe99dee70ca76431e653b5fc8622b3bc307",
+  "foundationSha256": "27c67f620f2db6e5873d8ce5d5ed82df95d0ed3bd8ea4de1f207ae56dcad87b4",
+  "browserCodeSha256": "b8b04553f729121a2502bd0c804623ed81fabf019634a230d82695f278b4cd70"
 }

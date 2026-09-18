@@ -1,3 +1,4 @@
+import { createAnswerReviewItem, createUiElement, type ElementAttributes } from "./components.js";
 import type { JsonObject, UiMode } from "./contracts.js";
 import type { HumanRequest, InputQuestion, InputSpec, JsonSchema } from "./page-models.js";
 import type { ActionId } from "./shell.js";
@@ -69,7 +70,14 @@ export interface LongTextQuestionContract {
   readonly valid: boolean;
   readonly question: InputQuestion | undefined;
   readonly answerChannel: string;
+  readonly channelError?: string;
 }
+
+type AnswerChannelResolution = Readonly<{
+  answerChannel: string;
+  requestSuppliesChannel: boolean;
+  channelError?: string;
+}>;
 
 const SUPPORTED_INLINE_TYPES = new Set<string>(["text", "date", "rating", "boolean", "radio", "checkbox"]);
 const EMPTY_REQUEST: HumanRequest = {};
@@ -166,29 +174,10 @@ export function createInteractionFormController(host: InteractionFormServices): 
     attributes: DomAttributes = {},
     text = "",
   ): HTMLElementTagNameMap[Tag] {
-    const node = document.createElement(tag);
-    for (const [name, value] of Object.entries(attributes)) {
-      if (value === undefined || value === null || value === false) continue;
-      if (name === "className" && typeof value === "string") node.className = value;
-      else if (name === "dataset" && typeof value === "object") Object.assign(node.dataset, value);
-      else if (name === "hidden") node.hidden = Boolean(value);
-      else if (name === "tabIndex" && typeof value === "number") node.tabIndex = value;
-      else if (name === "htmlFor" && node instanceof HTMLLabelElement && typeof value === "string") node.htmlFor = value;
-      else if (name === "value" && (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement || node instanceof HTMLOutputElement)) node.value = String(value);
-      else if (name === "checked" && node instanceof HTMLInputElement) node.checked = Boolean(value);
-      else if (name === "disabled" && (node instanceof HTMLButtonElement || node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement)) node.disabled = Boolean(value);
-      else node.setAttribute(name, String(value));
-    }
-    if (text) node.textContent = text;
-    if (node instanceof HTMLButtonElement) {
-      if (text) host.setAction(node, text);
-      else node.classList.add("ui-button-md");
-    } else if ((node instanceof HTMLInputElement || node instanceof HTMLSelectElement || node instanceof HTMLTextAreaElement) && !["checkbox", "radio"].includes(String(attributes.type || ""))) {
-      node.classList.add("input-field");
-    }
-    if (node instanceof HTMLFieldSetElement || ["ui-card", "workflow-row", "answer-review-item", "ui-callout", "notice"].some((name) => node.classList.contains(name))) {
-      node.classList.add("glass-panel");
-    }
+    // Keep the existing optional-attribute convention at this call boundary.
+    const normalized = Object.fromEntries(Object.entries(attributes).filter(([, value]) => value !== undefined && value !== null && value !== false)) as ElementAttributes;
+    const node = createUiElement(tag, normalized, text);
+    if (node instanceof HTMLButtonElement && text) host.setAction(node, text);
     return node;
   }
 
@@ -196,6 +185,21 @@ export function createInteractionFormController(host: InteractionFormServices): 
     host.setAction(button, label, intent);
     if (mutation) button.dataset.businessMutation = "true";
     button.dataset.answerIntent = intent;
+  }
+
+  function answerChannelResolution(spec: InputSpec | null | undefined, request: HumanRequest): AnswerChannelResolution {
+    const requestSuppliesChannel = Object.hasOwn(request, "answerChannel");
+    const requestedChannel = requestSuppliesChannel
+      ? host.safeText(request.answerChannel, 40)
+      : host.safeText(spec?.answerChannel, 40) || host.latestAnswerChannel();
+    const answerChannel = requestedChannel || "";
+    return {
+      answerChannel,
+      requestSuppliesChannel,
+      ...(requestSuppliesChannel && !["chat", "ui"].includes(answerChannel)
+        ? { channelError: "This request uses an unsupported answer channel. Continue in the conversation for the compatible response flow." }
+        : {}),
+    };
   }
 
   function longTextQuestionContract(spec: InputSpec | null | undefined, request: HumanRequest = EMPTY_REQUEST): LongTextQuestionContract | null {
@@ -207,10 +211,15 @@ export function createInteractionFormController(host: InteractionFormServices): 
     if (!longQuestions.length) return null;
     const candidate = longQuestions[0];
     const question = objectValue(candidate) ? candidate as InputQuestion : undefined;
+    // The request selects the response route. `inputSpec.answerChannel` is
+    // legacy display metadata only when the authoritative request omitted a
+    // route altogether.
+    const route = answerChannelResolution(spec, request);
     return {
       valid: !batch && questions.length === 1 && longQuestions.length === 1,
       question,
-      answerChannel: host.safeText(spec.answerChannel || request.answerChannel, 40) || host.latestAnswerChannel(),
+      answerChannel: route.answerChannel,
+      ...(route.channelError ? { channelError: route.channelError } : {}),
     };
   }
 
@@ -505,8 +514,25 @@ export function createInteractionFormController(host: InteractionFormServices): 
       host.setError(new Error("This form is missing its response schema. Continue in the conversation to provide your answer."));
       return false;
     }
+    const answerRoute = answerChannelResolution(spec, request);
+    if (answerRoute.channelError) {
+      form.append(element("p", { className: "notice error", role: "alert" }, answerRoute.channelError));
+      form.dataset.formKind = "invalid-questions";
+      form.hidden = false;
+      host.setError(new Error(answerRoute.channelError));
+      return false;
+    }
     const longText = longTextQuestionContract(spec, request);
     if (longText) {
+      if (longText.channelError) {
+        form.replaceChildren();
+        appendRequestCopy(request, spec);
+        form.append(element("p", { className: "notice error", role: "alert" }, longText.channelError));
+        form.dataset.formKind = "invalid-questions";
+        form.hidden = false;
+        host.setError(new Error(longText.channelError));
+        return false;
+      }
       if (longText.valid && longText.answerChannel === "chat") {
         renderLongTextHandoff(request, longText);
         return false;
@@ -695,29 +721,20 @@ export function createInteractionFormController(host: InteractionFormServices): 
     const answers = Array.isArray(answerRecord?.answers) ? answerRecord.answers : null;
     const review = element("section", { className: "answer-review accepted-answer-review", "aria-label": "Submitted answers" });
     const heading = element("div", { className: "answer-review-heading" });
-    heading.append(element("h2", {}, "Submitted answers"));
+    heading.append(element("h2", { "aria-live": "polite" }, "Submitted answers"));
     const submittedAt = host.formatDateTime(request.answeredAt);
     if (submittedAt) heading.append(element("p", { className: "ui-caption" }, `Submitted ${submittedAt}`));
     review.append(heading);
-    const list = element("dl", { className: "review-list" });
+    const list = element("dl", { className: "answer-review-list" });
     for (const [index, question] of questions.entries()) {
       if (!question || typeof question !== "object") continue;
       const questionId = String(question.id || `question_${index + 1}`);
       const value = answers ? answers.find((item) => String(objectValue(item)?.questionId) === questionId) : answerInput;
-      const item = element("div", { className: "answer-review-item glass-panel" });
-      const copy = element("div", { className: "answer-review-copy" });
-      copy.append(element("dt", {}, host.safeText(question.question) || "Answer"));
-      copy.append(element("dd", {}, formatAnswerText(question, value ?? {}, acceptanceReview)));
-      item.append(copy);
+      const item = createAnswerReviewItem(host.safeText(question.question) || "Answer", formatAnswerText(question, value ?? {}, acceptanceReview));
       list.append(item);
     }
     if (!list.childElementCount && answerInput !== undefined) {
-      const item = element("div", { className: "answer-review-item glass-panel" });
-      const copy = element("div", { className: "answer-review-copy" });
-      const detail = element("dd");
-      detail.append(host.reviewValue(answerInput));
-      copy.append(element("dt", {}, "Response"), detail);
-      item.append(copy);
+      const item = createAnswerReviewItem("Response", host.reviewValue(answerInput));
       list.append(item);
     }
     review.append(list);
@@ -761,16 +778,12 @@ export function createInteractionFormController(host: InteractionFormServices): 
       fields.forEach((fieldset) => { fieldset.hidden = true; });
       form.querySelector<HTMLElement>(".question-stepper")?.setAttribute("hidden", "");
       questionMetadata.forEach((metadata, index) => {
-        const item = element("div", { className: "answer-review-item", dataset: { questionId: fieldsetQuestionId(fields[index]) } });
-        const copy = element("div", { className: "answer-review-copy" });
-        copy.append(
-          element("dt", {}, host.safeText(metadata.question.question) || "Answer"),
-          element("dd", {}, formatAnswerText(metadata.question, answers[index] ?? {}, metadata.acceptanceLabels)),
-        );
+        const item = createAnswerReviewItem(host.safeText(metadata.question.question) || "Answer", formatAnswerText(metadata.question, answers[index] ?? {}, metadata.acceptanceLabels));
+        item.dataset.questionId = fieldsetQuestionId(fields[index]);
         const edit = element("button", { type: "button", className: "secondary" }, `Edit answer ${index + 1}`);
         host.setAction(edit, `Edit answer ${index + 1}`, "edit");
         edit.addEventListener("click", () => exitAnswerReview(index));
-        item.append(copy, edit);
+        item.append(edit);
         list.append(item);
       });
     } else {
@@ -778,10 +791,7 @@ export function createInteractionFormController(host: InteractionFormServices): 
       controls.forEach((control) => control.closest("label")?.setAttribute("hidden", ""));
       for (const control of controls) {
         const field = control.dataset.field || "";
-        const item = element("div", { className: "answer-review-item" });
-        const copy = element("div", { className: "answer-review-copy" });
-        copy.append(element("dt", {}, field.replaceAll("_", " ")), element("dd", {}, answer[field] === undefined ? "No answer" : String(answer[field])));
-        item.append(copy);
+        const item = createAnswerReviewItem(field.replaceAll("_", " "), answer[field] === undefined ? "No answer" : String(answer[field]));
         list.append(item);
       }
     }

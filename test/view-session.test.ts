@@ -17,7 +17,7 @@ test("view sessions carry stable identity without forwarding it as execution con
   assert.deepEqual(result["loomex/viewSession"],session);
   assert.equal(calls[0].method,"presentation.sessions.create");
   await viewSessionMeta(client,definition,{workflowId:workflow,viewSessionId:id},ok({workflow:{id:workflow}}));
-  assert.deepEqual(calls[1],{method:"presentation.sessions.get",params:{viewSessionId:id}});
+  assert.deepEqual(calls[1],{method:"presentation.sessions.restore",params:{viewSessionId:id}});
 });
 
 test("wrong-bound view stores preserve a machine-readable recovery error",async()=>{
@@ -39,7 +39,7 @@ test("missing sessions become a safe re-entry without creating a replacement",as
  assert.deepEqual(result,{"loomex/viewPersistence":{
    status:"reentry",code:"VIEW_SESSION_NOT_FOUND",message:"View session not found",retryable:false,
  }});
- assert.deepEqual(calls,[{method:"presentation.sessions.get",params:{viewSessionId:id}}]);
+ assert.deepEqual(calls,[{method:"presentation.sessions.restore",params:{viewSessionId:id}}]);
 });
 
 test("chat interactions do not create presentation sessions",async()=>{

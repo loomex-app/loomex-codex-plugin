@@ -144,6 +144,10 @@ export function createRunSetupController(host: RunSetupServices) {
       operations: new Map(),
       busy: false,
       autoPreparation: "idle",
+      // The review action issues a non-authorizing reference after the
+      // preparation is verified. A Start click is the only path that can ask
+      // the runner to record approval.
+      startHandoffState: "unknown",
     };
   }
 
@@ -402,10 +406,39 @@ export function createRunSetupController(host: RunSetupServices) {
     setMutationAction(primary, runFlow.preparationStale
       ? operation ? "Retry exact preparation" : "Review again"
       : operation ? "Retry exact start" : "Start run", runFlow.preparationStale ? "review" : "start");
-    primary.disabled = !host.connected() || runFlow.busy || (runFlow.preparationStale ? !reprepareArguments() : !preparationReviewable(runFlow.prepared));
+    const handoffState = runFlow.startHandoffState || "unknown";
+    // A new handoff is sealed only by the explicit Start gesture. Restoring a
+    // review without one is a ready state, not a blocked recovery state.
+    const noHandoffYet = handoffState === "unknown";
+    const handoffReady = noHandoffYet || (handoffState === "prepared" && workflowIdValid(runFlow.startHandoffRef) && runFlow.startHandoffReady === true);
+    const handoffPending = !handoffReady;
+    const approved = ["approved", "committing", "committed"].includes(handoffState);
+    if (approved) { primary.hidden = true; secondary.hidden = true; }
+    const handoffOperation=[...runFlow.operations.values()].find((operation) =>
+      operation.name === "loomex_run_start_handoff_issue" || operation.name === "loomex_run_start_handoff_approve",
+    );
+    const recoveryNeeded=Boolean(handoffOperation);
+    if (recoveryNeeded) setMutationAction(primary,"Restore Start","start");
+    primary.disabled = !host.connected() || runFlow.busy || (runFlow.preparationStale
+      ? !reprepareArguments()
+      : recoveryNeeded
+        ? !preparationReviewable(runFlow.prepared)
+        : handoffPending || !preparationReviewable(runFlow.prepared));
     if (!operation && !runFlow.errorMessage) {
       summary.classList.remove("error"); summary.setAttribute("role", "status");
-      summary.textContent = runFlow.preparationStale
+      summary.textContent = handoffPending
+        ? recoveryNeeded
+          ? "Start approval needs reconciliation. Restore Start checks the saved handoff without starting the run."
+          : handoffState === "approved" || handoffState === "committing"
+          ? ""
+          : handoffState === "committed"
+            ? ""
+            : handoffState === "expired" || handoffState === "rejected"
+              ? "This reviewed start is no longer current. Review the run again before starting."
+              : noHandoffYet
+                ? "Review the selected workflow, then start when ready."
+                : "This reviewed start is being verified by the runner."
+        : runFlow.preparationStale
         ? "This preparation is no longer current. Review a fresh preparation before starting."
         : "";
     }
@@ -430,6 +463,7 @@ export function createRunSetupController(host: RunSetupServices) {
       ...(installationId ? { installationId } : {}),
       operations: new Map(),
       busy: false,
+      startHandoffState: "unknown",
       returnToBrowser: false,
     };
   }

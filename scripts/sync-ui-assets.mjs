@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { verifyDesignConsumers } from "./design-consumers.mjs";
+import { checkRetiredUiPaths } from "./retired-ui-paths.mjs";
 import { browserCoverage } from "./browser-coverage.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,6 +31,11 @@ async function compileBrowserApplication() {
       entryPoints: ["src/ui-app/app.ts"],
       format: "iife",
       legalComments: "none",
+      // esbuild otherwise emits dependency-layout comments such as
+      // `node_modules/.pnpm/...` into the browser asset. Those vary between a
+      // developer's package manager and the clean npm release build despite
+      // identical executable code, making integrity checks non-reproducible.
+      minifyWhitespace: true,
       logLevel: "silent",
       outfile: outputPath,
       platform: "browser",
@@ -39,7 +45,10 @@ async function compileBrowserApplication() {
     });
     const failures = browserCoverage(root, Object.keys(result.metafile.inputs));
     if (failures.length) throw new Error(failures.join("\n"));
-    return await readFile(outputPath, "utf8");
+    const code = await readFile(outputPath, "utf8");
+    const retirementFailures = checkRetiredUiPaths(Object.keys(result.metafile.inputs), code, await read("loomex-app.html"));
+    if (retirementFailures.length) throw new Error(retirementFailures.join("\n"));
+    return code;
   } finally {
     await rm(outputDirectory, { force: true, recursive: true });
   }

@@ -1,5 +1,5 @@
 /** Browser-only contracts shared by the injected Loomex application modules. */
-export type UiMode = "browser" | "authoring" | "prepare" | "monitor" | "interaction" | "connection" | "organizations";
+export type UiMode = "browser" | "runs" | "authoring" | "prepare" | "monitor" | "interaction" | "connection" | "organizations";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];
@@ -15,6 +15,7 @@ export interface ViewSessionIdentity {
 export interface ViewSessionProjection<State extends JsonObject = JsonObject> extends ViewSessionIdentity {
   readonly state?: State;
   readonly status?: string;
+  readonly operation?: { readonly operationId?: string; readonly status?: string };
 }
 
 /** A durable interaction draft, kept distinct from its presentation session. */

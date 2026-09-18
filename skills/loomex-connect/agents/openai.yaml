@@ -1,4 +1,4 @@
 interface:
   display_name: "Connect Loomex"
   short_description: "Check Loomex connection and sign in safely"
-  default_prompt: "Use $loomex-connect to check my Loomex connection."
+  default_prompt: "Show my Loomex connection and organization."

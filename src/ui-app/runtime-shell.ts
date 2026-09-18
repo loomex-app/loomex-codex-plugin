@@ -1,21 +1,17 @@
+import type {ViewRestorationPhase} from "./persistence.js";
 import { ACTIONS, createIcon, type ActionId } from './shell.js';
 import type { ActionIcon } from './contracts.js';
 import { setRestoring } from './lifecycle.js';
-import { applyButtonStyle as applySharedButtonStyle, applyStatusBadgeStyle, configureUiElementStyles } from './components.js';
+import { applyButtonStyle as applySharedButtonStyle, applyStatusBadgeStyle, configureUiElementStyles, createElement as element } from './components.js';
 export interface ChromeProjection {
  title:string;stageLabel:string|undefined;status:string|undefined;duration:string|undefined;
- restoring:boolean;persistenceUnavailable:boolean;reentry:boolean;mutationReady:boolean;hasSession:boolean;
+ restorationPhase?:ViewRestorationPhase;restoring:boolean;persistenceUnavailable:boolean;reentry:boolean;mutationReady:boolean;editingReady?:boolean;authorityStale?:boolean;hasSession:boolean;
  automaticSetupOwnsActivity:boolean;isConnectionView:boolean;
 }
 export interface ShellServices {
  elements:{title:HTMLElement;context:HTMLElement;summary:HTMLElement;form:HTMLFormElement;headerStage:HTMLElement;headerStatus:HTMLElement;primary:HTMLButtonElement;secondary:HTMLButtonElement};
  snapshot():ChromeProjection;
  statusClasses:Readonly<Record<string,string>>;
-}
-function element<K extends keyof HTMLElementTagNameMap>(tag:K,attrs:Record<string,string|boolean>={},text?:string):HTMLElementTagNameMap[K] {
- const node=document.createElement(tag);
- for(const [key,value]of Object.entries(attrs)){if(key==='className')node.className=String(value);else if(key==='hidden')node.hidden=Boolean(value);else node.setAttribute(key,String(value));}
- if(text!==undefined)node.textContent=text;return node;
 }
 type Control=HTMLButtonElement|HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement;
 const isControl=(value:Element):value is Control=>value instanceof HTMLButtonElement||value instanceof HTMLInputElement||value instanceof HTMLTextAreaElement||value instanceof HTMLSelectElement;
@@ -29,7 +25,6 @@ export function createRuntimeShell(host:ShellServices) {
  const activeRequests=new Map<number,string>();
  const icon=(name:ActionIcon)=>createIcon(name);
  const actionIcon=(id:ActionId):ActionIcon=>ACTIONS[id].icon;
- const listeners=new AbortController();
   const applyButtonStyle = applySharedButtonStyle;
   const applyBadgeStyle = applyStatusBadgeStyle;
 
@@ -63,56 +58,6 @@ export function createRuntimeShell(host:ShellServices) {
     else setAction(button, label, actionId);
     button.dataset.answerIntent = intent;
   }
-  function infoButton(label:string, description:string) {
-    const button = element("button", { type: "button", className: "secondary info-button" }, label);
-    button.dataset.tooltip = description;
-    return button;
-  }
-  const tooltip = element("div", { id: "ui-tooltip", className: "tooltip", role: "tooltip", hidden: true });
-  document.body.append(tooltip);
-  let tooltipTarget:HTMLElement|undefined;
-  let tooltipCloseTimer:ReturnType<typeof setTimeout>|undefined;
-  function hideTooltip() {
-    clearTimeout(tooltipCloseTimer);
-    tooltip.hidden = true;
-    tooltipTarget?.removeAttribute("aria-describedby");
-    tooltipTarget = undefined;
-  }
-  function showTooltip(target:HTMLElement|undefined) {
-    if (!target?.dataset.tooltip || (target instanceof HTMLButtonElement && target.disabled)) return;
-    clearTimeout(tooltipCloseTimer);
-    if (tooltipTarget !== target) hideTooltip();
-    tooltipTarget = target;
-    tooltip.textContent = target.dataset.tooltip;
-    tooltip.hidden = false;
-    target.setAttribute("aria-describedby", tooltip.id);
-    const rect = target.getBoundingClientRect();
-    const box = tooltip.getBoundingClientRect();
-    const width = document.documentElement.clientWidth;
-    const height = document.documentElement.clientHeight;
-    tooltip.style.left = `${Math.max(8, Math.min(rect.right - box.width, width - box.width - 8))}px`;
-    const top = rect.bottom + box.height + 8 <= height ? rect.bottom + 4 : rect.top - box.height - 4;
-    tooltip.style.top = `${Math.max(4, top)}px`;
-  }
-  function deferTooltipClose() {
-    clearTimeout(tooltipCloseTimer);
-    tooltipCloseTimer = setTimeout(() => {
-      if (tooltipTarget !== document.activeElement && !tooltip.matches(":hover") && !tooltipTarget?.matches(":hover")) hideTooltip();
-    }, 120);
-  }
-  document.addEventListener("pointerover", (event) => { const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-tooltip]") : null; if (target) showTooltip(target); }, {signal:listeners.signal});
-  document.addEventListener("pointerout", deferTooltipClose, {signal:listeners.signal});
-  document.addEventListener("focusin", (event) => { const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-tooltip]") : null; if (target) showTooltip(target); else hideTooltip(); }, {signal:listeners.signal});
-  document.addEventListener("focusout", deferTooltipClose, {signal:listeners.signal});
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") hideTooltip(); }, {signal:listeners.signal});
-  document.addEventListener("click", (event) => {
-    const target = event.target instanceof Element ? event.target.closest<HTMLElement>(".info-button") : null;
-    if (target) showTooltip(target);
-    else hideTooltip();
-  }, {signal:listeners.signal});
-  window.addEventListener("resize", () => { if (tooltipTarget === document.activeElement) showTooltip(tooltipTarget); else hideTooltip(); }, {signal:listeners.signal});
-  document.addEventListener("scroll", () => { if (tooltipTarget === document.activeElement) showTooltip(tooltipTarget); else hideTooltip(); }, {capture:true,signal:listeners.signal});
-
   function updateActivity() {
     const activity = document.getElementById("activity");
     if (!activity) return;
@@ -129,7 +74,7 @@ export function createRuntimeShell(host:ShellServices) {
     if (activity.textContent !== text) activity.textContent = text;
     const contextOwnsActivity = Boolean(tool && context.classList.contains("workflow-loading-host"));
     const automaticSetupOwnsActivity = setupOwnsActivity(tool,host.snapshot().automaticSetupOwnsActivity);
-    activity.hidden = !tool || contextOwnsActivity || automaticSetupOwnsActivity;
+    activity.hidden = !tool || contextOwnsActivity || automaticSetupOwnsActivity || host.snapshot().restoring;
     // Activity is independent of status. Hiding and restoring the status line
     // on every quiet draft save changed the document height and made checkbox
     // selections appear to jump.
@@ -159,8 +104,9 @@ export function createRuntimeShell(host:ShellServices) {
 
   function syncChrome() {
     syncRestorationVisibility();
-    if (tooltipTarget && (!tooltipTarget.isConnected || (tooltipTarget instanceof HTMLButtonElement && tooltipTarget.disabled))) hideTooltip();
     const projection=host.snapshot();
+    const main=document.querySelector("main");
+    if(main && projection.restorationPhase)main.dataset.lifecycle=projection.restorationPhase;
     title.textContent=projection.title;
     const stageLabel=projection.stageLabel;
     headerStage.hidden = !stageLabel;
@@ -173,12 +119,7 @@ export function createRuntimeShell(host:ShellServices) {
     if (status) applyBadgeStyle(headerStatus);
     updateClock();
     updateActivity();
-    if (projection.persistenceUnavailable || projection.reentry) {
-      primary.disabled = true;
-      secondary.disabled = true;
-      for (const button of context.querySelectorAll<HTMLButtonElement>("button:not([data-persistence-optional=\"true\"])")) button.disabled = true;
-    }
-    const ready = projection.mutationReady;
+    const ready = projection.mutationReady && !projection.authorityStale && !projection.reentry;
     for (const button of [primary, secondary]) {
       if (button.dataset.businessMutation !== "true") continue;
       if (!ready) {
@@ -189,9 +130,8 @@ export function createRuntimeShell(host:ShellServices) {
         delete button.dataset.hydrationDisabled;
       }
     }
-    const hydrationPending = Boolean(projection.hasSession && !ready);
-    const hydrationControls = [context, form].flatMap((container) =>
-      [...container.querySelectorAll('button:not([data-persistence-optional="true"]), input, textarea, select')].filter(isControl));
+    const hydrationPending = Boolean(projection.hasSession && !(projection.editingReady ?? ready));
+    const hydrationControls = [...context.querySelectorAll(projection.reentry ? "button,input,textarea,select" : '[data-business-mutation="true"]'), ...form.querySelectorAll('button:not([data-persistence-optional="true"]), input, textarea, select')].filter(isControl);
     for (const control of hydrationControls) {
       if (hydrationPending || projection.reentry) {
         if (control.dataset.hydrationDisabled === undefined) control.dataset.hydrationDisabled = String(control.disabled);
@@ -201,8 +141,9 @@ export function createRuntimeShell(host:ShellServices) {
         delete control.dataset.hydrationDisabled;
       }
     }
+    if (projection.reentry || projection.authorityStale) { primary.disabled=true; secondary.disabled=true; }
   }
 
 
- return {activeRequests,icon,actionIcon,applyButtonStyle,applyBadgeStyle,setAction,setMutationAction,setInteractionAction,setAnswerAction,infoButton,updateActivity,updateClock,syncRestorationVisibility,syncChrome,hideTooltip,dispose(){listeners.abort();hideTooltip();tooltip.remove();activeRequests.clear();}};
+ return {activeRequests,icon,actionIcon,applyButtonStyle,applyBadgeStyle,setAction,setMutationAction,setInteractionAction,setAnswerAction,updateActivity,updateClock,syncRestorationVisibility,syncChrome,dispose(){activeRequests.clear();}};
 }

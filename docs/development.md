@@ -118,7 +118,7 @@ Workflow browser coverage exercises search, empty results, forward/back cursor p
 
 ### Native visual tool delivery
 
-Visual commands must retain their native MCP invocation identity and complete structured result. Generic executor text output, including `text(result)`, is not a renderer. Follow the [shared visual delivery contract](../skills/loomex-workflows/references/visual-delivery.md) for all visual entry points and headless recovery.
+Visual commands must retain their native MCP invocation identity and complete structured result. Generic executor text output, including `text(result)`, is not a renderer. Follow the package-local visual delivery contract for the relevant retained skill (for example, [`loomex-browse`](../skills/loomex-browse/references/visual-delivery.md)) for visual entry points and headless recovery.
 
 Codex supports a narrowly scoped routing configuration in its user config:
 

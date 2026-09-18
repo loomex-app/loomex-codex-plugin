@@ -1,5 +1,6 @@
 import * as assert from "node:assert/strict";
 import { test } from "node:test";
+import * as vm from "node:vm";
 import { normalizeJsonObject } from "../src/ui-app/json-boundary.js";
 
 test("undefined object properties are omitted while nested JSON values are detached", () => {
@@ -59,6 +60,24 @@ test("null-prototype input is accepted and copied into a plain object", () => {
   const normalized = normalizeJsonObject(input);
   assert.deepEqual(normalized, { value: 3 });
   assert.equal(Object.getPrototypeOf(normalized), Object.prototype);
+});
+
+test("ordinary JSON from another realm is accepted and detached", () => {
+  const foreign = vm.runInNewContext('({ state: "authenticated", organizations: [{ id: "org-1" }], actions: ["organizations.list"] })') as unknown;
+  const normalized = normalizeJsonObject(foreign);
+  assert.deepEqual(normalized, {
+    state: "authenticated",
+    organizations: [{ id: "org-1" }],
+    actions: ["organizations.list"],
+  });
+  assert.notEqual(normalized, foreign);
+});
+
+test("foreign custom objects and Array subclasses remain rejected", () => {
+  const foreignCustom = vm.runInNewContext("new (class CustomValue { constructor() { this.value = 1; } })()") as unknown;
+  const foreignArraySubclass = vm.runInNewContext("new (class CustomList extends Array {}) (1, 2)") as unknown;
+  assert.equal(normalizeJsonObject({ value: foreignCustom }), null);
+  assert.equal(normalizeJsonObject({ value: foreignArraySubclass }), null);
 });
 
 test("own __proto__ and constructor keys are preserved without prototype mutation", () => {

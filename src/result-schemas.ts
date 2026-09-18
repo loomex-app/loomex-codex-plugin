@@ -9,6 +9,24 @@ const Objects = z.array(JsonObject);
 const NonNegativeInteger = z.number().int().nonnegative();
 const NullableString = z.string().nullable();
 const NullableOffset = NonNegativeInteger.nullable();
+const DeliveryContinuation = z.discriminatedUnion("kind", [
+  z.object({kind:z.literal("start"),schemaVersion:z.literal("loomex.start-continuation/v1"),handoffRef:z.uuid()}).strict(),
+  z.object({kind:z.literal("question"),schemaVersion:z.literal("loomex.question-continuation/v1"),requestId:z.uuid(),schemaDigest:z.string().length(64)}).strict(),
+  z.object({kind:z.literal("follow"),schemaVersion:z.literal("loomex.follow-session.continuation/v1"),runId:z.uuid(),receipt:z.string().min(16).max(2048),trigger:z.string().min(1).max(64),requestId:z.string().nullable(),requestStatus:z.string().min(1).max(32).nullable()}).strict(),
+]);
+const DeliveryProjection = z.object({schemaVersion:z.literal(2),identity:z.string().min(1).max(384),continuation:DeliveryContinuation,revision:NonNegativeInteger,status:z.enum(["ready","sending","not_sent","acknowledged","rejected","unknown"]),attemptId:z.uuid().nullable()}).strict();
+const StartHandoffLifecycle = z.enum(["prepared", "approved", "committing", "committed", "ambiguous", "expired"]);
+const StartHandoffNextAction = z.enum(["approve", "commit", "reconcile", "none"]);
+const StartHandoffStatus = {
+  schemaVersion: z.literal("loomex.run-start-handoff/v2"),
+  handoffRef: z.uuid(),
+  lifecycle: StartHandoffLifecycle,
+  approvalObserved: z.boolean(),
+  nextAction: StartHandoffNextAction,
+  preparationId: z.uuid().optional(),
+  runId: z.uuid().optional(),
+  details: Details,
+} as const;
 
 const SpoolResult = z
   .object({
@@ -78,10 +96,17 @@ const InteractionResolutionResult = z
   .strict();
 
 const ViewSession = z.object({
-  viewSessionId: z.uuid(), kind: z.enum(["browser", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]),
+  viewSessionId: z.uuid(), kind: z.enum(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]),
   entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation"]), entityId: z.uuid(),
   revision: NonNegativeInteger, state: JsonObject, status: z.string(), createdAt: NonNegativeInteger, updatedAt: NonNegativeInteger,
   details: Details, expiresAt: NonNegativeInteger.nullable(), operation: z.object({operationId:z.uuid(),status:z.string()}).strict().nullable(),
+}).strict();
+const ViewSessionRestore = z.object({
+  restoreVersion: z.literal("presentation.sessions.restore/v1"),
+  viewSessionId: z.uuid(), kind: z.enum(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]),
+  entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation"]), entityId: z.uuid(),
+  revision: NonNegativeInteger, state: JsonObject, status: z.enum(["active", "inactive", "resolved"]),
+  pendingOperation: z.object({operationId:z.uuid(),status:z.string()}).strict().nullable(), details: JsonObject,
 }).strict();
 
 const RecoveryBinding = z.object({
@@ -137,8 +162,12 @@ const primarySchemas = {
   ]),
   "presentation.sessions.create": ViewSession,
   "presentation.sessions.get": ViewSession,
+  "presentation.sessions.restore": ViewSessionRestore,
   "presentation.sessions.update": ViewSession,
   "presentation.sessions.delete": z.object({viewSessionId:z.uuid(),deleted:z.boolean(),details:Details}).strict(),
+  "presentation.delivery.get": DeliveryProjection,
+  "presentation.delivery.begin": DeliveryProjection,
+  "presentation.delivery.settle": DeliveryProjection,
   "presentation.operations.get": z.object({operationId:z.uuid(),viewSessionId:z.uuid(),method:z.string(),params:JsonObject,idempotencyKey:z.uuid(),reconciliation:z.union([z.object({method:z.string(),params:JsonObject}).strict(),z.object({}).strict()]),status:z.string(),createdAt:NonNegativeInteger,updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
   "presentation.operations.settle": z.object({operationId:z.uuid(),viewSessionId:z.uuid(),status:z.enum(["completed","ambiguous"]),updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
   "recovery.get": z.union([
@@ -332,6 +361,11 @@ const primarySchemas = {
       preparationId: z.string(),
     })
     .strict(),
+  "runs.start_handoff.issue": z.object(StartHandoffStatus).extend({ lifecycle: z.literal("prepared"), approvalObserved: z.literal(false), nextAction: z.literal("approve"), preparationId: z.uuid(), result: JsonObject.optional() }).strict(),
+  "runs.start_handoff.restore": z.object(StartHandoffStatus).extend({ preparationId: z.uuid(), result: JsonObject.optional() }).strict(),
+  "runs.start_handoff.approve": z.object(StartHandoffStatus).extend({ lifecycle: z.literal("approved"), approvalObserved: z.literal(true), nextAction: z.literal("commit"), preparationId: z.uuid(), result: JsonObject.optional() }).strict(),
+  "runs.start_handoff.get": z.object(StartHandoffStatus).extend({ preparationId: z.uuid(), result: JsonObject.optional() }).strict(),
+  "runs.start_handoff.commit": z.object({ ...StartHandoffStatus, execution: JsonObject, executionPolicy: z.string(), result: JsonObject.optional() }).extend({ lifecycle: z.literal("committed"), nextAction: z.literal("none"), preparationId: z.uuid(), runId: z.uuid().optional() }).strict(),
   "runs.list": z
     .object({ executions: Objects, nextCursor: NullableString, details: Details })
     .strict(),

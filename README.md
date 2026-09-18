@@ -14,10 +14,12 @@ for its socket boundary, exact event payloads, and hook-trust activation steps.
 
 ## Command skills
 
-Use focused skills to connect, choose an organization, browse, author, run,
-follow, answer, and retrieve results. See [the command guide](docs/commands.md)
-for the entry points and examples. Connection details and browser device-flow
-safety are documented in [connection](docs/connection.md).
+Use four focused skills: connect, browse, create, and runs. Their contextual
+cards expose the actions that depend on the selected item, including
+organization selection, workflow editing and publishing, run preparation,
+human responses, results, cancellation, and deletion. See [the command
+guide](docs/commands.md) for the entry points and examples. Connection details
+and browser device-flow safety are documented in [connection](docs/connection.md).
 Natural-language access remains available.
 
 ## Development
@@ -52,8 +54,8 @@ server process or forwarded as a runner protocol field; grants and prepared
 bindings still establish the canonical execution workspace.
 
 Visual entry points use direct MCP Apps invocation when the host supports it;
-the shared [visual delivery contract](skills/loomex-workflows/references/visual-delivery.md)
-defines the native and headless paths. On hosts that gate direct invocation,
+each packaged skill carries its visual-delivery contract for the native and
+headless paths. On hosts that gate direct invocation,
 diagnostics should verify that the supported
 `features.code_mode.direct_only_tool_namespaces` setting includes
 `mcp__loomex`. The plugin advertises the namespace and visual resources but

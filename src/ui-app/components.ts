@@ -11,7 +11,7 @@ export function configureUiElementStyles(statusClasses: Readonly<Record<string, 
 
 /** Applies the common primary, secondary, and danger surface classes to a button. */
 export function applyButtonStyle(button: HTMLButtonElement): void {
-  const secondaryStyle = button.classList.contains("secondary") || button.classList.contains("info-button") || button.classList.contains("btn-secondary");
+  const secondaryStyle = button.classList.contains("secondary") || button.classList.contains("btn-secondary");
   const dangerStyle = button.classList.contains("danger") || button.classList.contains("loomex-danger");
   button.classList.remove("secondary", "danger", "btn-primary", "btn-secondary");
   button.classList.add("ui-button", secondaryStyle || dangerStyle ? "btn-secondary" : "btn-primary");
@@ -94,7 +94,6 @@ export interface PaginationControls {
   readonly summary: string;
   readonly summaryId?: string;
   readonly summaryLive?: "polite";
-  readonly leading?: readonly Node[];
   readonly previous: HTMLButtonElement;
   readonly next: HTMLButtonElement;
 }
@@ -123,7 +122,18 @@ export function createPagination(controls: PaginationControls): HTMLElement {
 
   const actions = document.createElement("div");
   actions.className = "ui-data-table-pagination-actions";
-  actions.append(...(controls.leading ?? []), controls.previous, controls.next);
+  actions.append(controls.previous, controls.next);
   navigation.append(summary, actions);
   return navigation;
+}
+
+/** Identical answer hierarchy for editable previews and submitted reviews. */
+export function createAnswerReviewItem(question: string, answer: string | Node): HTMLDivElement {
+  const item = createUiElement("div", { className: "answer-review-item" });
+  const copy = createElement("div", { className: "answer-review-copy" });
+  const detail = createElement("dd");
+  detail.append(answer);
+  copy.append(createElement("dt", {}, question), detail);
+  item.append(copy);
+  return item;
 }

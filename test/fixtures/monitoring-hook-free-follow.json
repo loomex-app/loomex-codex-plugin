@@ -1,0 +1,44 @@
+[
+  { "kind": "follow", "runId": "hook-free-run", "taskId": "hook-free-task", "trigger": "explicit_follow" },
+  { "kind": "projection", "method": "runs.get", "projection": {
+    "execution": { "id": "hook-free-run", "status": "running" },
+    "monitoring": { "state": "active", "liveFollow": { "mode": "continue_when_explicit" } },
+    "nextAction": { "tool": "loomex_run_wait", "arguments": { "runId": "hook-free-run", "timeoutSeconds": 30 } }
+  } },
+  { "kind": "tool", "name": "loomex_run_wait", "arguments": { "runId": "hook-free-run", "timeoutSeconds": 30 } },
+  { "kind": "projection", "method": "runs.wait", "projection": {
+    "execution": { "id": "hook-free-run", "status": "running" }, "timedOut": true,
+    "monitoring": { "state": "active", "liveFollow": { "mode": "continue_when_explicit" } },
+    "nextAction": { "tool": "loomex_run_wait", "arguments": { "runId": "hook-free-run", "timeoutSeconds": 30 } }
+  } },
+  { "kind": "tool", "name": "loomex_run_wait", "arguments": { "runId": "hook-free-run", "timeoutSeconds": 30 } },
+  { "kind": "projection", "method": "runs.wait", "projection": {
+    "execution": { "id": "hook-free-run", "status": "running" }, "providerCompletionPending": true,
+    "monitoring": { "state": "active", "liveFollow": { "mode": "continue_when_explicit" } },
+    "nextAction": { "tool": "loomex_run_wait", "arguments": { "runId": "hook-free-run", "timeoutSeconds": 30 } }
+  } },
+  { "kind": "tool", "name": "loomex_run_wait", "arguments": { "runId": "hook-free-run", "timeoutSeconds": 30 } },
+  { "kind": "projection", "method": "runs.wait", "projection": {
+    "execution": { "id": "hook-free-run", "status": "waiting" },
+    "nextAction": { "tool": "loomex_interaction_view", "arguments": { "requestId": "human-request" } }
+  } },
+  { "kind": "tool", "name": "loomex_interaction_view", "arguments": { "requestId": "human-request" } },
+  { "kind": "tool", "name": "loomex_interaction_respond", "arguments": { "requestId": "human-request" }, "result": { "ok": true } },
+  { "kind": "projection", "method": "runs.get", "projection": {
+    "execution": { "id": "hook-free-run", "status": "running" },
+    "monitoring": { "state": "active", "liveFollow": { "mode": "continue_when_explicit" } },
+    "nextAction": { "tool": "loomex_run_wait", "arguments": { "runId": "hook-free-run", "timeoutSeconds": 30 } }
+  } },
+  { "kind": "tool", "name": "loomex_run_wait", "arguments": { "runId": "hook-free-run", "timeoutSeconds": 30 } },
+  { "kind": "projection", "method": "runs.wait", "projection": {
+    "execution": { "id": "hook-free-run", "status": "completed" },
+    "monitoring": { "state": "terminal", "liveFollow": { "mode": "stop" } },
+    "nextAction": { "tool": "loomex_run_result", "arguments": { "runId": "hook-free-run" } }
+  } },
+  { "kind": "tool", "name": "loomex_run_result", "arguments": { "runId": "hook-free-run" } },
+  { "kind": "projection", "method": "runs.get", "projection": {
+    "execution": { "id": "hook-free-run", "status": "completed" },
+    "monitoring": { "state": "terminal", "liveFollow": { "mode": "stop" } }
+  } },
+  { "kind": "assistant_final", "text": "The terminal result is available." }
+]

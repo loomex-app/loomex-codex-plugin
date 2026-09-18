@@ -27,6 +27,11 @@ export function browserCoverage(root, inputs, configPath = resolve(root, 'tsconf
     const path = resolve(root, input);
     const local = relative(root, path);
     if (local.split(sep).includes('node_modules')) continue;
+    // JSON imported with resolveJsonModule is checked data, not executable JS.
+    if (!local.startsWith('..') && path.endsWith('.json') && checked.has(path)) {
+      try { JSON.parse(ts.sys.readFile(path)); } catch { failures.push(`${input}: invalid JSON data`); }
+      continue;
+    }
     if (local.startsWith('..') || !/\.[cm]?[jt]sx?$/.test(path)) {
       failures.push(`${input}: unclassified executable input`); continue;
     }

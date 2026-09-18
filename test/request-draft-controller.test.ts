@@ -14,6 +14,8 @@ type Deferred = { readonly promise: Promise<JsonObject>; resolve(value: JsonObje
 type Subject = {
   readonly controller: RequestDraftController;
   readonly calls: Call[];
+  readonly errors: Error[];
+  readonly statuses: (Error | undefined)[];
   setRequest(id: string): void;
   setAnswers(value: JsonObject): void;
   setResponder(value: (name: string, args: JsonObject) => Promise<JsonObject>): void;
@@ -45,12 +47,14 @@ function saved(args: JsonObject, revision: number, requestId = args.requestId): 
   } };
 }
 
-function fixture(): Subject {
+function fixture(overrides: Partial<RequestDraftServices> = {}): Subject {
   let currentRequest: HumanRequest = { id: requestA, schemaDigest: digest };
   let answers: JsonObject = { response: "first" };
   let mutation = 0;
   let responder: (name: string, args: JsonObject) => Promise<JsonObject> = async (_name, args) => saved(args, 1);
   const calls: Call[] = [];
+  const errors: Error[] = [];
+  const statuses: (Error | undefined)[] = [];
   const host: RequestDraftServices = {
     draftRequest: () => currentRequest,
     inputSupported: () => true,
@@ -70,14 +74,15 @@ function fixture(): Subject {
     restoreAnswers: () => undefined,
     showQuestion: () => undefined,
     beginReview: () => undefined,
-    status: () => undefined,
+    status: (_status, error) => { statuses.push(error); },
     markViewDirty: () => undefined,
     flushView: async () => true,
     persistenceBlocked: () => false,
-    setError: () => undefined,
+    setError: error => { errors.push(error); },
+    ...overrides,
   };
   return {
-    controller: new RequestDraftController(host), calls,
+    controller: new RequestDraftController(host), calls, errors, statuses,
     setRequest(id) { currentRequest = { id, schemaDigest: digest }; },
     setAnswers(value) { answers = value; },
     setResponder(value) { responder = value; },
@@ -141,7 +146,7 @@ test("malformed and wrong-request receipts retain the dirty attempt for retry", 
   const key = subject.calls[0]!.args.idempotencyKey;
   subject.setResponder(async (_name, args) => saved(args, 1, requestB));
   assert.equal(await subject.controller.flushInteractionDraft(), false);
-  assert.equal(subject.calls[1]!.args.idempotencyKey, key);
+  assert.equal(subject.calls.filter(call => call.name === "loomex_interaction_draft_update")[1]!.args.idempotencyKey, key);
   assert.equal(subject.controller.state.dirty, true);
 });
 
@@ -193,6 +198,18 @@ test("a failed mutation retries its exact idempotency tuple", async () => {
   assert.deepEqual(subject.calls[1]!.args, subject.calls[0]!.args);
 });
 
+test("run-preparation persistence failures use the action label rather than claiming an answer was submitted", async () => {
+  const subject = fixture({
+    flushView: async () => false,
+    viewFailure: () => new Error("The durable view store rejected the call"),
+    persistenceActionLabel: () => "run preparation",
+  });
+  assert.equal(await subject.controller.flushCurrentPersistence(), false);
+  assert.equal(subject.errors.length, 1);
+  assert.equal(subject.errors[0]!.message, "The run preparation could not be saved. Save it before starting.");
+  assert.equal((subject.errors[0] as Error & { code?: string }).code, "PRESENTATION_SAVE_FAILED");
+});
+
 test("dispose fences scheduled and in-flight persistence", async () => {
   const subject = fixture();
   const delayed = deferred();
@@ -227,4 +244,102 @@ test("accepted cleanup keeps its captured deletion tuple and preserves a replace
     idempotencyKey: cleanup.idempotencyKey,
   });
   assert.equal(subject.controller.state.draft?.requestId, requestB);
+});
+
+test("restore retains the original failure and clears it after successful recovery", async () => {
+  const subject = fixture();
+  const failure = Object.assign(new Error("The host returned incomplete draft data."), { code: "UI_SUCCESS_DATA_INVALID" });
+  subject.setResponder(async () => { throw failure; });
+  assert.equal(await subject.controller.loadInteractionDraft({ id: requestA, schemaDigest: digest }), false);
+  assert.equal(subject.controller.lastFailure, failure);
+  subject.setResponder(async () => ({ draft: null }));
+  assert.equal(await subject.controller.loadInteractionDraft({ id: requestA, schemaDigest: digest }), true);
+  assert.equal(subject.controller.lastFailure, null);
+});
+
+test("submission retains the draft save failure and request replacement clears it", async () => {
+  const subject = fixture();
+  const failure = Object.assign(new Error("Draft write could not be verified."), { code: "HOST_TIMEOUT" });
+  subject.setResponder(async () => { throw failure; });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushCurrentPersistence(), false);
+  assert.equal(subject.controller.lastFailure, failure);
+  assert.equal(subject.errors.at(-1)?.cause, failure);
+  assert.equal(subject.errors.at(-1)?.message, "Your answers could not be saved. Save them before submitting.");
+  assert.equal(subject.statuses.at(-1), failure);
+  subject.controller.detachInteractionDraft();
+  assert.equal(subject.controller.lastFailure, null);
+});
+
+
+test("a mismatched acknowledgement reconciles a landed draft without repeating the write", async () => {
+  const subject = fixture();
+  let receipt: JsonObject = {};
+  subject.setResponder(async (name, args) => {
+    if (name === "loomex_interaction_draft_update") { receipt = saved(args, 1); return { draft: {} }; }
+    return receipt;
+  });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushCurrentPersistence(), true);
+  assert.deepEqual(subject.calls.map(call => call.name), ["loomex_interaction_draft_update", "loomex_interaction_draft_get"]);
+  assert.equal(subject.controller.state.dirty, false);
+});
+
+test("a changed authoritative answer remains blocked and identifies the mismatch without exposing answers", async () => {
+  const subject = fixture();
+  let receipt: JsonObject = {};
+  subject.setResponder(async (name, args) => {
+    if (name === "loomex_interaction_draft_update") receipt = saved({ ...args, answers: { response: "different private answer" } }, 1);
+    return receipt;
+  });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushCurrentPersistence(), false);
+  assert.match(subject.controller.lastFailure?.message ?? "", /\(answers\)/);
+  assert.doesNotMatch(subject.controller.lastFailure?.message ?? "", /different private answer/);
+  assert.equal(subject.controller.state.dirty, true);
+});
+
+
+test("review saves canonical null position even while the last question remains mounted", async () => {
+  const subject = fixture({ phase: () => "review", currentQuestionId: () => "last-question" });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushCurrentPersistence(), true);
+  assert.equal(subject.calls[0]!.args.currentQuestionId, null);
+});
+
+test("a review receipt and remount accept an omitted null navigation field", async () => {
+  const subject = fixture({ phase: () => "review" });
+  let receipt: JsonObject;
+  subject.setResponder(async (_name, args) => {
+    receipt = saved(args, 1);
+    delete (receipt.draft as JsonObject).currentQuestionId;
+    return receipt;
+  });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushCurrentPersistence(), true);
+  assert.equal(subject.controller.state.draft?.currentQuestionId, null);
+  subject.setResponder(async () => receipt);
+  assert.equal(await subject.controller.loadInteractionDraft({ id: requestA, schemaDigest: digest }), true);
+});
+
+test("a different nonempty question position still fails verification", async () => {
+  const subject = fixture();
+  let receipt: JsonObject;
+  subject.setResponder(async (name, args) => {
+    if (name.endsWith("update")) receipt = saved({ ...args, currentQuestionId: "different-question" }, 1);
+    return receipt;
+  });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushCurrentPersistence(), false);
+  assert.match(subject.controller.lastFailure?.message ?? "", /question position/);
+});
+
+test("explicit draft reapplication retains local answers and uses a fresh confirmed revision",async()=>{
+ const subject=fixture();subject.setAnswers({response:"local"});
+ subject.setResponder(async()=>{throw Object.assign(new Error("conflict"),{code:"INTERACTION_DRAFT_CONFLICT"});});
+ subject.controller.scheduleInteractionDraft();assert.equal(await subject.controller.flushInteractionDraft(),false);
+ const first=subject.calls[0]!.args;
+ subject.setResponder(async(name,args)=>name==="loomex_interaction_draft_get" ? saved({...first,answers:{response:"remote"}},4) : saved(args,5));
+ assert.equal(await subject.controller.reapplyLocal(),true);
+ const last=subject.calls.at(-1)!.args;assert.equal(last.expectedRevision,4);assert.deepEqual(last.answers,{response:"local"});assert.notEqual(last.idempotencyKey,first.idempotencyKey);subject.controller.dispose();
 });

@@ -1,5 +1,6 @@
 import type { JsonObject } from "./contracts.js";
 import type { HumanRequest, InteractionDraft } from "./page-models.js";
+import { persistenceSaveError } from "./action-errors.js";
 
 type Identity = { readonly sessionId: string; readonly requestId: string; readonly schemaDigest: string; readonly key: string };
 type Attempt = { readonly version: number; readonly payload: JsonObject };
@@ -33,7 +34,10 @@ export interface RequestDraftServices {
   status(status: "dirty" | "saved" | "save_failed" | "load_failed", error?: Error): void;
   markViewDirty(): void;
   flushView(): Promise<boolean>;
+  viewFailure?(): Error | null;
   persistenceBlocked(): boolean;
+  /** Names the action currently being saved for user-facing persistence errors. */
+  persistenceActionLabel?(): string;
   setError(error: Error): void;
 }
 
@@ -46,6 +50,14 @@ export class RequestDraftController {
   #drainScope: Scope | null = null;
   #changeVersion = 0;
   #disposed = false;
+  #lastFailure: Error | null = null;
+
+  get lastFailure(): Error | null { return this.#lastFailure; }
+
+  private reportFailure(status: "load_failed" | "save_failed", error: Error): void {
+    this.#lastFailure = error;
+    this.host.status(status, error);
+  }
 
   constructor(private readonly host: RequestDraftServices) {}
 
@@ -68,6 +80,7 @@ export class RequestDraftController {
   detachInteractionDraft(): void {
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
+    this.#lastFailure = null;
     this.state.scope = null;
     this.state.draft = null;
     this.state.busy = false;
@@ -130,6 +143,22 @@ export class RequestDraftController {
     }
   }
 
+  /** Explicitly rebase local answers only after a definite revision conflict. */
+  async reapplyLocal():Promise<boolean> {
+    if(!this.#lastFailure || !("code" in this.#lastFailure) || !["REVISION_CONFLICT","INTERACTION_DRAFT_CONFLICT","CONFLICT"].includes(String(this.#lastFailure.code)))return true;
+    const scope=this.state.scope, version=this.#changeVersion;
+    if(!scope || !this.draftScopeCurrent(scope) || this.state.busy)return false;
+    try {
+      const result=await this.host.persistenceTool("loomex_interaction_draft_get",{requestId:scope.identity.requestId});
+      if(!this.draftScopeCurrent(scope) || version!==this.#changeVersion)return false;
+      const draft=this.readDraft(result.draft,scope.identity);
+      if(!draft)throw new Error("The saved answer draft could not be verified.");
+      this.state.draft=draft;
+      this.#attempt=null;this.#lastFailure=null;this.state.dirty=true;
+      return this.flushInteractionDraft();
+    }catch(error){this.reportFailure("save_failed",asError(error));return false;}
+  }
+
   async loadInteractionDraft(request: HumanRequest, epoch = this.host.hydrationEpoch()): Promise<boolean> {
     if (this.#disposed) return false;
     if (!request.id || !this.host.inputSupported(request)) return true;
@@ -143,16 +172,16 @@ export class RequestDraftController {
       if (!this.draftScopeCurrent(scope) || epoch !== this.host.hydrationEpoch()) return false;
       const draft = this.readDraft(data.draft, scope.identity);
       if (data.draft !== undefined && data.draft !== null && !draft) {
-        this.host.status("load_failed", new Error("The saved answer draft did not match this request."));
+        this.reportFailure("load_failed", new Error("The saved answer draft did not match this request."));
         return false;
       }
       if (this.state.dirty) {
         if (!this.#attempt || !draft || !this.receiptMatchesAttempt(draft, this.#attempt)) {
-          this.host.status("save_failed", draftConflictError());
+          this.reportFailure("save_failed", draftConflictError());
           return false;
         }
         if (this.#changeVersion !== this.#attempt.version) {
-          this.host.status("save_failed", draftConflictError());
+          this.reportFailure("save_failed", draftConflictError());
           return false;
         }
         this.#attempt = null;
@@ -166,10 +195,11 @@ export class RequestDraftController {
         }
       }
       this.state.dirty = false;
+      this.#lastFailure = null;
       this.host.status("saved");
       return true;
     } catch (error: unknown) {
-      if (this.draftScopeCurrent(scope) && epoch === this.host.hydrationEpoch()) this.host.status("load_failed", asError(error));
+      if (this.draftScopeCurrent(scope) && epoch === this.host.hydrationEpoch()) this.reportFailure("load_failed", asError(error));
       return false;
     } finally {
       if (this.draftScopeCurrent(scope)) this.state.busy = false;
@@ -242,19 +272,33 @@ export class RequestDraftController {
         } catch (error: unknown) {
           if (this.draftScopeCurrent(scope) && this.#attempt === attempt) {
             this.state.dirty = true;
-            this.host.status("save_failed", asError(error));
+            this.reportFailure("save_failed", asError(error));
           }
           return false;
         }
         if (!this.draftScopeCurrent(scope) || this.#attempt !== attempt) return false;
-        const draft = this.readDraft(receiptValue(data), scope.identity);
+        let draft = this.readDraft(receiptValue(data), scope.identity);
         if (!draft || !this.receiptMatchesAttempt(draft, attempt)) {
-          this.host.status("save_failed", new Error("The saved answer draft receipt did not match the submitted changes."));
-          return false;
+          // A write can land even when its acknowledgement is incomplete. Read
+          // the authoritative draft once; do not issue a new mutation or key.
+          try {
+            data = await this.host.persistenceTool("loomex_interaction_draft_get", { requestId: scope.identity.requestId });
+          } catch (error: unknown) {
+            if (this.draftScopeCurrent(scope) && this.#attempt === attempt) this.reportFailure("save_failed", asError(error));
+            return false;
+          }
+          if (!this.draftScopeCurrent(scope) || this.#attempt !== attempt) return false;
+          draft = this.readDraft(receiptValue(data), scope.identity);
+          if (!draft || !this.receiptMatchesAttempt(draft, attempt)) {
+            const fields = this.receiptMismatchFields(receiptValue(data), attempt);
+            this.reportFailure("save_failed", new Error(`The saved answer draft could not be verified (${fields.join(", ")}). Your submitted changes have been retained.`));
+            return false;
+          }
         }
         this.state.draft = draft;
         if (this.#changeVersion === attempt.version) this.state.dirty = false;
         this.#attempt = null;
+        this.#lastFailure = null;
         this.host.status("saved");
       }
       return this.draftScopeCurrent(scope) && !this.state.dirty;
@@ -268,6 +312,7 @@ export class RequestDraftController {
     const identity = this.identity(request);
     if (!request?.id || !identity || identity.key !== scope.identity.key || !this.draftScopeCurrent(scope)) return null;
     const expectedRevision = this.state.draft?.requestId === request.id ? numeric(this.state.draft.revision) ? this.state.draft.revision : 0 : 0;
+    const phase = this.host.phase();
     return {
       version: this.#changeVersion,
       payload: {
@@ -276,8 +321,8 @@ export class RequestDraftController {
         expectedSchemaDigest: identity.schemaDigest,
         idempotencyKey: this.host.uuid(),
         answers: this.host.answers(),
-        currentQuestionId: this.host.currentQuestionId(),
-        phase: this.host.phase(),
+        currentQuestionId: phase === "review" ? null : this.host.currentQuestionId() || null,
+        phase,
       },
     };
   }
@@ -297,9 +342,25 @@ export class RequestDraftController {
       || value.schemaDigest !== identity.schemaDigest
       || !numeric(value.revision)
       || !isRecord(value.answers)
-      || (value.currentQuestionId !== null && typeof value.currentQuestionId !== "string")
+      || (value.currentQuestionId !== null && typeof value.currentQuestionId !== "string"
+        && !(value.phase === "review" && value.currentQuestionId === undefined))
       || !isDraftPhase(value.phase)) return null;
-    return value as InteractionDraft;
+    // Review has no active question. Hosts may omit a null optional navigation
+    // field; restore that representation without relaxing answer/identity checks.
+    return { ...value, currentQuestionId: value.currentQuestionId || null } as InteractionDraft;
+  }
+
+  private receiptMismatchFields(value: unknown, attempt: Attempt): string[] {
+    if (!isRecord(value)) return ["missing draft"];
+    const p = attempt.payload;
+    const mismatches: string[] = [];
+    if (value.requestId !== p.requestId) mismatches.push("request identity");
+    if (value.schemaDigest !== p.expectedSchemaDigest) mismatches.push("question schema");
+    if (!numeric(value.revision) || !numeric(p.expectedRevision) || value.revision <= p.expectedRevision) mismatches.push("revision");
+    if (!this.host.exactEqual(value.answers, p.answers)) mismatches.push("answers");
+    if (value.currentQuestionId !== p.currentQuestionId) mismatches.push("question position");
+    if (value.phase !== p.phase) mismatches.push("review phase");
+    return mismatches;
   }
 
   private receiptMatchesAttempt(draft: InteractionDraft, attempt: Attempt): boolean {
@@ -331,11 +392,18 @@ export class RequestDraftController {
     const scope = this.state.scope;
     const draftSaved = await this.flushInteractionDraft();
     if (this.#disposed || (scope && !this.draftScopeCurrent(scope))) return false;
+    if (!draftSaved) {
+      const failure = this.#lastFailure ?? new Error("The answer draft could not be verified.");
+      this.reportFailure("save_failed", failure);
+      this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), failure));
+      return false;
+    }
     const viewSaved = await this.host.flushView();
     if (this.#disposed) return false;
-    if (!draftSaved || !viewSaved) {
-      this.host.status("save_failed");
-      this.host.setError(new Error("Your changes could not be saved, so this action was not sent. Try again after saving succeeds."));
+    if (!viewSaved) {
+      const failure = this.host.viewFailure?.() ?? new Error("The view state could not be verified.");
+      this.reportFailure("save_failed", failure);
+      this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), failure));
     }
     return draftSaved && viewSaved;
   }
@@ -350,10 +418,10 @@ export class RequestDraftController {
         return draftSaved ? this.host.flushView() : false;
       })
       .then((saved) => {
-        if (!saved && !this.#disposed && (!scope || this.draftScopeCurrent(scope))) this.host.status("save_failed");
+        if (!saved && !this.#disposed && (!scope || this.draftScopeCurrent(scope))) this.host.status("save_failed", this.#lastFailure ?? this.host.viewFailure?.() ?? undefined);
       })
       .catch((error: unknown) => {
-        if (!this.#disposed && (!scope || this.draftScopeCurrent(scope))) this.host.status("save_failed", asError(error));
+        if (!this.#disposed && (!scope || this.draftScopeCurrent(scope))) this.reportFailure("save_failed", asError(error));
       });
   }
 
