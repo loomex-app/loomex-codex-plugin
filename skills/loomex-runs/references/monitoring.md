@@ -8,7 +8,13 @@ that snapshot.
 An explicit follow request includes a generic or UI-generated host message that
 is paired with one of these exact continuation contexts.
 
-The continuation must name one exact `runId`. The current v2 context is
+A `reviewed-handoff` continuation initially names a handoff reference, not a run.
+Read that reference and commit only its runner-verified approval as specified in
+the skill. After commit, derive the exact run ID solely from the runner result;
+for an already committed handoff, use its existing recorded run. Immediately
+enter the loop below. Do not stop at a queued/running receipt or commit again.
+
+Once the handoff has resolved, the continuation must identify one exact `runId`. The current v2 context is
 `{schema: "loomex/chat-continuation/v2", intent: "monitor_existing_run", runId,
 trigger: "interaction_accepted" | "run_started" | "follow_requested",
 acceptedInteraction?: {requestId, status}, state: "requires_fresh_read"}`;

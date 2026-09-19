@@ -1,6 +1,7 @@
 import type { ViewRestorationCoordinator } from "./persistence.js";
 import type { ActionIcon, JsonObject } from "./contracts.js";
 import { createPagination, createUiElement as element } from "./components.js";
+import { createWorkflowGraphPreview } from "./workflow-graph.js";
 import type { ActionId } from "./shell.js";
 import type { BrowserArguments, BrowserDetailResponse, FocusReturn, JsonSchema, PagedResponse, UiData, WorkflowData, WorkflowNode, WorkflowVersion } from "./page-models.js";
 
@@ -18,7 +19,7 @@ export interface BrowserControllerState {
 }
 
 type BrowserAction = () => Promise<void> | void;
-type DetailOptions = { onBack?: BrowserAction; onPrepare?: BrowserAction; onEdit?: BrowserAction; onPublish?: BrowserAction; onActivate?: BrowserAction };
+type DetailOptions = { onBack?: BrowserAction; onPrepare?: BrowserAction; onEdit?: BrowserAction; onPublish?: BrowserAction };
 type PagedOptions = { onBack?: BrowserAction };
 
 export interface BrowserControllerServices {
@@ -38,6 +39,7 @@ export interface BrowserControllerServices {
   syncChrome(): void;
   updateActivity(): void;
   setAction(button: HTMLButtonElement, label: string, actionId?: ActionId): void;
+  setContextualHeader(leading?: readonly Node[], actions?: readonly Node[]): void;
   actionIcon(actionId: ActionId): ActionIcon;
   createIcon(name: ActionIcon): SVGSVGElement;
   setError(error: unknown): void;
@@ -59,7 +61,7 @@ export interface BrowserControllerServices {
   observeViewPersistence(result: unknown): Promise<boolean>;
   workflowIdValid(value: unknown): value is string;
   beginRunSetup(workflowId: string, detail: WorkflowData | null): Promise<void>;
-  requestWorkflowAction(action: "edit" | "publish" | "activate", data: WorkflowData): Promise<void>;
+  requestWorkflowAction(action: "edit" | "publish", data: WorkflowData): Promise<void>;
   taskWorkspaceArguments(): JsonObject;
   selectedWorkflowVersion(data: UiData): WorkflowVersion | undefined;
   initializeRunSetup(data: UiData, restoring: boolean, sourceIdentity: unknown): void;
@@ -154,7 +156,7 @@ export function createBrowserController(host: BrowserControllerServices) {
     detailResponse: null, busy: false, epoch: 0, focusReturn: null,
   };
 
-  function browserButton(label: string, action: BrowserAction, actionId: ActionId = "next", disabled = false, className = "secondary", visibleLabel = false, allowWithoutPersistence = false): HTMLButtonElement {
+  function browserButton(label: string, action: BrowserAction, actionId: ActionId = "next", disabled = false, className = "secondary", visibleLabel = false, allowWithoutPersistence = false, iconOnly = false): HTMLButtonElement {
     const button = element("button", { type: "button", className, disabled: disabled || !host.connected() || state.busy || (host.viewPersistenceUnavailable() && !allowWithoutPersistence) });
     if (allowWithoutPersistence) button.dataset.persistenceOptional = "true";
     host.setAction(button, label, actionId);
@@ -162,6 +164,13 @@ export function createBrowserController(host: BrowserControllerServices) {
       button.classList.remove("icon-button", "ui-button-icon");
       button.classList.add("action-with-label");
       button.replaceChildren(host.createIcon(host.actionIcon(actionId)), element("span", { className: "action-label" }, label));
+    }
+    if (iconOnly) {
+      // Starting a row's workflow is a familiar, repeatable action. Keep the
+      // visible control compact, while preserving an explicit accessible name.
+      button.classList.remove("action-with-label");
+      button.classList.add("icon-button", "ui-button-icon");
+      button.querySelector("span")?.classList.replace("action-label", "sr-only");
     }
     button.addEventListener("click", () => { void runBrowserAction(action, allowWithoutPersistence); });
     return button;
@@ -294,7 +303,7 @@ export function createBrowserController(host: BrowserControllerServices) {
     finally {
       state.busy = false;
       clearBrowserSkeleton();
-      if (host.runFlowActive()) host.renderIntegratedRunFlow(); else renderWorkflowDetail(detailData ?? {}, { onPrepare: () => requestWorkflowPreparation(id, detailData) });
+      if (host.runFlowActive()) { host.setContextualHeader(); host.renderIntegratedRunFlow(); } else renderWorkflowDetail(detailData ?? {}, { onPrepare: () => requestWorkflowPreparation(id, detailData) });
       restoreBrowserFocus(host.runFlowActive());
     }
   }
@@ -312,6 +321,7 @@ export function createBrowserController(host: BrowserControllerServices) {
   }
 
   function renderWorkflowPagedResponse(paged: PagedResponse, options: PagedOptions = {}): void {
+    host.setContextualHeader();
     context.hidden = false; context.className = "ui-stack";
     context.setAttribute("aria-label", "Workflow response");
     context.setAttribute("aria-busy", String(state.busy));
@@ -322,78 +332,113 @@ export function createBrowserController(host: BrowserControllerServices) {
     context.append(browserButton("View complete response", () => requestCompleteWorkflowResponse(paged, () => renderWorkflowPagedResponse(paged, options)), "results", host.authoritativeStateStale(), "secondary", false, true));
   }
 
+  function detailButton(label: string, action: BrowserAction, actionId: ActionId, disabled = false, text = false): HTMLButtonElement {
+    return browserButton(label, action, actionId, disabled, "secondary", text, true, !text);
+  }
+
+  function disclosure(label: string, content: Node): HTMLElement {
+    const details = element("details", { className: "ui-disclosure" });
+    details.append(element("summary", {}, label), content);
+    return details;
+  }
+
   function renderWorkflowDetail(data: UiData, options: DetailOptions = {}): void {
     const workflow = data.workflow ?? {};
     const { version, definition } = workflowDefinition(data);
     const nodes = workflowNodes(data, definition);
     const root = element("div", { className: "workflow-detail" });
-    const heading = element("div", { className: "workflow-detail-heading" });
-    const hero = element("div", { className: "ui-hero" });
-    hero.append(element("h2", {}, safeText(workflow.name) || "Workflow"));
-    const description = safeText(workflow.description ?? workflow.metadata?.description);
-    if (description) hero.append(element("p", { className: "ui-caption" }, description));
-    const meta = [formatStatus(workflow.status), workflowVersionNumber(version) !== undefined ? `Version ${workflowVersionNumber(version)}` : undefined];
-    if (nodes.length) meta.push(`${nodes.length} step${nodes.length === 1 ? "" : "s"}`);
-    hero.append(element("p", { className: "ui-meta" }, meta.filter((value): value is string => Boolean(value)).join(" · ")));
-    heading.append(hero);
-    if (options.onBack || options.onPrepare || options.onEdit || options.onPublish || options.onActivate) {
-      const actions = element("div", { className: "workflow-detail-heading-actions" });
-      if (options.onBack) actions.append(browserButton("Back to workflows", options.onBack, "back", false, "secondary", false, true));
-      if (options.onPrepare) actions.append(browserButton("Prepare run", options.onPrepare, "start", host.authoritativeStateStale(), ""));
-      if (options.onEdit) actions.append(browserButton("Edit", options.onEdit, "edit", host.authoritativeStateStale()));
-      if (options.onPublish) actions.append(browserButton("Publish", options.onPublish, "review", host.authoritativeStateStale()));
-      if (options.onActivate) actions.append(browserButton("Activate", options.onActivate, "start", host.authoritativeStateStale()));
-      heading.append(actions);
-    }
-    root.append(heading);
     const inputSchema = workflowInputSchema(data, definition);
     const properties = object(inputSchema.properties) ?? {};
     const entries = Object.entries(properties).filter((entry): entry is [string, JsonSchema] => object(entry[1]) !== undefined);
     const required = new Set(Array.isArray(inputSchema.required) ? inputSchema.required.filter((item): item is string => typeof item === "string") : []);
-    const inputs = element("section", { className: "workflow-detail-section", "aria-label": "Inputs" });
-    inputs.append(element("h3", { className: "ui-label" }, "Inputs"));
-    const list = element("dl", { className: "workflow-detail-list" });
-    for (const [key, schema] of entries.slice(0, 12)) {
-      const label = authoredLabel(key, schema);
-      if (!label) continue;
-      const row = element("div", { className: "workflow-detail-item" });
-      const copy = element("div", { className: "workflow-row-copy" });
-      copy.append(element("dt", { className: "ui-value" }, label));
-      const description = safeText(schema.description, 500);
-      if (description) copy.append(element("p", { className: "ui-caption" }, description));
-      row.append(copy);
-      const value = element("dd", { className: "ui-meta" });
-      const type = schemaType(schema);
-      if (type && !description) value.append(element("span", {}, type));
-      if (required.has(key)) value.append(element("span", { className: "ui-badge" }, "Required"));
-      row.append(value); list.append(row);
-    }
-    if (list.childElementCount) inputs.append(list); else inputs.append(element("p", { className: "ui-caption" }, "No startup inputs are declared."));
-    if (entries.length > 12) inputs.append(element("p", { className: "ui-caption" }, `Showing 12 of ${entries.length} inputs.`));
-    root.append(inputs);
     const providers = workflowProviders(nodes);
-    if (providers.total) {
-      const section = element("section", { className: "workflow-detail-section", "aria-label": "AI" });
-      section.append(element("h3", { className: "ui-label" }, "AI"));
-      const list = element("dl", { className: "workflow-detail-list" });
-      for (const provider of providers.items.slice(0, 8)) {
-        const row = element("div", { className: "workflow-detail-item" });
-        row.append(element("dt", { className: "ui-value" }, provider.provider || provider.model || "AI step"));
-        const labels = [provider.provider && provider.model ? provider.model : undefined, provider.effort ? `${provider.effort} effort` : undefined].filter((value): value is string => Boolean(value));
-        row.append(element("dd", { className: "ui-meta" }, labels.join(" · "))); list.append(row);
+
+    const leading: Node[] = [];
+    const actions: Node[] = [];
+    if (options.onBack) leading.push(detailButton("Back to workflows", options.onBack, "back"));
+    if (options.onEdit) actions.push(detailButton("Edit workflow", options.onEdit, "edit", host.authoritativeStateStale()));
+    if (options.onPrepare) actions.push(detailButton("Prepare run", options.onPrepare, "start", host.authoritativeStateStale()));
+    host.setContextualHeader(leading, actions);
+    host.setAction(refreshButton, "Refresh workflow", "refresh");
+    refreshButton.disabled = !host.connected() || state.busy;
+
+    const heading = element("div", { className: "ui-hero" });
+    const description = safeText(workflow.description ?? workflow.metadata?.description, 1200);
+    if (description) {
+      const copy = element("p", { className: "ui-caption workflow-description", "aria-expanded": "false" }, description);
+      heading.append(copy);
+      if (description.length > 190) {
+        const toggle = detailButton("Show full description", () => {
+          const expanded = copy.getAttribute("aria-expanded") === "true";
+          copy.setAttribute("aria-expanded", String(!expanded));
+          toggle.replaceChildren(host.createIcon(host.actionIcon(expanded ? "close" : "expand")), element("span", { className: "sr-only" }, expanded ? "Show full description" : "Hide full description"));
+          toggle.setAttribute("aria-label", expanded ? "Show full description" : "Hide full description");
+        }, "expand");
+        heading.append(toggle);
       }
-      section.append(list); if (providers.total > 8) section.append(element("p", { className: "ui-caption" }, `Showing 8 of ${providers.total} AI configurations.`));
-      root.append(section);
     }
+    const meta = element("div", { className: "workflow-meta-strip", "aria-label": "Workflow version" });
+    const status = formatStatus(version.status ?? workflow.status);
+    if (status) meta.append(element("span", { className: "ui-badge" }, status));
+    const number = workflowVersionNumber(version);
+    if (number !== undefined) meta.append(element("span", { className: "ui-meta" }, `Version ${number}`));
+    heading.append(meta); root.append(heading);
+
+    const summaryGrid = element("div", { className: "workflow-summary-grid", "aria-label": "Workflow configuration" });
+    const inputs = element("section", { className: "workflow-summary-card", "aria-label": "Inputs" });
+    inputs.append(element("span", { className: "ui-label" }, "Inputs"), element("strong", {}, entries.length ? `${entries.length} input${entries.length === 1 ? "" : "s"}` : "No inputs"));
+    if (entries.length) {
+      const requiredCount = [...required].filter(key => Object.hasOwn(properties, key)).length;
+      inputs.append(element("span", { className: "ui-caption" }, requiredCount ? `${requiredCount} required` : "All optional"));
+      const list = element("dl", { className: "workflow-detail-list" });
+      for (const [key, schema] of entries) {
+        const label = authoredLabel(key, schema); if (!label) continue;
+        const row = element("div", { className: "workflow-detail-item" });
+        row.append(element("dt", { className: "ui-value" }, label));
+        const tags = [schemaType(schema), required.has(key) ? "Required" : undefined].filter((value): value is string => Boolean(value));
+        row.append(element("dd", { className: "ui-meta" }, tags.join(" · "))); list.append(row);
+      }
+      inputs.append(disclosure("View inputs", list));
+    }
+    summaryGrid.append(inputs);
+
+    const ai = element("section", { className: "workflow-summary-card", "aria-label": "AI" });
+    ai.append(element("span", { className: "ui-label" }, "AI"), element("strong", {}, providers.total ? `${providers.total} configuration${providers.total === 1 ? "" : "s"}` : "No AI configuration"));
+    if (providers.total) {
+      const chips = element("div", { className: "workflow-chip-list" });
+      for (const provider of providers.items.slice(0, 3)) chips.append(element("span", { className: "workflow-chip" }, [provider.provider, provider.model, provider.effort].filter(Boolean).join(" · ") || "AI"));
+      ai.append(chips);
+      const list = element("dl", { className: "workflow-detail-list" });
+      for (const provider of providers.items) {
+        const row = element("div", { className: "workflow-detail-item" });
+        row.append(element("dt", { className: "ui-value" }, provider.provider || "AI"));
+        row.append(element("dd", { className: "ui-meta" }, [provider.model, provider.effort && `${provider.effort} effort`].filter(Boolean).join(" · "))); list.append(row);
+      }
+      ai.append(disclosure("View AI configuration", list));
+    }
+    summaryGrid.append(ai); root.append(summaryGrid);
+
     const policy = safeText(definition.executionPolicy, 120);
-    if (policy) root.append(element("p", { className: "ui-caption" }, policy === "host_user/v1" ? "Runs on this Mac with your user permissions after review." : "Uses the workflow's declared execution policy."));
-    if (nodes.length) {
-      const section = element("section", { className: "workflow-detail-section", "aria-label": "Steps" });
-      section.append(element("h3", { className: "ui-label" }, "Steps"));
-      const list = element("ol", { className: "ui-list" });
-      for (const node of nodes.slice(0, 8)) list.append(element("li", {}, safeText(node.name, 240) || "Unnamed step"));
-      section.append(list); if (nodes.length > 8) section.append(element("p", { className: "ui-caption" }, `Showing 8 of ${nodes.length} steps.`));
-      root.append(section);
+    if (policy === "host_user/v1") {
+      const execution = element("section", { className: "workflow-detail-section", "aria-label": "Execution" });
+      execution.append(element("h3", { className: "ui-label" }, "Execution"));
+      const row = element("div", { className: "workflow-summary-row" }); row.append(element("span", { className: "ui-badge" }, "Local execution"));
+      execution.append(row, disclosure("What this means", element("p", { className: "ui-caption" }, "After you review a run, Loomex may execute its configured provider commands in the selected workspace with your local macOS user permissions. This is not a sandbox.")));
+      root.append(execution);
+    }
+
+    const graph = createWorkflowGraphPreview(nodes, definition.transitions, {
+      createButton: (label, actionId) => detailButton(label, () => undefined, actionId),
+      createIcon: host.createIcon,
+    });
+    if (graph) root.append(graph);
+
+    if (options.onPublish && safeText(version.status ?? workflow.status).toLowerCase() === "draft") {
+      const versionActions = element("section", { className: "workflow-detail-section", "aria-label": "Version actions" });
+      versionActions.append(element("h3", { className: "ui-label" }, "Version"));
+      versionActions.append(element("p", { className: "ui-caption" }, "Publishing creates the immutable version used for future runs."));
+      versionActions.append(detailButton("Publish", options.onPublish, "publish", host.authoritativeStateStale(), true));
+      root.append(versionActions);
     }
     context.className = "ui-stack"; context.hidden = false; context.setAttribute("aria-label", "Workflow detail");
     context.setAttribute("aria-busy", String(state.busy)); context.replaceChildren(root);
@@ -407,7 +452,6 @@ export function createBrowserController(host: BrowserControllerServices) {
       onPrepare: () => requestWorkflowPreparation(workflow.id ?? "", data),
       onEdit: () => host.requestWorkflowAction("edit", data),
       onPublish: () => host.requestWorkflowAction("publish", data),
-      onActivate: () => host.requestWorkflowAction("activate", data),
     });
   }
 
@@ -416,7 +460,8 @@ export function createBrowserController(host: BrowserControllerServices) {
   }
 
   function renderBrowserContent(): void {
-    if (host.runFlowActive()) { host.renderIntegratedRunFlow(); return; }
+    if (host.runFlowActive()) { host.setContextualHeader(); host.renderIntegratedRunFlow(); return; }
+    if (!state.selected) host.setContextualHeader();
     context.hidden = false; context.className = "ui-stack"; context.setAttribute("aria-label", "Workflow browser");
     context.setAttribute("aria-busy", String(state.busy)); context.replaceChildren();
     form.hidden = true; primary.hidden = true; secondary.hidden = true;
@@ -434,7 +479,6 @@ export function createBrowserController(host: BrowserControllerServices) {
         onPrepare: () => requestWorkflowPreparation(workflow.id ?? ""),
         onEdit: () => host.requestWorkflowAction("edit", state.selected ?? {}),
         onPublish: () => host.requestWorkflowAction("publish", state.selected ?? {}),
-        onActivate: () => host.requestWorkflowAction("activate", state.selected ?? {}),
       });
       return;
     }
@@ -467,7 +511,7 @@ export function createBrowserController(host: BrowserControllerServices) {
       const actions = element("div", { className: "workflow-row-actions" });
       const invalid = !host.workflowIdValid(workflow.id) || host.authoritativeStateStale();
       actions.append(browserButton("View", () => browserRead("loomex_workflow_get", { workflowId: workflow.id ?? "" }, (data) => { state.selected = data; }), "results", !host.workflowIdValid(workflow.id), "secondary", false, true));
-      actions.append(browserButton("Prepare run", () => requestWorkflowPreparation(workflow.id ?? ""), "start", invalid));
+      actions.append(browserButton("Run", () => requestWorkflowPreparation(workflow.id ?? ""), "start", invalid, "secondary", false, false, true));
       for (const button of [...actions.children]) if (button instanceof HTMLButtonElement) button.setAttribute("aria-label", `${button.textContent}: ${workflowRowName(workflow.name)}`);
       row.append(copy, actions); rows.append(row);
     }

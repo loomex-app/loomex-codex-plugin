@@ -34,6 +34,8 @@ export interface WorkflowNode extends MutableJson {
   name?: string;
   inputSchema?: JsonSchema;
   config?: WorkflowNodeConfig;
+  key?: string;
+  position?: { x?: number; y?: number } & MutableJson;
 }
 
 export interface WorkflowNodeConfig extends MutableJson {
@@ -57,6 +59,7 @@ export interface WorkflowDefinition extends MutableJson {
   nodes?: readonly WorkflowNode[];
   settings?: WorkflowSettings;
   executionPolicy?: string;
+  transitions?: readonly JsonObject[];
 }
 
 export interface WorkflowSettings extends MutableJson {

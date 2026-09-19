@@ -678,7 +678,7 @@ export function createInteractionFormController(host: InteractionFormServices): 
   }
 
   function hidePersistentBatchReview(): void {
-    if (form.dataset.formKind !== "questions" || form.dataset.collectionMode !== "batch" || form.dataset.answerPhase === "review") return;
+    if (form.dataset.formKind !== "questions" || form.dataset.collectionMode !== "batch" || form.dataset.answerPhase === "review" || !form.querySelector(".question-stepper")) return;
     primary.hidden = true;
     primary.disabled = true;
   }

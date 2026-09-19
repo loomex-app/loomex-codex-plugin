@@ -327,7 +327,7 @@ export function createRunSetupController(host: RunSetupServices) {
     form.hidden = false; form.className = "setup-fields"; form.replaceChildren();
     errorDetails.hidden = true; errorDetails.replaceChildren();
     refresh.hidden = true; secondary.hidden = !runFlow.returnToBrowser;
-    if (runFlow.returnToBrowser) { setAction(secondary, "Back to workflows", "back"); secondary.disabled = runFlow.busy; }
+    if (runFlow.returnToBrowser) { setAction(secondary, "Return to workflow list", "back"); secondary.disabled = runFlow.busy; }
     const hero = element("div", { className: "ui-hero" });
     hero.append(element("h2", {}, safeText(data?.workflow?.name) || "Set up run"));
     const version = workflowVersionNumber(selected?.version);

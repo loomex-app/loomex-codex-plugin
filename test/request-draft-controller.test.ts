@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { JsonObject } from "../src/ui-app/contracts.js";
 import type { HumanRequest } from "../src/ui-app/page-models.js";
 import { RequestDraftController, type RequestDraftServices } from "../src/ui-app/request-draft-controller.js";
+import { PresentationPersistenceError, type PersistenceFailureError } from "../src/ui-app/action-errors.js";
 
 const sessionId = "b3cc8197-6fbe-468a-b751-7f058af551da";
 const requestA = "d7a42fd4-8b91-4227-8406-c4a8f8a680c5";
@@ -198,6 +199,45 @@ test("a failed mutation retries its exact idempotency tuple", async () => {
   assert.deepEqual(subject.calls[1]!.args, subject.calls[0]!.args);
 });
 
+test("a lost draft-write response reconciles the exact landed receipt without replaying the mutation", async () => {
+  const subject = fixture();
+  let landed: JsonObject | undefined;
+  subject.setResponder(async (name, args) => {
+    if (name === "loomex_interaction_draft_update") {
+      landed = saved(args, 1);
+      throw Object.assign(new Error("lost response"), { code: "NETWORK_AMBIGUOUS" });
+    }
+    return landed ?? {};
+  });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushInteractionDraft(), true);
+  assert.deepEqual(subject.calls.map(call => call.name), [
+    "loomex_interaction_draft_update",
+    "loomex_interaction_draft_get",
+  ]);
+  assert.equal(subject.controller.state.dirty, false);
+});
+
+test("an unverified ambiguous draft write retains its exact mutation key", async () => {
+  const subject = fixture();
+  let ambiguous = true;
+  subject.setResponder(async (name, args) => {
+    if (name === "loomex_interaction_draft_update" && ambiguous) {
+      throw Object.assign(new Error("lost response"), { code: "NETWORK_AMBIGUOUS" });
+    }
+    if (name === "loomex_interaction_draft_get") return { draft: null };
+    return saved(args, 1);
+  });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushInteractionDraft(), false);
+  const key = subject.calls[0]!.args.idempotencyKey;
+  ambiguous = false;
+  assert.equal(await subject.controller.flushInteractionDraft(), true);
+  const writes = subject.calls.filter(call => call.name === "loomex_interaction_draft_update");
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1]!.args.idempotencyKey, key);
+});
+
 test("run-preparation persistence failures use the action label rather than claiming an answer was submitted", async () => {
   const subject = fixture({
     flushView: async () => false,
@@ -208,6 +248,53 @@ test("run-preparation persistence failures use the action label rather than clai
   assert.equal(subject.errors.length, 1);
   assert.equal(subject.errors[0]!.message, "The run preparation could not be saved. Save it before starting.");
   assert.equal((subject.errors[0] as Error & { code?: string }).code, "PRESENTATION_SAVE_FAILED");
+});
+
+test("a presentation failure after a saved draft stays out of the draft failure lane", async () => {
+  const draftStatuses: string[] = [];
+  const subject = fixture({
+    flushView: async () => false,
+    viewFailure: () => Object.assign(new Error("private durable-store detail"), { code: "HOST_TIMEOUT" }),
+    status: status => { draftStatuses.push(status); },
+  });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushCurrentPersistence(), false);
+  assert.equal(draftStatuses.includes("save_failed"), false);
+  assert.equal(subject.controller.lastFailure, null);
+  const failure = subject.errors[0];
+  assert.ok(failure instanceof PresentationPersistenceError);
+  assert.match(failure.message, /answers were saved/i);
+  assert.equal(failure.diagnostic.stage, "presentation_write");
+  assert.equal(failure.diagnostic.code, "HOST_TIMEOUT");
+  assert.doesNotMatch(JSON.stringify(failure.diagnostic), /private durable-store detail/);
+});
+
+test("review navigation does not report a presentation write as a draft save failure", async () => {
+  const draftStatuses: string[] = [];
+  const subject = fixture({
+    flushView: async () => false,
+    viewFailure: () => new Error("view failed"),
+    status: status => { draftStatuses.push(status); },
+  });
+  subject.controller.saveReviewNavigation();
+  await nextTurn();
+  await nextTurn();
+  assert.equal(draftStatuses.includes("save_failed"), false);
+});
+
+test("a replacement request fences a delayed presentation failure", async () => {
+  let resolveView: ((saved: boolean) => void) | undefined;
+  const view = new Promise<boolean>(resolve => { resolveView = resolve; });
+  const subject = fixture({ flushView: async () => view });
+  subject.controller.scheduleInteractionDraft();
+  const saving = subject.controller.flushCurrentPersistence();
+  await nextTurn();
+  subject.setRequest(requestB);
+  subject.controller.synchronizeInteractionDraftScope();
+  resolveView?.(false);
+  assert.equal(await saving, false);
+  assert.deepEqual(subject.errors, []);
+  assert.equal(subject.controller.lastFailure, null);
 });
 
 test("dispose fences scheduled and in-flight persistence", async () => {
@@ -266,7 +353,7 @@ test("submission retains the draft save failure and request replacement clears i
   assert.equal(subject.controller.lastFailure, failure);
   assert.equal(subject.errors.at(-1)?.cause, failure);
   assert.equal(subject.errors.at(-1)?.message, "Your answers could not be saved. Save them before submitting.");
-  assert.equal(subject.statuses.at(-1), failure);
+  assert.equal(subject.statuses.at(-1)?.cause, failure);
   subject.controller.detachInteractionDraft();
   assert.equal(subject.controller.lastFailure, null);
 });
@@ -294,8 +381,13 @@ test("a changed authoritative answer remains blocked and identifies the mismatch
   });
   subject.controller.scheduleInteractionDraft();
   assert.equal(await subject.controller.flushCurrentPersistence(), false);
-  assert.match(subject.controller.lastFailure?.message ?? "", /\(answers\)/);
+  assert.equal((subject.controller.lastFailure as PersistenceFailureError).diagnostic.mismatches.answers, true);
   assert.doesNotMatch(subject.controller.lastFailure?.message ?? "", /different private answer/);
+  const diagnostic = (subject.controller.lastFailure as PersistenceFailureError | null)?.diagnostic;
+  assert.equal(diagnostic?.stage, "receipt_verification");
+  assert.equal(diagnostic?.mismatches.answers, true);
+  assert.equal(diagnostic?.mismatches.request_identity, false);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /different private answer/);
   assert.equal(subject.controller.state.dirty, true);
 });
 
@@ -322,6 +414,18 @@ test("a review receipt and remount accept an omitted null navigation field", asy
   assert.equal(await subject.controller.loadInteractionDraft({ id: requestA, schemaDigest: digest }), true);
 });
 
+test("an answer receipt accepts an omitted navigation field only as canonical null", async () => {
+  const subject = fixture({ phase: () => "answer", currentQuestionId: () => null });
+  subject.setResponder(async (_name, args) => {
+    const receipt = saved(args, 1);
+    delete (receipt.draft as JsonObject).currentQuestionId;
+    return receipt;
+  });
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushCurrentPersistence(), true);
+  assert.equal(subject.controller.state.draft?.currentQuestionId, null);
+});
+
 test("a different nonempty question position still fails verification", async () => {
   const subject = fixture();
   let receipt: JsonObject;
@@ -331,7 +435,7 @@ test("a different nonempty question position still fails verification", async ()
   });
   subject.controller.scheduleInteractionDraft();
   assert.equal(await subject.controller.flushCurrentPersistence(), false);
-  assert.match(subject.controller.lastFailure?.message ?? "", /question position/);
+  assert.equal((subject.controller.lastFailure as PersistenceFailureError).diagnostic.mismatches.question_position, true);
 });
 
 test("explicit draft reapplication retains local answers and uses a fresh confirmed revision",async()=>{

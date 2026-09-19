@@ -91,17 +91,27 @@ function canonicalEnvelope(root: JsonObject): { readonly channel: DiagnosticChan
   throw new UiResultDecodeError("The host did not provide the data required by this view.", diagnostic("canonical", "root", "UI_CANONICAL_DATA_MISSING", root));
 }
 
+export interface UiResultReceipt {
+  readonly data: JsonObject;
+  readonly channel: DiagnosticChannel;
+  readonly method?: string;
+}
+
 /** Decodes the one result envelope used by MCP Apps and Loomex's UI bridge. */
-export function decodeUiResult(result: unknown): JsonObject {
+function decodeUiResultReceipt(result: unknown): UiResultReceipt {
   const { channel, envelope } = canonicalEnvelope(normalizeUiRpcResult(result));
   if (envelope.ok === true) {
     const data = optionalObject(envelope.data);
     if (data === undefined) {
       throw new UiResultDecodeError("The host returned incomplete Loomex view data.", diagnostic("canonical", channel, "UI_SUCCESS_DATA_INVALID", envelope));
     }
-    return data;
+    return { data, channel, ...(typeof envelope.method === "string" ? { method: envelope.method } : {}) };
   }
-  return envelope;
+  return { data: envelope, channel, ...(typeof envelope.method === "string" ? { method: envelope.method } : {}) };
+}
+
+export function decodeUiResult(result: unknown): JsonObject {
+  return decodeUiResultReceipt(result).data;
 }
 
 export function uiResultFailed(result: unknown): boolean {
@@ -204,7 +214,12 @@ function readError(value: unknown, fallback: string): UiResultError {
 
 /** Persistence requires a successful canonical receipt, never an error envelope. */
 export function decodePersistenceResult(result: unknown): JsonObject {
+  return decodePersistenceReceipt(result).data;
+}
+
+/** The selected canonical channel and method are retained only for local diagnostics. */
+export function decodePersistenceReceipt(result: unknown): UiResultReceipt {
   const error = decodeUiError(result, "The saved state could not be verified.");
   if (error) throw new UiTransportError(error);
-  return decodeUiResult(result);
+  return decodeUiResultReceipt(result);
 }

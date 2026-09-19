@@ -1,3 +1,4 @@
+import { PersistenceFailureError, PresentationPersistenceError } from "./action-errors.js";
 import { beginActionTiming } from "./action-timing.js";
 import { ConcurrentReads } from "./read-coordinator.js";
 import { resolveTransportRequestOptions } from "./transport-policy.js";
@@ -5,7 +6,7 @@ import { createUiElement, type ElementAttributes } from "./components.js";
 import { ContinuationDeliveryController, decodeDeliveryProjection } from "./continuation-delivery.js";
 import {reapplyPresentationEdits} from "./presentation-edits.js";
 // Compose the typed page domains, transport, persistence, and native DOM shell.
-import { decodePersistenceResult, decodeUiResult, normalizeUiRpcResult, UiResultDecodeError, type UiResultDiagnostic } from "./result-decoder.js";
+import { decodePersistenceReceipt, decodeUiResult, normalizeUiRpcResult, UiResultDecodeError, type UiResultDiagnostic, type UiResultReceipt } from "./result-decoder.js";
 import { setRestoring } from "./lifecycle.js";
 import { RuntimeTransport } from "./runtime-transport.js";
 import { createViewPersistence, ViewRestorationCoordinator } from "./persistence.js";
@@ -77,6 +78,8 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   const primary = requireElement<HTMLButtonElement>("primary");
   const secondary = requireElement<HTMLButtonElement>("secondary");
   const title = requireElement<HTMLElement>("title");
+  const headerLeading = requireElement<HTMLElement>("header-leading");
+  const headerContextActions = requireElement<HTMLElement>("header-context-actions");
   const headerStage = requireElement<HTMLElement>("header-stage");
   const headerStatus = requireElement<HTMLElement>("header-status");
   const main = requireMain();
@@ -125,7 +128,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   };
 
   const runtimeShell = createRuntimeShell({
-    elements: { title, context, summary, form, headerStage, headerStatus, primary, secondary },
+    elements: { title, context, summary, form, headerLeading, headerContextActions, headerStage, headerStatus, primary, secondary },
     statusClasses: __LOOMEX_STATUS_CLASSES__,
     snapshot: () => {
       const request = headerRequest();
@@ -302,16 +305,19 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
 
   const persistenceReads = new ConcurrentReads();
   const COALESCED_PERSISTENCE_READS = new Set(["loomex_view_session_get", "loomex_view_session_restore", "loomex_view_operation_get", "loomex_interaction_draft_get", "loomex_delivery_get"]);
-  async function persistenceTool(name: string, args: JsonObject): Promise<JsonObject> {
+  async function persistenceReceipt(name: string, args: JsonObject): Promise<UiResultReceipt> {
     // View and draft persistence is deliberately silent: it must never move the
     // form a person is completing just because a background save is in flight.
-    const load = async () => decodePersistenceResult(await send("tools/call", { name, arguments: args }, true, { activity: false }));
+    const load = async () => decodePersistenceReceipt(await send("tools/call", { name, arguments: args }, true, { activity: false }));
     if (COALESCED_PERSISTENCE_READS.has(name)) {
       const scope = [viewPersistence.session?.viewSessionId, mode, interactionId(latest || {})].join(":");
       return persistenceReads.read(scope, name, args, load);
     }
     persistenceReads.invalidate();
     return load();
+  }
+  async function persistenceTool(name: string, args: JsonObject): Promise<JsonObject> {
+    return (await persistenceReceipt(name, args)).data;
   }
 
   function viewPersistenceFault(result: unknown): ViewFault | null {
@@ -368,6 +374,9 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   function persistenceStatus(status: PersistenceStatus, error?: PersistenceError, store="presentation"): void {
     lifecycle.persistence(status, error, store);
     navigationState.persistenceConflict = lifecycle.state.persistence === "conflicted";
+    // One store's success must not hide another store's unresolved failure.
+    const unresolved = ["conflicted", "unavailable"].includes(lifecycle.state.persistence);
+    if (unresolved && status !== "save_failed" && status !== "load_failed") return;
     if (status === "dirty" || status === "saving") {
       saveStatus.classList.add("sr-only");
       saveStatus.hidden = false;
@@ -389,6 +398,12 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       saveStatus.classList.remove("sr-only");
       saveStatus.hidden = false;
       saveStatus.textContent = "This view changed elsewhere. Your local values remain here. Load the saved version, or explicitly reapply your edits against it.";
+    }
+    if ((status === "load_failed" || status === "save_failed") && error instanceof PersistenceFailureError) {
+      const details = element("details", { className: "ui-disclosure" });
+      details.append(element("summary", {}, "Support details"));
+      details.append(element("pre", { className: "ui-caption" }, JSON.stringify(error.diagnostic, null, 2)));
+      saveStatus.append(details);
     }
     useSavedVersion.hidden = !navigationState.persistenceConflict;
     reapplyLocal.hidden = !navigationState.persistenceConflict;
@@ -434,7 +449,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     setAction,
     setMutationAction,
     renderFailure,
-    renderIntegratedRunFlow: () => runMonitorController.renderIntegratedRunFlow(),
+    renderIntegratedRunFlow: () => { runtimeShell.setContextualHeader(); runMonitorController.renderIntegratedRunFlow(); },
     beginSetupReview: (inputs) => runActionsController.beginSetupReview(inputs),
     preparationView,
     preparationReviewable,
@@ -583,8 +598,9 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     elements: { context, summary, form, primary, secondary, refresh },
     connected: () => connected,
     runFlowActive: () => runSetupController.flow !== null,
-    renderIntegratedRunFlow: () => runMonitorController.renderIntegratedRunFlow(),
+    renderIntegratedRunFlow: () => { runtimeShell.setContextualHeader(); runMonitorController.renderIntegratedRunFlow(); },
     syncChrome,
+    setContextualHeader: runtimeShell.setContextualHeader,
     updateActivity,
     setAction,
     actionIcon,
@@ -609,19 +625,13 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     },
     observeViewPersistence: async (result) => Boolean(await observeViewPersistence(rpcResult(result))),
     workflowIdValid,
-    beginRunSetup: (id, data) => runActionsController.beginRunSetup(id, data),
+    beginRunSetup: (id, data) => { runtimeShell.setContextualHeader(); return runActionsController.beginRunSetup(id, data); },
     requestWorkflowAction: async (action, data) => {
       const workflowId = safeText(data.workflow?.id, 64);
       if (!workflowIdValid(workflowId)) throw new Error("The selected workflow could not be verified.");
-      const versionId = safeText(data.selectedVersion?.id ?? data.activeVersion?.id ?? data.version?.id, 64);
       const text = action === "edit"
         ? `Prepare an edit session for Loomex workflow ${workflowId}. Present the exact binding for my review before applying any workflow update.`
-        : action === "publish"
-          ? `Inspect Loomex workflow ${workflowId} and prepare its publish action for my review. Do not publish until I explicitly approve the exact action.`
-          : workflowIdValid(versionId)
-            ? `Prepare activation of Loomex workflow version ${versionId} for my review. Activation remains a separate approval from publishing.`
-            : "The selected workflow version needs to be refreshed before it can be activated.";
-      if (action === "activate" && !workflowIdValid(versionId)) throw new Error(text);
+        : `Inspect Loomex workflow ${workflowId} and prepare its publish action for my review. Do not publish until I explicitly approve the exact action.`;
       const result = await send("ui/message", { role: "user", content: [{ type: "text", text }] });
       if (record(result)?.isError === true) throw new Error("The host could not open this workflow action in the conversation.");
       summary.classList.remove("error");
@@ -685,12 +695,20 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     available: () => Boolean(record(hostCapabilities.message)?.text),
     uuid,
     journal: {
-      get: async identity => decodeDeliveryProjection(await persistenceTool("loomex_delivery_get", {identity})),
-      begin: async args => decodeDeliveryProjection(await persistenceTool("loomex_delivery_begin", args)),
-      settle: async args => decodeDeliveryProjection(await persistenceTool("loomex_delivery_settle", args)),
+      get: async identity => deliveryProjection("loomex_delivery_get", {identity}, "presentation.delivery.get"),
+      begin: async args => deliveryProjection("loomex_delivery_begin", args, "presentation.delivery.begin"),
+      settle: async args => deliveryProjection("loomex_delivery_settle", args, "presentation.delivery.settle"),
     },
     send: text => send("ui/message", {role:"user",content:[{type:"text",text}]}),
   });
+
+  async function deliveryProjection(name: string, args: JsonObject, expectedMethod: string) {
+    const receipt = await persistenceReceipt(name, args);
+    return decodeDeliveryProjection(receipt.data, {
+      channel: receipt.channel,
+      method: receipt.method === expectedMethod ? "expected" : receipt.method === undefined ? "missing" : "unexpected",
+    });
+  }
 
   let deliveryRecoveryListeners = new AbortController();
   function renderDeliveryRecovery(): void {
@@ -715,6 +733,11 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       const value = document.createElement("p");
       value.textContent = `Plugin ${document.body.dataset.version || "unknown"} · ${delivery.failureStage || "capability"} · ${delivery.failureCode}`;
       diagnostic.append(heading,value); box.append(diagnostic);
+      if (delivery.failureDiagnostic) {
+        const shape = document.createElement("p");
+        shape.textContent = delivery.failureDiagnostic;
+        diagnostic.append(shape);
+      }
     }
     if (["ready", "not_sent", "rejected", "unsupported"].includes(delivery.status)) {
       const retry = document.createElement("button"); retry.type = "button"; retry.textContent = "Continue in chat";
@@ -1235,7 +1258,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     const stage = safeText(display.stageLabel, 160);
     const status = safeText(display.status, 64);
     const caption = stage || status || (phase === "read_only" ? "This saved view is read-only." : "Checking the latest state…");
-    heading.append(element("p", { className: "ui-caption" }, caption));
+    heading.append(element("p", { className: "ui-caption", ...(phase === "verifying" && !stage && !status ? { "data-restoration-status": "true" } : {}) }, caption));
     wrapper.append(heading);
     const description = safeText(display.description, 280);
     if (description) wrapper.append(element("p", { className: "ui-caption" }, description));
@@ -1428,8 +1451,8 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     const requestWorkflow = safeText(request?.execution?.workflowName);
     if (requestWorkflow) return requestWorkflow;
     if (runSetupController.flow) return ({ setup: "Run setup", review: "Review run", monitor: request ? "Your response" : "Run monitor" } as const)[runSetupController.flow.stage];
-    if (mode === "browser" && browserState.selected) return "Workflow details";
-    if (mode === "authoring" && !builderSessionId(latest || {}) && Boolean(latest?.workflow)) return "Workflow details";
+    if (mode === "browser" && browserState.selected) return safeText(browserState.selected.workflow?.name, 160) || "Workflow";
+    if (mode === "authoring" && !builderSessionId(latest || {}) && Boolean(latest?.workflow)) return safeText(latest?.workflow?.name, 160) || "Workflow";
     if (isConnectionView) return connectionState.page === "organizations" ? "Organizations" : "Connection";
     return page().title;
   }
@@ -1566,6 +1589,16 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     summary.textContent = error instanceof Error && error.message
       ? error.message
       : "The host could not complete this action.";
+    errorDetails.replaceChildren();
+    errorDetails.hidden = true;
+    if (error instanceof PresentationPersistenceError || error instanceof PersistenceFailureError) {
+      const details = element("details", { className: "ui-disclosure" });
+      details.append(element("summary", {}, "Support details"));
+      details.append(element("pre", { className: "ui-caption" }, JSON.stringify(error.diagnostic, null, 2)));
+      errorDetails.replaceChildren(details);
+      errorDetails.hidden = false;
+      return;
+    }
     const diagnostic = error instanceof UiResultDecodeError ? error.diagnostic : undefined;
     if (!diagnostic) return;
     uiDiagnostics.push(diagnostic);

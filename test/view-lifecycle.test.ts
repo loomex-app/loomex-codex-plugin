@@ -1,6 +1,7 @@
 import {test} from "node:test";
 import * as assert from "node:assert/strict";
 import {ViewRestorationCoordinator, type ViewLifecycleAdapter} from "../src/ui-app/persistence.js";
+import {restorationSurface} from "../src/ui-app/runtime-shell.js";
 import type {UiMode} from "../src/ui-app/contracts.js";
 
 const modes:UiMode[]=["browser","runs","connection","organizations","prepare","monitor","interaction","authoring"];
@@ -57,6 +58,20 @@ test("a cached completed projection never enables actions before verification",a
  const view=new ViewRestorationCoordinator();const done=deferred<"ready">();
  await view.open({mode:"prepare",identity:"card",domainIdentity:"entity",snapshot:async()=>({}),display:()=>"read_only",verify:()=>done.promise,failed:()=>assert.fail()});
  assert.equal(view.permissions().authority,false);assert.equal(view.permissions().mutate,false);done.resolve("ready");await until(()=>view.state.phase==="ready");view.dispose();
+});
+
+test("initial restoration stays skeletal unless a cached read-only projection is visible",async()=>{
+ const view=new ViewRestorationCoordinator();const authority=deferred<"ready">();let cachedVisible=false;
+ const opening=view.open({mode:"interaction",identity:"card",domainIdentity:"request",snapshot:async()=>({}),display:()=>{cachedVisible=true;return "verifying";},verify:()=>authority.promise,failed:()=>assert.fail()});
+ assert.equal(restorationSurface(view.state.phase,cachedVisible),"skeleton");
+ await opening;
+ assert.equal(view.state.phase,"verifying");
+ assert.equal(restorationSurface(view.state.phase,cachedVisible),"snapshot");
+ cachedVisible=false;
+ assert.equal(restorationSurface(view.state.phase,cachedVisible),"skeleton","canonical answers stay covered while their draft is restored");
+ authority.resolve("ready");await until(()=>view.state.phase==="ready");
+ assert.equal(restorationSurface(view.state.phase,cachedVisible),"content");
+ view.dispose();
 });
 
 test("overlapping unrelated refreshes retain refreshing until both settle",async()=>{

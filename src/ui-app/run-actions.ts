@@ -1,4 +1,4 @@
-import { continuationMessage, type ContinuationDeliveryController } from "./continuation-delivery.js";
+import { reviewedStartMessage, type ContinuationDeliveryController } from "./continuation-delivery.js";
 import { errorRecovery } from "../protocol.js";
 import type {JsonObject,JsonValue} from "./contracts.js";
 import type {RunFlow,UiData,RpcResult,RuntimeViewSessionProjection,SessionUpdateAttempt,WorkflowData,InteractionDraft} from "./page-models.js";
@@ -586,9 +586,7 @@ export function createRunActionsController(host:RunActionsServices){
       // browser loopback networking, CORS, or private-network preflights.
       await approveStartHandoff(flow, ref);
       if (disposed || host.flowStore.flow !== flow || handoffFlow(flow).startHandoffState !== "approved") return;
-      const message = `$loomex:loomex-runs reviewed-handoff ${ref}\n\nStart was clicked for reviewed handoff ${ref}. Call loomex_run_start_handoff_get with this reference first. If its status is approved, commit this same reference only. This message does not authorize execution.`;
-      const context = {schema:"loomex/run-start-handoff/v2",intent:"commit_reviewed_handoff",handoffRef:ref,preparationId:prepared.preparationId,state:"approved"};
-      const deliveryStatus = await host.delivery.deliver({identity:`start:${ref}`,purpose:"reviewed_start",text:continuationMessage(message,context)});
+      const deliveryStatus = await host.delivery.deliver({identity:`start:${ref}`,purpose:"reviewed_start",text:reviewedStartMessage(ref)});
       const messageOutcome = deliveryStatus === "acknowledged" ? {status:"fulfilled",value:{isError:false}} : {status:"rejected",value:{isError:true}};
       // A delivery failure is never permission to repeat approval.  Read the
       // exact runner record to retain a safe, reconcilable card whether the

@@ -1,6 +1,6 @@
 import type { JsonObject } from "./contracts.js";
 import type { HumanRequest, InteractionDraft } from "./page-models.js";
-import { persistenceSaveError } from "./action-errors.js";
+import { PersistenceFailureError, persistenceSaveError } from "./action-errors.js";
 
 type Identity = { readonly sessionId: string; readonly requestId: string; readonly schemaDigest: string; readonly key: string };
 type Attempt = { readonly version: number; readonly payload: JsonObject };
@@ -56,7 +56,10 @@ export class RequestDraftController {
 
   private reportFailure(status: "load_failed" | "save_failed", error: Error): void {
     this.#lastFailure = error;
-    this.host.status(status, error);
+    const displayError = error instanceof PersistenceFailureError ? error : new PersistenceFailureError(
+      status === "load_failed" ? "The saved answers could not be restored. Refresh to retry." : "Your latest answer changes have not been saved. Retry saving before submitting.",
+      status === "load_failed" ? "draft_read" : "draft_write", error);
+    this.host.status(status, displayError);
   }
 
   constructor(private readonly host: RequestDraftServices) {}
@@ -270,11 +273,25 @@ export class RequestDraftController {
         try {
           data = await this.host.persistenceTool("loomex_interaction_draft_update", structuredClone(attempt.payload));
         } catch (error: unknown) {
-          if (this.draftScopeCurrent(scope) && this.#attempt === attempt) {
-            this.state.dirty = true;
-            this.reportFailure("save_failed", asError(error));
+          if (!this.draftScopeCurrent(scope) || this.#attempt !== attempt) return false;
+          const failure = asError(error);
+          if ("code" in failure && ["NETWORK_AMBIGUOUS", "HOST_TIMEOUT"].includes(String(failure.code))) {
+            try {
+              data = await this.host.persistenceTool("loomex_interaction_draft_get", { requestId: scope.identity.requestId });
+            } catch {
+              if (this.draftScopeCurrent(scope) && this.#attempt === attempt) this.reportFailure("save_failed", failure);
+              return false;
+            }
+            if (!this.draftScopeCurrent(scope) || this.#attempt !== attempt) return false;
+            const receipt = this.readDraft(receiptValue(data), scope.identity);
+            if (!receipt || !this.receiptMatchesAttempt(receipt, attempt)) {
+              this.reportFailure("save_failed", failure);
+              return false;
+            }
+          } else {
+            this.reportFailure("save_failed", failure);
+            return false;
           }
-          return false;
         }
         if (!this.draftScopeCurrent(scope) || this.#attempt !== attempt) return false;
         let draft = this.readDraft(receiptValue(data), scope.identity);
@@ -291,7 +308,7 @@ export class RequestDraftController {
           draft = this.readDraft(receiptValue(data), scope.identity);
           if (!draft || !this.receiptMatchesAttempt(draft, attempt)) {
             const fields = this.receiptMismatchFields(receiptValue(data), attempt);
-            this.reportFailure("save_failed", new Error(`The saved answer draft could not be verified (${fields.join(", ")}). Your submitted changes have been retained.`));
+            this.reportFailure("save_failed", new PersistenceFailureError("The saved answer draft could not be verified. Your submitted changes have been retained.", "receipt_verification", Object.assign(new Error("Receipt mismatch"), { code: "RECEIPT_MISMATCH" }), Object.fromEntries(["missing draft", "request identity", "question schema", "revision", "answers", "question position", "review phase"].map(field => [field.replaceAll(" ", "_"), fields.includes(field)]))));
             return false;
           }
         }
@@ -343,10 +360,10 @@ export class RequestDraftController {
       || !numeric(value.revision)
       || !isRecord(value.answers)
       || (value.currentQuestionId !== null && typeof value.currentQuestionId !== "string"
-        && !(value.phase === "review" && value.currentQuestionId === undefined))
+        && value.currentQuestionId !== undefined)
       || !isDraftPhase(value.phase)) return null;
-    // Review has no active question. Hosts may omit a null optional navigation
-    // field; restore that representation without relaxing answer/identity checks.
+    // Both phases permit absent navigation. Normalize only that optional field;
+    // answer, request, schema, phase, and revision checks remain exact.
     return { ...value, currentQuestionId: value.currentQuestionId || null } as InteractionDraft;
   }
 
@@ -358,7 +375,7 @@ export class RequestDraftController {
     if (value.schemaDigest !== p.expectedSchemaDigest) mismatches.push("question schema");
     if (!numeric(value.revision) || !numeric(p.expectedRevision) || value.revision <= p.expectedRevision) mismatches.push("revision");
     if (!this.host.exactEqual(value.answers, p.answers)) mismatches.push("answers");
-    if (value.currentQuestionId !== p.currentQuestionId) mismatches.push("question position");
+    if ((value.currentQuestionId ?? null) !== p.currentQuestionId) mismatches.push("question position");
     if (value.phase !== p.phase) mismatches.push("review phase");
     return mismatches;
   }
@@ -399,11 +416,10 @@ export class RequestDraftController {
       return false;
     }
     const viewSaved = await this.host.flushView();
-    if (this.#disposed) return false;
+    if (this.#disposed || (scope && !this.draftScopeCurrent(scope))) return false;
     if (!viewSaved) {
       const failure = this.host.viewFailure?.() ?? new Error("The view state could not be verified.");
-      this.reportFailure("save_failed", failure);
-      this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), failure));
+      this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), failure, "presentation_write"));
     }
     return draftSaved && viewSaved;
   }
@@ -412,17 +428,18 @@ export class RequestDraftController {
     if (this.#disposed) return;
     this.scheduleCurrentPersistence();
     const scope = this.state.scope;
-    void this.flushInteractionDraft()
-      .then((draftSaved) => {
-        if (this.#disposed || (scope && !this.draftScopeCurrent(scope))) return true;
-        return draftSaved ? this.host.flushView() : false;
-      })
-      .then((saved) => {
-        if (!saved && !this.#disposed && (!scope || this.draftScopeCurrent(scope))) this.host.status("save_failed", this.#lastFailure ?? this.host.viewFailure?.() ?? undefined);
-      })
-      .catch((error: unknown) => {
-        if (!this.#disposed && (!scope || this.draftScopeCurrent(scope))) this.reportFailure("save_failed", asError(error));
-      });
+    void (async () => {
+      const draftSaved = await this.flushInteractionDraft();
+      if (!draftSaved || this.#disposed || (scope && !this.draftScopeCurrent(scope))) return;
+      try {
+        const saved = await this.host.flushView();
+        if (!saved && !this.#disposed && (!scope || this.draftScopeCurrent(scope))) {
+          this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), this.host.viewFailure?.() ?? new Error("View save unavailable"), "presentation_write"));
+        }
+      } catch (error) {
+        if (!this.#disposed && (!scope || this.draftScopeCurrent(scope))) this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), asError(error), "presentation_write"));
+      }
+    })();
   }
 
   restoreReviewNavigationControls(button: HTMLButtonElement): void {

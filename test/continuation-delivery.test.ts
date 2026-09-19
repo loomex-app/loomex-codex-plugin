@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { ContinuationDeliveryController, continuationMessage, decodeDelivery, type DeliveryProjection, type DeliveryJournal } from "../src/ui-app/continuation-delivery.js";
+import { ContinuationDeliveryController, continuationMessage, reviewedStartMessage, deliveryMessage, decodeDelivery, decodeDeliveryProjection, DeliveryProjectionError, type DeliveryProjection, type DeliveryJournal } from "../src/ui-app/continuation-delivery.js";
 import { UiTransportError, UiResultDecodeError } from "../src/ui-app/result-decoder.js";
 const input = { identity: "start:exact", purpose: "reviewed_start" as const, text: continuationMessage("Read exact handoff", {handoffRef:"exact"}) };
 function journal() {
@@ -138,4 +138,66 @@ test("arbitrary local error codes are not copied into support details",async()=>
  const f=fixture();f.j.api.get=async()=>{throw Object.assign(new Error("private"),{code:"PRIVATEANSWER"});};
  await f.controller.deliver(input);
  assert.equal(f.controller.record?.failureCode,"DELIVERY_PREPARATION_UNAVAILABLE");
+});
+
+test("malformed delivery projections report fixed field shapes without response values",async()=>{
+ const privateValue="must-not-appear-in-support-details";
+ const malformed={schemaVersion:privateValue,identity:input.identity,continuation:{secret:privateValue},revision:privateValue,status:privateValue,attemptId:null,extra:privateValue};
+ let diagnostic="";
+ assert.throws(()=>decodeDeliveryProjection(malformed,{channel:"meta",method:"unexpected"}),(error:unknown)=>{
+   assert.ok(error instanceof DeliveryProjectionError);
+   diagnostic=error.projectionDiagnostic;
+   return error.code==="DELIVERY_PROJECTION_INVALID";
+ });
+ assert.match(diagnostic,/channel=meta · method=unexpected/);
+ assert.match(diagnostic,/schemaVersion=string:unexpected/);
+ assert.match(diagnostic,/identity=string:expected/);
+ assert.match(diagnostic,/continuation=object:expected/);
+ assert.match(diagnostic,/revision=string:unexpected/);
+ assert.match(diagnostic,/status=string:unexpected/);
+ assert.match(diagnostic,/attemptId=null:expected/);
+ assert.equal(diagnostic.includes(privateValue),false);
+ assert.equal(diagnostic.includes("extra"),false);
+ assert.equal(diagnostic.includes("secret"),false);
+ const f=fixture();f.j.api.get=async()=>decodeDeliveryProjection(malformed,{channel:"meta",method:"unexpected"});
+ assert.equal(await f.controller.deliver(input),"not_sent");
+ assert.equal(f.controller.record?.failureCode,"DELIVERY_PROJECTION_INVALID");
+ assert.equal(f.controller.record?.failureDiagnostic,diagnostic);
+ assert.equal(f.calls(),0);
+ assert.equal(decodeDelivery({...input,schemaVersion:2,attemptId:"attempt",status:"not_sent",failureDiagnostic:diagnostic})?.failureDiagnostic,undefined);
+});
+
+// Codex's live card omitted the null attemptId from the canonical metadata.
+test("initial delivery accepts host-elided null without inventing an attempt", async () => {
+ const f=fixture(); const read=f.j.api.get;
+ f.j.api.get=async identity=>{
+  const value=await read(identity);
+  const {attemptId,...wire}=value;
+  return decodeDeliveryProjection(attemptId===null ? wire : value);
+ };
+ assert.equal(await f.controller.deliver(input),"acknowledged");
+ assert.equal(f.calls(),1);
+ assert.equal(f.j.read().revision,2);
+ assert.equal(await f.controller.deliver(input),"acknowledged");
+ assert.equal(f.calls(),1);
+});
+test("host-elided attempt is normalized only for a pristine ready record", () => {
+ const {attemptId,...wire}=journal().read();
+ assert.equal(decodeDeliveryProjection(wire).attemptId,null);
+ assert.equal(Object.hasOwn(wire,"attemptId"),false,"normalization does not mutate host data");
+ for(const status of ["sending","not_sent","acknowledged","rejected","unknown"]) {
+  assert.throws(()=>decodeDeliveryProjection({...wire,status,revision:1}),DeliveryProjectionError);
+ }
+ assert.throws(()=>decodeDeliveryProjection({...wire,revision:1}),DeliveryProjectionError);
+ assert.throws(()=>decodeDeliveryProjection({...wire,attemptId:42}),DeliveryProjectionError);
+});
+
+test("reviewed Start delivery and recovery share commit-then-follow instructions", () => {
+ const ref="11111111-1111-4111-8111-111111111111";
+ const text=reviewedStartMessage(ref);
+ assert.equal(deliveryMessage({...journal().read(),identity:`start:${ref}`,continuation:{handoffRef:ref}}),text);
+ for(const required of ["loomex_run_start_handoff_get","loomex_run_get","already committed","timeoutSeconds 30","answerChannel","loomex_interaction_get","loomex_interaction_view","loomex_run_result","not the final response"]) assert.ok(text.includes(required),required);
+ const context=JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)![1]!);
+ assert.equal(context.handoffRef,ref);
+ assert.equal(context.runId,undefined,"a prompt cannot invent the not-yet-committed run ID");
 });

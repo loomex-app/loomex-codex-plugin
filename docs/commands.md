@@ -7,7 +7,7 @@ Loomex ships four focused skill entry points alongside natural-language access. 
 | Skill | Purpose |
 | --- | --- |
 | `loomex-connect` | Sign in and choose the organization used on this machine |
-| `loomex-browse` | Browse workflows; selected details provide run, edit, publish, and activate actions |
+| `loomex-browse` | Browse workflows; selected details provide run, edit, and publish actions |
 | `loomex-create` | Create a workflow from an idea; it also owns guided editing |
 | `loomex-runs` | Browse existing runs; selected details provide follow, questions, results, artifacts, cancel, and delete actions |
 

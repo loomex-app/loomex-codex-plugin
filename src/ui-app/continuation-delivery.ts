@@ -13,6 +13,8 @@ export interface ContinuationDeliveryRecord {
   attemptId: string;
   failureCode?: string;
   failureStage?: "reconcile" | "read" | "begin" | "send" | "settle";
+  /** Transient, value-free shape of a failed host projection. */
+  failureDiagnostic?: string;
 }
 export interface DeliveryProjection {
   schemaVersion: 2;
@@ -22,16 +24,54 @@ export interface DeliveryProjection {
   status: Exclude<DeliveryStatus, "unsupported">;
   attemptId: string | null;
 }
-export function decodeDeliveryProjection(value: unknown): DeliveryProjection {
+export interface DeliveryProjectionContext {
+  readonly channel: "meta" | "structuredContent" | "root" | "connection" | "unknown";
+  readonly method: "expected" | "unexpected" | "missing" | "unknown";
+}
+const deliveryStatuses = ["ready", "sending", "not_sent", "acknowledged", "rejected", "unknown"];
+function valueType(value: unknown, present: boolean): string {
+  return !present ? "missing" : value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+}
+function projectionDiagnostic(value: unknown, context: DeliveryProjectionContext): string {
+  const root = value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const item = (source: Record<string, unknown> | null, key: string, valid: (value: unknown) => boolean, label = key): string => {
+    const present = source !== null && Object.hasOwn(source, key);
+    const entry = present ? source[key] : undefined;
+    return `${label}=${valueType(entry, present)}:${present && valid(entry) ? "expected" : "unexpected"}`;
+  };
+  const fields = [
+    item(root, "schemaVersion", entry => entry === 2),
+    item(root, "identity", entry => typeof entry === "string" && entry.length > 0),
+    item(root, "continuation", entry => entry !== null && typeof entry === "object" && !Array.isArray(entry)),
+    item(root, "revision", entry => Number.isSafeInteger(entry) && typeof entry === "number" && entry >= 0),
+    item(root, "status", entry => typeof entry === "string" && deliveryStatuses.includes(entry)),
+    item(root, "attemptId", entry => entry === null || typeof entry === "string"),
+  ];
+  return `channel=${context.channel} · method=${context.method} · ${fields.join(" · ")}`;
+}
+export class DeliveryProjectionError extends UiTransportError {
+  readonly projectionDiagnostic: string;
+  constructor(value: unknown, context: DeliveryProjectionContext) {
+    super({code:"DELIVERY_PROJECTION_INVALID",message:"The saved continuation could not be verified."});
+    this.projectionDiagnostic = projectionDiagnostic(value, context);
+  }
+}
+export function decodeDeliveryProjection(value: unknown, context: DeliveryProjectionContext = {channel:"unknown",method:"unknown"}): DeliveryProjection {
   const v = value as Partial<DeliveryProjection> | null;
+  // The installed host can omit null-valued metadata properties. Only the
+  // initial, revision-zero ready record proves that no attempt exists. Keep
+  // all existing-attempt and ambiguous-outcome receipts strict; the runner
+  // still reserves the exact revision before any message can be sent.
+  const elidedInitialAttempt = v !== null && typeof v === "object" &&
+    !Object.hasOwn(v, "attemptId") && v.status === "ready" && v.revision === 0;
   if (!v || v.schemaVersion !== 2 || typeof v.identity !== "string" || !v.identity ||
       !Number.isSafeInteger(v.revision) || v.revision! < 0 || !v.status ||
-      !["ready", "sending", "not_sent", "acknowledged", "rejected", "unknown"].includes(v.status) ||
-      !(v.attemptId === null || typeof v.attemptId === "string") ||
+      !deliveryStatuses.includes(v.status) ||
+      !(elidedInitialAttempt || v.attemptId === null || typeof v.attemptId === "string") ||
       !v.continuation || typeof v.continuation !== "object" || Array.isArray(v.continuation)) {
-    throw new UiTransportError({code:"DELIVERY_PROJECTION_INVALID",message:"The saved continuation could not be verified."});
+    throw new DeliveryProjectionError(value, context);
   }
-  return v as DeliveryProjection;
+  return elidedInitialAttempt ? { ...v, attemptId: null } as DeliveryProjection : v as DeliveryProjection;
 }
 export interface DeliveryJournal {
   get(identity: string): Promise<DeliveryProjection>;
@@ -59,18 +99,23 @@ export function decodeDelivery(value: unknown): ContinuationDeliveryRecord | und
     const identity = r.purpose === "reviewed_start" ? `start:${c.handoffRef}` : r.purpose === "long_answer" ? `question:${c.requestId}` : `follow:${c.runId}:${accepted?.requestId || c.trigger}`;
     if (identity !== r.identity) return;
   } catch { return; }
-  return { ...r, status: r.status === "sending" ? "unknown" : r.status } as ContinuationDeliveryRecord;
+  const {failureDiagnostic: _transient, ...restored} = r;
+  return { ...restored, status: r.status === "sending" ? "unknown" : r.status } as ContinuationDeliveryRecord;
 }
 export function continuationMessage(instruction: string, context: JsonObject): string {
   return `${instruction}\n\nLoomex continuation context:\n\n\`\`\`json\n${JSON.stringify(context)}\n\`\`\``;
+}
+/** One instruction for automatic delivery and its visible recovery copy. */
+export function reviewedStartMessage(ref: string): string {
+  return continuationMessage(`$loomex:loomex-runs reviewed-handoff ${ref}\n\nRead loomex_run_start_handoff_get for this exact reference. Commit it only if the runner reports approved. Never prepare or approve a replacement. After a successful commit, use the exact run ID returned by the runner and immediately call loomex_run_get. If the handoff is already committed, use its existing run ID without committing again. Continue following that same run using its authoritative nextAction, draining event pages and serial loomex_run_wait calls with timeoutSeconds 30 while active. A queued or running commit receipt is not the final response. For a pending question, follow its answerChannel: chat uses loomex_interaction_get and asks the verified question directly; ui uses loomex_interaction_view once. At terminal state retrieve the complete loomex_run_result. Stop only for verified human input, a complete terminal result, or an actionable observation failure.`,
+    {schema:"loomex/run-start-handoff/v2",intent:"commit_reviewed_handoff",handoffRef:ref,state:"requires_fresh_read"});
 }
 export function deliveryMessage(projection: DeliveryProjection): string {
   const c = projection.continuation;
   if (projection.identity.startsWith("start:")) {
     const ref = projection.identity.slice(6);
     if (c.handoffRef !== ref) throw new Error("DELIVERY_IDENTITY_MISMATCH");
-    return continuationMessage(`$loomex:loomex-runs reviewed-handoff ${ref}\n\nRead loomex_run_start_handoff_get for this exact reference. Commit it only if the runner reports approved. Never prepare or approve a replacement.`,
-      {schema:"loomex/run-start-handoff/v2",intent:"commit_reviewed_handoff",handoffRef:ref,state:"requires_fresh_read"});
+    return reviewedStartMessage(ref);
   }
   if (projection.identity.startsWith("question:")) {
     const id=projection.identity.slice(9);
@@ -96,6 +141,9 @@ function failureCode(error: unknown, fallback: string): string {
   const code = error instanceof UiResultDecodeError ? error.diagnostic.code : error instanceof UiTransportError ? error.code : undefined;
   if (code && /^-?\d{1,6}$/.test(code)) return `HOST_RPC_${code.startsWith("-") ? "MINUS_" + code.slice(1) : code}`;
   return code && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : fallback;
+}
+function retainProjectionDiagnostic(record: ContinuationDeliveryRecord, error: unknown): void {
+  if (error instanceof DeliveryProjectionError) record.failureDiagnostic = error.projectionDiagnostic;
 }
 /** Domain acceptance, durable delivery attempts and disposable card state are independent. */
 export class ContinuationDeliveryController {
@@ -137,7 +185,9 @@ export class ContinuationDeliveryController {
       this.record = {...input, text:deliveryMessage(saved), schemaVersion:2, attemptId:saved.attemptId || this.host.uuid(), status:projectedStatus(saved)};
     } catch (error) {
       if (generation !== this.#generation || this.#disposed || scope !== this.host.scope?.()) return;
-      this.record = {...input, schemaVersion:2, attemptId:this.host.uuid(), status:"unknown", failureStage:"reconcile", failureCode:failureCode(error,"DELIVERY_RECONCILIATION_UNAVAILABLE")};
+      const record: ContinuationDeliveryRecord = {...input, schemaVersion:2, attemptId:this.host.uuid(), status:"unknown", failureStage:"reconcile", failureCode:failureCode(error,"DELIVERY_RECONCILIATION_UNAVAILABLE")};
+      retainProjectionDiagnostic(record, error);
+      this.record = record;
     }
     this.host.changed?.();
   }
@@ -198,6 +248,7 @@ export class ContinuationDeliveryController {
       record.status = dispatched || beginning ? "unknown" : "not_sent";
       record.failureStage = beginning ? "begin" : "read";
       record.failureCode = failureCode(error, beginning ? "DELIVERY_BEGIN_UNCONFIRMED" : "DELIVERY_PREPARATION_UNAVAILABLE");
+      retainProjectionDiagnostic(record, error);
       return record.status;
     } finally {
       this.#active = false;
