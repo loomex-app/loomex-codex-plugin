@@ -1,5 +1,5 @@
 import type {ViewRestorationPhase} from "./persistence.js";
-import { ACTIONS, createIcon, type ActionId } from './shell.js';
+import { ACTIONS, createIcon, type ActionId, type PagePresentation, type PageAction } from './shell.js';
 import type { ActionIcon } from './contracts.js';
 import { setRestoring } from './lifecycle.js';
 import { applyButtonStyle as applySharedButtonStyle, applyStatusBadgeStyle, configureUiElementStyles, createElement as element } from './components.js';
@@ -12,6 +12,7 @@ export interface ShellServices {
  elements:{title:HTMLElement;context:HTMLElement;summary:HTMLElement;form:HTMLFormElement;headerLeading:HTMLElement;headerContextActions:HTMLElement;headerStage:HTMLElement;headerStatus:HTMLElement;primary:HTMLButtonElement;secondary:HTMLButtonElement};
  snapshot():ChromeProjection;
  statusClasses:Readonly<Record<string,string>>;
+ onActionError?(error: unknown): void;
 }
 type Control=HTMLButtonElement|HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement;
 const isControl=(value:Element):value is Control=>value instanceof HTMLButtonElement||value instanceof HTMLInputElement||value instanceof HTMLTextAreaElement||value instanceof HTMLSelectElement;
@@ -28,6 +29,11 @@ export function restorationSurface(phase:ViewRestorationPhase|undefined,hasSaved
  if(!phase&&legacyRestoring)return "skeleton";
  return "content";
 }
+/** Presentation intent never substitutes for the lifecycle's authority gate. */
+export function pageActionEnabled(action: PageAction, projection: Pick<ChromeProjection, "authorityStale" | "reentry" | "mutationReady">, pending: boolean): boolean {
+  if (action.disabled || pending) return false;
+  return action.intent === "navigate" || Boolean(projection.mutationReady && !projection.authorityStale && !projection.reentry);
+}
 export function setupOwnsActivity(tool:string|undefined, automaticSetup:boolean):boolean {
  return automaticSetup && (tool === "loomex_workspace_grant" || tool === "loomex_run_prepare");
 }
@@ -36,6 +42,9 @@ export function createRuntimeShell(host:ShellServices) {
  const STATUS_BADGE_CLASS=host.statusClasses;
  configureUiElementStyles(STATUS_BADGE_CLASS);
  const activeRequests=new Map<number,string>();
+ let pagePresentation: PagePresentation = {};
+ const contextualButtons = new Map<HTMLButtonElement, PageAction>();
+ let presentationGeneration = 0;
  const icon=(name:ActionIcon)=>createIcon(name);
  const actionIcon=(id:ActionId):ActionIcon=>ACTIONS[id].icon;
   const applyButtonStyle = applySharedButtonStyle;
@@ -137,10 +146,47 @@ export function createRuntimeShell(host:ShellServices) {
     }
   }
 
-  /** Page controllers supply only their local controls; the shell owns placement and cleanup. */
-  function setContextualHeader(leading: readonly Node[] = [], actions: readonly Node[] = []): void {
-    headerLeading.replaceChildren(...leading);
+  /** Domain controllers declare intent; placement and gating belong to the shell. */
+  function setPagePresentation(presentation: PagePresentation = {}): void {
+    const focused = document.activeElement instanceof HTMLElement && (headerLeading.contains(document.activeElement) || headerContextActions.contains(document.activeElement))
+      ? document.activeElement.dataset.pageAction : undefined;
+    const overflowOpen = headerContextActions.querySelector<HTMLDetailsElement>("details")?.open === true;
+    pagePresentation = presentation;
+    const generation = ++presentationGeneration;
+    contextualButtons.clear();
+    const buttonFor = (action: PageAction): HTMLButtonElement => {
+      const button = element("button", { type: "button", className: "secondary" });
+      setAction(button, action.label, action.id);
+      button.dataset.pageAction = action.id;
+      contextualButtons.set(button, action);
+      button.addEventListener("click", () => {
+        if (button.disabled || generation !== presentationGeneration) return;
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        void Promise.resolve().then(action.execute).catch(error => host.onActionError?.(error)).finally(() => {
+          if (generation !== presentationGeneration) return;
+          button.removeAttribute("aria-busy");
+          syncChrome();
+        });
+      });
+      return button;
+    };
+    headerLeading.replaceChildren(...(presentation.back ? [buttonFor(presentation.back)] : []));
+    const actions: Node[] = (presentation.actions ?? []).map(buttonFor);
+    if (presentation.overflow?.length) {
+      const overflow = element("details", { className: "ui-disclosure ui-page-overflow" });
+      const toggle = element("summary", { "aria-label": "More workflow actions" }, "More");
+      const body = element("div", { className: "ui-stack" });
+      body.append(...presentation.overflow.map(buttonFor));
+      overflow.open = overflowOpen;
+      overflow.append(toggle, body); actions.push(overflow);
+    }
     headerContextActions.replaceChildren(...actions);
+    syncChrome();
+    if (focused) {
+      const replacement = [...contextualButtons.keys()].find(button => button.dataset.pageAction === focused);
+      if (replacement && !replacement.disabled) replacement.focus({ preventScroll: true });
+    }
   }
 
   function syncChrome() {
@@ -148,7 +194,10 @@ export function createRuntimeShell(host:ShellServices) {
     const projection=host.snapshot();
     const main=document.querySelector("main");
     if(main && projection.restorationPhase)main.dataset.lifecycle=projection.restorationPhase;
-    title.textContent=projection.title;
+    title.textContent=pagePresentation.title || projection.title;
+    for (const [button, action] of contextualButtons) {
+      button.disabled = !pageActionEnabled(action, projection, button.getAttribute("aria-busy") === "true");
+    }
     const stageLabel=projection.stageLabel;
     headerStage.hidden = !stageLabel;
     headerStage.textContent = stageLabel || "";
@@ -186,5 +235,5 @@ export function createRuntimeShell(host:ShellServices) {
   }
 
 
- return {activeRequests,icon,actionIcon,applyButtonStyle,applyBadgeStyle,setAction,setMutationAction,setInteractionAction,setAnswerAction,setContextualHeader,updateActivity,updateClock,syncRestorationVisibility,syncChrome,dispose(){activeRequests.clear();setContextualHeader();}};
+ return {activeRequests,icon,actionIcon,applyButtonStyle,applyBadgeStyle,setAction,setMutationAction,setInteractionAction,setAnswerAction,setPagePresentation,updateActivity,updateClock,syncRestorationVisibility,syncChrome,dispose(){activeRequests.clear();setPagePresentation();}};
 }

@@ -200,10 +200,14 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(common, /remote or cloud task/i);
     assert.match(common, /never derive a path from the plugin process working directory/i);
 
-    for (const skill of ["loomex-browse", "loomex-create"]) {
+    for (const skill of ["loomex-browse"]) {
       const source = await readFile(join(skillsRoot, skill, "SKILL.md"), "utf8");
       assert.match(source, /local Codex task cwd/, `${skill} must use the active local task workspace when available`);
     }
+
+    const creation = await readFile(join(skillsRoot, "loomex-create/SKILL.md"), "utf8");
+    assert.match(creation, /active chat/);
+    assert.doesNotMatch(creation, /defaulting builder preparation/);
 
     const authoring = await readFile(join(skillsRoot, "loomex-create/references/authoring.md"), "utf8");
     assert.match(authoring, /Do not add a project-directory input or `settings\.workspaceInputField`/);

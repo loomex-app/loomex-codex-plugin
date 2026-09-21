@@ -263,6 +263,7 @@ const primarySchemas = {
       name: z.string(),
       slug: z.string(),
       activeVersionId: NullableString.optional(),
+      draft: ObjectOrNull.optional(),
       details: Details,
     })
     .strict(),
@@ -273,6 +274,7 @@ const primarySchemas = {
     .object({
       valid: z.boolean(),
       errors: z.array(JsonValueSchema),
+      issues: z.array(JsonObject).optional(),
       workflow: JsonObject,
       details: Details,
     })
@@ -286,6 +288,7 @@ const primarySchemas = {
   "builder.catalog": z
     .object({
       nodeTypes: Objects,
+      authoringContract: JsonObject,
       executionPolicies: z.array(z.string()),
       limits: JsonObject,
       details: Details,
@@ -295,6 +298,7 @@ const primarySchemas = {
     .object({
       valid: z.boolean(),
       errors: z.array(JsonValueSchema),
+      issues: z.array(JsonObject).optional(),
       workflow: JsonObject,
       details: Details,
     })

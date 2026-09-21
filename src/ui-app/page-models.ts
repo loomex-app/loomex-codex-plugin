@@ -68,6 +68,8 @@ export interface WorkflowSettings extends MutableJson {
 }
 
 export interface WorkflowVersion extends MutableJson {
+  status?: string;
+  isActive?: boolean;
   id?: string;
   workflowId?: string;
   version?: number;

@@ -1,6 +1,6 @@
 import type { JsonObject } from "./contracts.js";
 import type { HumanRequest, InputSpec, JsonSchema } from "./page-models.js";
-import type { ActionId } from "./shell.js";
+import type { ActionId, PagePresentation } from "./shell.js";
 
 export interface AuthoringResponseOperation {
   readonly name: "loomex_builder_respond";
@@ -24,6 +24,8 @@ export interface AuthoringControllerServices {
   requestSchemaDigest(request: HumanRequest): string | undefined;
   pagedResponse(output: JsonObject): unknown;
   renderAuthoringWorkflow(output: JsonObject): void;
+  setPagePresentation?(presentation?: PagePresentation): void;
+  openWorkflow?(workflowId: string): Promise<void>;
   renderFailure(result: unknown): void;
   renderHumanPresentation(request: HumanRequest, spec: InputSpec | null | undefined): void;
   typedForm(schema: JsonSchema | null | undefined, initial: unknown, spec?: InputSpec | null, request?: HumanRequest): boolean;
@@ -69,6 +71,37 @@ function validRequest(request: HumanRequest | undefined): request is HumanReques
   return true;
 }
 
+function copy(value: unknown, limit = 180): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, limit) : undefined;
+}
+
+function reviewTitle(output: JsonObject): string {
+  const session = record(output.builderSession) ?? {};
+  const projection = record(output.editResult) ?? output;
+  const baseline = record(projection.activeBaseline) ?? record(session.activeBaseline) ?? {};
+  const target = record(projection.targetWorkflow) ?? {};
+  const name = copy(target.name) ?? copy(baseline.workflowName);
+  const editing = session.mode === "edit" || Boolean(name);
+  return name ? `${editing ? "Edit" : "Create"} · ${name}` : editing ? "Edit workflow" : "Create workflow";
+}
+
+/** Existing execution-backed sessions remain inspectable; never expose wire statuses as copy. */
+function authoringProgress(output: JsonObject): string {
+  const session = record(output.builderSession) ?? {};
+  const phase = output.phase ?? session.phase ?? output.status ?? session.status;
+  switch (phase) {
+    case "starting": return "Preparing the workflow draft…";
+    case "generating":
+    case "awaiting_agent":
+    case "running": return "The workflow draft is being prepared.";
+    case "ready_to_finalize": return "The proposal is ready for review in the conversation.";
+    case "completed": return "Authoring is complete.";
+    case "failed": return "Authoring could not finish. Review the failure in the conversation.";
+    case "canceled": return "Authoring was canceled.";
+    default: return "Refresh to check the authoring session.";
+  }
+}
+
 export function createAuthoringController(host: AuthoringControllerServices): AuthoringController {
   const { context, summary, form, primary, refresh: refreshButton } = host.elements;
 
@@ -82,6 +115,22 @@ export function createAuthoringController(host: AuthoringControllerServices): Au
   function setAnswerAction(intent: "review" | "submit", label: string): void {
     host.setAction(primary, label, intent);
     primary.dataset.answerIntent = intent;
+  }
+
+  function presentPage(output: JsonObject): void {
+    const projection = record(output.editResult) ?? output;
+    const targetId = record(projection.targetWorkflow)?.id ?? record(output.builderSession)?.targetWorkflowId;
+    host.setPagePresentation?.({ title: reviewTitle(output), ...(typeof targetId === "string" && validSessionId(targetId) && host.openWorkflow ? {
+      actions: [{ id: "open", label: "Open in Loomex", intent: "navigate", execute: () => host.openWorkflow!(targetId) }],
+    } : {}) });
+  }
+
+  function renderReview(output: JsonObject): void {
+    presentPage(output);
+    context.hidden = false;
+    context.className = "ui-stack";
+    context.setAttribute("aria-label", "Authoring summary");
+    context.replaceChildren(element("p", "ui-caption", "This is a saved authoring session. Continue in the conversation, or open Loomex for detailed editing."));
   }
 
   function failClosed(message: string): void {
@@ -129,6 +178,7 @@ export function createAuthoringController(host: AuthoringControllerServices): Au
     const schema = request?.responseSchema || request?.outputSchema;
     if (sessionId && request && (schema || request.inputSpec)) {
       host.renderHumanPresentation(request, request.inputSpec);
+      presentPage(output);
       const retained = host.currentResponseOperation();
       const initial = retained?.arguments.sessionId === sessionId && retained.arguments.response !== undefined
         ? retained.arguments.response
@@ -146,17 +196,12 @@ export function createAuthoringController(host: AuthoringControllerServices): Au
       }
       host.hidePersistentBatchReview();
     } else if (sessionId) {
-      context.hidden = false;
-      context.className = "ui-stack";
-      const hero = element("div", "ui-hero", "");
-      hero.append(
-        element("h2", "", "Authoring session"),
-        element("p", "ui-meta", typeof output.status === "string" && output.status.trim().length <= 120 ? output.status.trim() : "Ready"),
-      );
-      context.replaceChildren(hero);
+      renderReview(output);
       summary.classList.remove("error");
       summary.setAttribute("role", "status");
-      summary.textContent = "The authoring session is ready. Refresh to load its next question or completion state.";
+      summary.textContent = authoringProgress(output);
+      form.hidden = true;
+      primary.hidden = true;
       refreshButton.hidden = false;
       host.setAction(refreshButton, "Refresh authoring", "refresh");
       refreshButton.disabled = !host.connected();

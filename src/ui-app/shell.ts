@@ -1,3 +1,4 @@
+import { pageDefinitionFor } from "./page-definitions.js";
 import type { ActionIcon, ActionMetadata, UiMode } from "./contracts.js";
 
 const ICONS: Record<ActionIcon, string> = {
@@ -12,14 +13,29 @@ const ICONS: Record<ActionIcon, string> = {
   shield: "m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z m-4 9 3 3 5-6", stop: "M6 6h12v12H6Z",
 };
 
-export type ActionId = "refresh" | "back" | "close" | "edit" | "publish" | "expand" | "start" | "chat" | "results" | "review" | "submit" | "approve" | "reject" | "cancel" | "clear" | "search" | "connection" | "organizations" | "logout" | "grant" | "copy" | "open" | "next";
+export interface PageAction {
+  readonly id: ActionId;
+  readonly label: string;
+  readonly intent: "navigate" | "review" | "mutation";
+  readonly disabled?: boolean;
+  readonly execute: () => void | Promise<void>;
+}
+export interface PagePresentation {
+  readonly title?: string;
+  readonly back?: PageAction;
+  readonly actions?: readonly PageAction[];
+  readonly overflow?: readonly PageAction[];
+}
+
+export type ActionId = "use-version" | "refresh" | "back" | "close" | "edit" | "publish" | "expand" | "start" | "chat" | "results" | "review" | "submit" | "approve" | "reject" | "cancel" | "clear" | "search" | "connection" | "organizations" | "logout" | "grant" | "copy" | "open" | "next";
 
 /** Action identity is independent of presentation copy or localization. */
 export const ACTIONS: Readonly<Record<ActionId, ActionMetadata>> = Object.freeze({
+  "use-version": { icon: "check", labelVisibility: "text" },
   refresh: { icon: "refresh" }, back: { icon: "back" }, close: { icon: "close" }, edit: { icon: "edit" }, publish: { icon: "publish", labelVisibility: "text" }, expand: { icon: "expand" },
   start: { icon: "play", labelVisibility: "text" }, chat: { icon: "message" }, results: { icon: "eye" },
   review: { icon: "eye", labelVisibility: "text" }, submit: { icon: "check", labelVisibility: "text" },
-  approve: { icon: "check" }, reject: { icon: "close" }, cancel: { icon: "stop" }, clear: { icon: "close" },
+  approve: { icon: "check", labelVisibility: "text" }, reject: { icon: "close", labelVisibility: "text" }, cancel: { icon: "stop" }, clear: { icon: "close" },
   search: { icon: "search" }, connection: { icon: "connection" }, organizations: { icon: "organization" },
   logout: { icon: "logout" }, grant: { icon: "shield" }, copy: { icon: "copy" }, open: { icon: "external" }, next: { icon: "next" },
 });
@@ -32,5 +48,5 @@ export function createIcon(name: ActionIcon): SVGSVGElement {
 }
 
 export function initialTitle(mode: UiMode): string {
-  return ({ browser: "Browse workflows", runs: "Workflow runs", authoring: "Authoring review", prepare: "Review run", monitor: "Run monitor", interaction: "Your response", connection: "Connection", organizations: "Organizations" } as const)[mode];
+  return pageDefinitionFor(mode).title;
 }

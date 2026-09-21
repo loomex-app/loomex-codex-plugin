@@ -1,13 +1,13 @@
 {
   "schema": "loomex/frontend-design-system/v3",
-  "consumerSourcesSha256": "c811615237a00237823abe63e5da4ab5f4bd9d9d5a66f9ac525c55657864867b",
-  "frontendRevision": "8d88a4a74989165c38f3c2cfa34828dc609d2566",
+  "consumerSourcesSha256": "40830be5c35a57b48deeec270bb5d2a1ba4b916ebfe1e7ef662b4f3fc606d34b",
+  "frontendRevision": "4f4211c9cd7d9ea173475967cdee244709b0e536",
   "compiler": {
     "name": "@tailwindcss/node",
     "version": "4.3.0"
   },
   "sources": {
-    "packages/ui/src/styles.css": "37d09d6cb51c5a98aa8c108456de116b1188c46430de3973e14e3196ed50524f",
+    "packages/ui/src/styles.css": "b58f4914ea6b941703c1fac9ab7a14252edc2f2486cc4bf1a48edaad1002c3c3",
     "packages/ui/src/components/Button.tsx": "e1803c77c988e7bea1c4158c0089a36486e62c859df1dd6640d5cd992b6e07d2",
     "packages/ui/src/components/StatusBadge.tsx": "8910209413318bcca0e9719fb1d32f85410ff992a8530c845f0f6202ee1c3f5f",
     "packages/ui/src/components/forms.tsx": "5961f75534a2c116dae2b5c959ff20ac215bd9c959a775c65b6f2269e3d53a32",
@@ -48,6 +48,6 @@
     "low": "bg-white/5 text-gray-500 border-white/10",
     "unknown": "bg-white/5 text-gray-500 border-white/10"
   },
-  "candidatesSha256": "46c30359f7d972cebc2d5366166e8242f80395ad296f86439ac08efca24a74b3",
-  "cssSha256": "27c67f620f2db6e5873d8ce5d5ed82df95d0ed3bd8ea4de1f207ae56dcad87b4"
+  "candidatesSha256": "4bb89b3714882fc52cce37fcbd170322da2858ad8d5205126ec2c3b95c82f341",
+  "cssSha256": "d4a42756d3662e96499c4e3301f1872e0ea0717cd9ec222f8e7702f34a926e6d"
 }

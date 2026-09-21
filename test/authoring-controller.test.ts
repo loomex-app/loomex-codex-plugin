@@ -16,7 +16,7 @@ window.makeAuthoring = (options = {}) => {
     context: document.getElementById("context"), summary: document.getElementById("summary"),
     form: document.getElementById("form"), primary: document.getElementById("primary"), refresh: document.getElementById("refresh"),
   };
-  const state = { actions: [], mutations: [], toolCalls: [], presentations: 0, workflowRenders: 0, failures: 0, drafts: 0, reconciles: 0, reviews: 0, restored: 0, errors: [], typedInitial: null, synced: 0 };
+  const state = { actions: [], mutations: [], toolCalls: [], presentations: 0, workflowRenders: 0, failures: 0, drafts: 0, reconciles: 0, reviews: 0, restored: 0, errors: [], typedInitial: null, synced: 0, pageTitle: "" };
   const controller = AuthoringControllerModule.createAuthoringController({
     elements,
     connected: () => options.connected !== false,
@@ -27,6 +27,7 @@ window.makeAuthoring = (options = {}) => {
     requestSchemaDigest: request => typeof request.schemaDigest === "string" && /^[a-f0-9]{64}$/.test(request.schemaDigest) ? request.schemaDigest : undefined,
     pagedResponse: output => typeof output.responseRef === "string" ? { responseRef: output.responseRef } : undefined,
     renderAuthoringWorkflow: () => { state.workflowRenders += 1; },
+    setPagePresentation: presentation => { state.pageTitle = presentation?.title || ""; },
     renderFailure: () => { state.failures += 1; },
     renderHumanPresentation: () => { state.presentations += 1; },
     typedForm: (_schema, initial) => { state.typedInitial = initial; elements.form.dataset.formKind = options.formKind || "questions"; return options.formReady !== false; },
@@ -100,14 +101,27 @@ test("renders idle sessions and workflow completion projections", async (context
   const result = await page!.evaluate(`(() => {
     const fixture = window.makeAuthoring();
     fixture.controller.render(false, { builderSession: { id: "${sessionId}" }, status: "waiting" });
-    const idle = { summary: fixture.elements.summary.textContent, heading: fixture.elements.context.querySelector("h2").textContent, refreshId: fixture.elements.refresh.dataset.actionId };
+    const idle = { summary: fixture.elements.summary.textContent, heading: fixture.state.pageTitle, refreshId: fixture.elements.refresh.dataset.actionId };
     fixture.controller.render(false, { workflow: { id: "done" } });
     return { idle, workflowRenders: fixture.state.workflowRenders };
   })()`);
   assert.deepEqual(result, {
-    idle: { summary: "The authoring session is ready. Refresh to load its next question or completion state.", heading: "Authoring session", refreshId: "refresh" },
+    idle: { summary: "Refresh to check the authoring session.", heading: "Create workflow", refreshId: "refresh" },
     workflowRenders: 1,
   });
+});
+
+test("existing sessions present authoritative phases without raw waiting statuses", async (context) => {
+  if (!requireBrowser(context)) return;
+  await resetPage();
+  const result = await page!.evaluate(`(() => {
+    const fixture = window.makeAuthoring();
+    fixture.controller.render(false, { builderSession: { id: "${sessionId}", status: "awaiting_agent", phase: "ready_to_finalize" } });
+    const ready = fixture.elements.summary.textContent;
+    fixture.controller.render(false, { builderSession: { id: "${sessionId}", status: "awaiting_agent" } });
+    return { ready, waiting: fixture.elements.summary.textContent, hidden: fixture.elements.primary.hidden, calls: fixture.state.toolCalls };
+  })()`);
+  assert.deepEqual(result, { ready: "The proposal is ready for review in the conversation.", waiting: "The workflow draft is being prepared.", hidden: true, calls: [] });
 });
 
 test("fails closed on malformed authoring request fields", async (context) => {
@@ -166,4 +180,17 @@ test("routes review, submission, retry, and draft restoration within the builder
     name: "loomex_builder_respond", slot: `builder:respond:${sessionId}`, args: { sessionId, response: { value: "Ada" } },
   }]);
   assert.deepEqual(result.retryMutations, [{ name: "loomex_builder_respond", slot: `builder:respond:${sessionId}`, args: {} }]);
+});
+
+test("guided authoring stays compact and retains a contextual title", async (context) => {
+  if (!requireBrowser(context)) return;
+  await resetPage();
+  const result = await page!.evaluate(({ sessionId }) => {
+    const fixture = (window as any).makeAuthoring();
+    fixture.controller.render(false, { builderSession: { id: sessionId, mode: "edit" }, editResult: { targetWorkflow: { name: "Expense tracker" }, candidate: { workflow: { nodes: [{ config: { prompt: "PRIVATE LARGE PROMPT" } }] } } } });
+    return { title: fixture.state.pageTitle, text: fixture.elements.context.textContent };
+  }, { sessionId });
+  assert.equal(result.title, "Edit · Expense tracker");
+  assert.match(result.text, /open Loomex for detailed editing/);
+  assert.doesNotMatch(result.text, /PRIVATE LARGE PROMPT|Comparison unavailable|Added nodes/);
 });

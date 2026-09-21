@@ -263,6 +263,12 @@ export function createRunPresentation(host: RunPresentationServices) {
     const path = typeof binding.workspacePath === "string" ? binding.workspacePath : "";
     workspace.append(element("p", { className: "ui-value" }, path.split("/").filter(Boolean).at(-1) || "Workspace unavailable"));
     workspace.append(element("p", { className: "workspace-path" }, path));
+    if (binding.executionPolicy === "host_user/v1") {
+      workspace.append(element("p", { className: "ui-caption" }, "Runs as your macOS user in this workspace."));
+      const authority = element("details", { className: "ui-disclosure" });
+      authority.append(element("summary", {}, "Execution access"), element("p", { className: "ui-caption" }, "After your review, configured commands run with your user permissions. This is not a sandbox; commands can access other files and services your user can access."));
+      workspace.append(authority);
+    }
     grid.append(workspace);
     const providers = element("section", { className: "ui-card", "aria-label": "AI providers" });
     providers.append(element("h3", { className: "ui-label" }, "AI providers"));
@@ -294,11 +300,6 @@ export function createRunPresentation(host: RunPresentationServices) {
       const inputs = element("section", { className: "ui-section", "aria-label": "Run inputs" });
       inputs.append(element("h3", { className: "ui-label" }, "Run inputs"), reviewValue(binding.inputs));
       review.append(inputs);
-    }
-    if (binding.authoring && Object.keys(binding.authoring).length) {
-      const authoring = element("section", { className: "ui-section", "aria-label": "Authoring request" });
-      authoring.append(element("h3", { className: "ui-label" }, "Authoring request"), reviewValue(binding.authoring));
-      review.append(authoring);
     }
     context.replaceChildren(review);
     context.hidden = false;

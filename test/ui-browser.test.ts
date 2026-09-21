@@ -3196,7 +3196,7 @@ test("all five views share design tokens, responsive components, focus states an
       const expectedHeading = mode === "browser" ? "Browse workflows" : mode === "prepare" ? "Idea to Implementation" : mode === "monitor" ? "Idea to Implementation" : "What would you like to build?";
       await app.getByRole("heading", { name: expectedHeading, exact: true }).waitFor();
       assert.equal(await app.locator(".app-header, .app-body, .app-footer").count(), 3);
-      assert.equal(await app.locator(".app-header h1").textContent(), mode === "browser" ? "Browse workflows" : mode === "prepare" ? "Review run" : mode === "monitor" ? "Run monitor" : mode === "authoring" ? "Authoring review" : "Your response");
+      assert.equal(await app.locator(".app-header h1").textContent(), mode === "browser" ? "Browse workflows" : mode === "prepare" ? "Review run" : mode === "monitor" ? "Run monitor" : mode === "authoring" ? "Create workflow" : "Your response");
       assert.equal(await app.locator(".app-header #connection").textContent(), "Connected");
       assert.equal(await app.locator(".app-mark, #view-label").count(), 0);
       if (mode === "authoring" || mode === "interaction") await app.locator('fieldset input[type="text"]').waitFor();
@@ -3383,9 +3383,9 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   await app.getByRole("button", { name: /^View:/ }).click();
   await app.getByRole("heading", { name: "Idea", exact: true }).waitFor();
   await app.getByText("Version 5", { exact: false }).waitFor();
-  await app.getByText("1 input", { exact: true }).waitFor();
-  await app.getByText("Local execution", { exact: true }).waitFor();
-  await app.locator('section[aria-label="Workflow graph"]').getByRole("button", { name: "Expand workflow graph", exact: true }).waitFor();
+  await app.getByText(/^1 input ·/).waitFor();
+  assert.equal(await app.getByText("Local execution", { exact: true }).count(), 0, "execution authority belongs to run review");
+  assert.equal(await app.locator('section[aria-label="Workflow graph"]').count(), 0);
   const detailText = await app.locator("body").innerText();
   assert.doesNotMatch(detailText, /obsolete|staleProjection|ignoredFallback|7f57e77b|Obsolete active step|Stale descriptor/);
   assert.doesNotMatch(detailText, /Runs on this Mac with your user permissions after review/);
@@ -3395,7 +3395,7 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
     workspaceGrant,
     { structuredContent: { ok: true, data: runPrepared }, _meta: { "loomex/preparationReview": runPresentation } },
   ]; }, { runSetup, runSetupSession, workspaceGrant, runPrepared, runPresentation });
-  await app.getByRole("button", { name: /^Prepare run/ }).click();
+  await app.getByRole("button", { name: /^Run$/ }).click();
   await app.getByRole("heading", { name: "Idea", exact: true }).waitFor();
   await app.getByRole("button", { name: "Start run", exact: true }).waitFor().catch(async (error: unknown) => {
     const diagnostics = await page.evaluate(() => ({ body: document.getElementById("app")?.contentDocument?.body?.innerText,
@@ -3459,7 +3459,7 @@ test("workflow browser searches, pages, reviews and hands off preparation withou
   await page.evaluate(() => { window.__workflowResponses = [{ isError: true, structuredContent: { ok: false } }]; });
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
   await app.locator("#summary.error").waitFor();
-  assert.equal(await app.getByRole("button", { name: /^Prepare run/ }).count(), 0, "the list must not retain a workflow-detail action");
+  assert.equal(await app.getByRole("button", { name: /^Run$/ }).count(), 0, "the list must not retain a workflow-detail action");
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
   await app.locator("#summary.error").waitFor({ state: "hidden" });
   const directory = process.env.LOOMEX_UI_SCREENSHOT_DIR;
@@ -3697,13 +3697,13 @@ test("authoring workflow detail matches the browser read view and only hands pre
   const app = await mountApp(page, "authoring", detail, false, false, null, false, { "loomex/taskWorkspace": { taskContext } });
   await app.getByRole("heading", { name: "Future v5", exact: true }).waitFor();
   assert.equal(await app.locator(".app-header h1").textContent(), "Future v5");
-  assert.equal(await app.getByRole("button", { name: "Edit workflow", exact: true }).count(), 1);
-  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).count(), 1);
+  assert.equal(await app.getByRole("button", { name: "Open in Loomex", exact: true }).count(), 1);
+  assert.equal(await app.getByRole("button", { name: "Run", exact: true }).count(), 1);
   assert.equal(await app.getByRole("button", { name: "Activate", exact: true }).count(), 0);
-  await app.getByText("Local execution", { exact: true }).waitFor();
-  await app.getByText("1 input", { exact: true }).waitFor();
-  await app.locator('section[aria-label="AI"]').getByText("AI", { exact: true }).waitFor();
-  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).evaluate((button: any) => button.getBoundingClientRect().height >= 36), true);
+  assert.equal(await app.getByText("Local execution", { exact: true }).count(), 0, "execution authority belongs to run review");
+  await app.getByText(/^1 input ·/).waitFor();
+  await app.getByText(/1 AI configuration/).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Run", exact: true }).evaluate((button: any) => button.getBoundingClientRect().height >= 36), true);
   assert.equal(await app.locator("body").evaluate((body: any) => body.scrollWidth <= body.clientWidth), true);
   await captureRequestedScreenshots(page, "workflow-detail");
 
@@ -3722,7 +3722,7 @@ test("authoring workflow detail matches the browser read view and only hands pre
   await waitForCallCount(page, 2);
   await app.locator("#summary.error").waitFor();
   assert.equal(await app.locator("#context").getAttribute("aria-busy"), "false");
-  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).isDisabled(), true);
+  assert.equal(await app.getByRole("button", { name: "Run", exact: true }).isDisabled(), true);
 
   await page.evaluate((data: any) => {
     window.__workflowDelayMs = 0;
@@ -3731,7 +3731,7 @@ test("authoring workflow detail matches the browser read view and only hands pre
   await app.getByRole("button", { name: "Refresh workflow", exact: true }).click();
   await waitForCallCount(page, 3);
   await app.locator("#summary.error").waitFor({ state: "hidden" });
-  assert.equal(await app.getByRole("button", { name: "Prepare run", exact: true }).isEnabled(), true);
+  assert.equal(await app.getByRole("button", { name: "Run", exact: true }).isEnabled(), true);
   assert.deepEqual((await page.evaluate(() => window.__loomexCalls))[2], { name: "loomex_workflow_get", arguments: { workflowId: id, version: "5" } });
 
   const setupSession = viewSession("0c9c0ac7-c460-4022-b360-025a91a68b90", "prepare", "workflow", id, {});
@@ -3739,7 +3739,7 @@ test("authoring workflow detail matches the browser read view and only hands pre
     structuredContent: { ok: true, data: detail },
     _meta: { "loomex/taskWorkspace": { taskContext }, "loomex/viewSession": setupSession },
   }]; }, { detail, setupSession, taskContext });
-  await app.getByRole("button", { name: "Prepare run", exact: true }).click();
+  await app.getByRole("button", { name: "Run", exact: true }).click();
   await app.getByRole("heading", { name: "Future v5", exact: true }).waitFor();
   await app.getByLabel("Workspace directory *", { exact: true }).waitFor();
   assert.equal(await app.getByLabel("Workspace directory *", { exact: true }).inputValue(), taskContext.cwd);
@@ -3771,7 +3771,7 @@ test("authoring workflow detail hands paged responses to the conversation withou
   assert.match(messages[0].content[0].text, /does not authorize preparation, commit, or execution/);
 });
 
-test("workflow detail bounds inputs, AI configurations and steps with transparent omission counts", async (t) => {
+test("workflow detail stays compact with large definitions", async (t) => {
   const available = await browserTools();
   if (!available) assert.fail("Chromium is required for bounded workflow detail");
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
@@ -3793,19 +3793,10 @@ test("workflow detail bounds inputs, AI configurations and steps with transparen
     } },
   };
   const app = await mountApp(page, "authoring", data);
-  const inputs = app.locator('section[aria-label="Inputs"]');
-  await inputs.getByText("51 inputs", { exact: true }).waitFor();
-  await inputs.getByText("1 required", { exact: true }).waitFor();
-  assert.equal(await inputs.locator(".workflow-detail-item").count(), 51);
-  assert.equal(await inputs.locator("details").count(), 1);
-  const providers = app.locator('section[aria-label="AI"]');
-  await providers.getByText("21 configurations", { exact: true }).waitFor();
-  assert.equal(await providers.locator(".workflow-chip").count(), 3);
-  const graph = app.locator('section[aria-label="Workflow graph"]');
-  await graph.getByRole("button", { name: "Expand workflow graph", exact: true }).click();
-  await app.getByRole("dialog").getByRole("heading", { name: "Workflow graph", exact: true }).waitFor();
-  await app.getByRole("dialog").getByRole("button", { name: "Close graph", exact: true }).click();
-  assert.equal(await app.getByRole("dialog").count(), 0);
+  await app.getByText("51 inputs · 21 AI configurations", { exact: true }).waitFor();
+  assert.equal(await app.locator(".workflow-detail-item, .workflow-graph, dialog").count(), 0);
+  await app.getByRole("button", { name: "Open in Loomex", exact: true }).waitFor();
+  await captureRequestedScreenshots(page, "compact-workflow-detail");
 });
 
 test("workflow browser restores scope, handles large responses and shares responsive themes", async (t) => {
@@ -4582,4 +4573,104 @@ test("monitor restores delivery for an accepted request absent from its latest r
  assert.equal(await page.evaluate(()=>window.__loomexMessages.length),0);
  assert.equal(await page.evaluate((identity:string)=>window.__loomexPersistenceCalls.some((c:any)=>c.name==="loomex_delivery_get"&&c.arguments.identity===identity),identity),true);
  assert.equal(await app.getByRole("button",{name:"Submit answer",exact:true}).count(),0);
+});
+
+test("guided authoring preserves authoritative human review content", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const app = await mountApp(page, "authoring", {
+    builderSession: { id: "b1fe9492-8b5b-4e6f-a304-1905fcd85de8", mode: "edit", targetWorkflowId: "39f69fd1-e9ca-4700-8c31-0fa7fc009517" },
+    humanRequest: {
+      id: "39f69fd1-e9ca-4700-8c31-0fa7fc009517", schemaDigest: "a".repeat(64), title: "Review proposed workflow",
+      presentation: { version: 1, kind: "review", summary: "The revised workflow keeps your approval step.", changedFiles: ["workflow.json"], verification: ["Workflow schema validated."], limitations: [], artifacts: [] },
+      inputSpec: { inputType: "boolean", question: "Accept this proposal?" },
+      responseSchema: { type: "object", properties: { value: { type: "boolean" } }, required: ["value"] },
+    },
+  });
+  await app.getByText("The revised workflow keeps your approval step.", { exact: true }).waitFor();
+  await app.getByText("Workflow schema validated.", { exact: true }).waitFor();
+  await app.getByText("workflow.json", { exact: true }).waitFor();
+  await app.getByRole("button", { name: "Open in Loomex", exact: true }).waitFor();
+  await captureRequestedScreenshots(page, "guided-authoring-review");
+});
+
+test("compact workflow opens the configured frontend in the side panel without mutations", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const id = "39f69fd1-e9ca-4700-8c31-0fa7fc009517";
+  const app = await mountApp(page, "authoring", { workflow: { id, name: "Simple workflow" }, selectedVersion: { versionNumber: 1, definition: { nodes: [] } } });
+  await page.evaluate(() => { window.__workflowResponses = [{ structuredContent: { ok: true, data: { webAppUrl: "https://app.example.com" } } }]; });
+  await app.getByRole("button", { name: "Open in Loomex", exact: true }).click();
+  await page.waitForFunction(() => window.__loomexMessages.length === 1);
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.deepEqual(calls.map((call: any) => call.name), ["loomex_connection_get"]);
+  const messages = await page.evaluate(() => window.__loomexMessages);
+  assert.match(messages[0].content[0].text, new RegExp(`https://app.example.com/workspace/workflows/${id}/builder`));
+  assert.match(messages[0].content[0].text, /open_in_codex.*placement right/);
+  assert.match(messages[0].content[0].text, /do not edit, publish, activate, prepare, or start/);
+  assert.equal(await app.getByRole("dialog").count(), 0);
+  await captureRequestedScreenshots(page, "simple-workflow-detail");
+});
+
+test("saved authoring preparations remain read-only recovery views without execution cards", async (t) => {
+  const available = await browserTools();
+  if (!available) { assert.fail("Chromium is required for this UI gate"); }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const app = await mountApp(page, "prepare", {
+    preparationId: "a1b2c3d4-1111-4111-8111-111111111111",
+    bindingDigest: "a".repeat(64),
+    binding: { authoring: { systemKey: "workflow_builder" }, workspacePath: "/tmp/example", executionPolicy: "host_user/v1" },
+  });
+  await app.getByText(/This saved preparation belongs to a separate authoring execution/).waitFor().catch(async (error: unknown) => { throw new Error(await app.locator("body").innerText(), { cause: error }); });
+  assert.equal(await app.locator("#primary").isVisible(), false);
+  assert.equal(await app.getByLabel("Workspace", { exact: true }).count(), 0);
+  assert.equal(await app.getByLabel("AI providers", { exact: true }).count(), 0);
+  assert.equal(await app.getByLabel("Authoring request", { exact: true }).count(), 0);
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.equal(calls.some((call: any) => /commit|handoff|prepare$/.test(call.name)), false);
+});
+
+test("saved draft summary exposes publishing but never Run and refresh retains draft selection", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for draft qualification");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const id = "9c120564-a7f3-485a-96f8-8da6b9015413";
+  const detail = { workflow: { id, name: "Saved chat draft", status: "draft" }, selectedVersion: {
+    id: "c3525377-c5cf-467a-a366-bc75d514c2b5", workflowId: id, status: "draft", versionNumber: 0,
+    revision: 1, definition: { nodes: [] },
+  } };
+  const app = await mountApp(page, "authoring", detail);
+  await app.getByRole("heading", { name: "Saved chat draft", exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Run", exact: true }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Publish", exact: true }).count(), 1);
+  assert.equal(await app.getByText("Version 0", { exact: true }).count(), 0);
+  await page.evaluate((data: any) => { window.__workflowResponses = [{ structuredContent: { ok: true, data } }]; }, detail);
+  await app.getByRole("button", { name: "Refresh workflow", exact: true }).click();
+  await waitForToolCount(page, "loomex_workflow_get", 1);
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.equal(calls.find((call: any) => call.name === "loomex_workflow_get").arguments.version, "0");
+});
+
+test("workflow list retains draft discovery without offering execution", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for draft qualification");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const app = await mountApp(page, "browser", { workflows: [{
+    id: "9c120564-a7f3-485a-96f8-8da6b9015413", name: "Chat draft", status: "draft",
+    definitionStatus: "draft", activeVersion: null, activeVersionId: null, latestVersion: null,
+  }], nextCursor: null });
+  await app.getByRole("button", { name: "View: Chat draft", exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Run: Chat draft", exact: true }).count(), 0);
 });

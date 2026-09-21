@@ -48,10 +48,9 @@ test("chat interactions do not create presentation sessions",async()=>{
  assert.deepEqual(await viewSessionMeta(client,definition,{requestId:id},ok({humanRequest:{id,answerChannel:"chat"}})),{"loomex/answerChannel":"chat"});
 });
 
-test("monitor and authoring session identities stay bound to their parent while a question is pending",async()=>{
+test("monitor session identity stays bound to its parent while a question is pending",async()=>{
  for (const [name,kind,entityType,key] of [
    ["loomex_run_view","monitor","execution","runId"],
-   ["loomex_builder_get","authoring","builderSession","sessionId"],
  ] as const) {
   const definition=TOOL_DEFINITIONS.find(item=>item.name === name)!;
   const calls:any[]=[];
@@ -64,3 +63,9 @@ test("monitor and authoring session identities stay bound to their parent while 
   assert.ok(result["loomex/viewSession"]);
  }
 });
+
+ test("headless builder reads do not create presentation sessions", async () => {
+ const definition=TOOL_DEFINITIONS.find(item=>item.name === "loomex_builder_get")!;
+ const client={async call():Promise<ToolOutput>{throw new Error("Must remain headless")}};
+ assert.deepEqual(await viewSessionMeta(client,definition,{sessionId:id},ok({builderSession:{id},phase:"generating"})),{});
+ });

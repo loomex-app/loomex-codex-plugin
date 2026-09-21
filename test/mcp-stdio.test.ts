@@ -1709,3 +1709,27 @@ test("older runners reject recovery coordination during capability negotiation",
   assert.equal(runner.negotiations.length, 1);
   assert.equal(runner.requests.length, 0);
 });
+
+test("active-chat atomic creation retains definition and verified draft receipt without a card", async () => {
+  let runner!: FakeRunner;
+  const workflowId = "b121d6a8-9d89-4991-a49c-f972829b3d21";
+  const draft = { id: "8cebe362-f96e-4274-8941-929e9bf478dc", revision: 1, status: "draft" };
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    workflowId, name: "Chat draft", slug: "chat-draft", activeVersionId: null, draft,
+  }));
+  const client = await connect(runner);
+  const args = { name: "Chat draft", definition: { nodes: [], transitions: [] }, notes: "Original request", idempotencyKey: "5b3c3e7e-8a41-45b4-ad2c-9a3fc8297f8a" };
+  const result = await client.callTool({ name: "loomex_workflow_create", arguments: args });
+  assert.notEqual(result.isError, true);
+  assert.deepEqual(runner.requests[0]?.params, args);
+  assert.deepEqual((result.structuredContent as any).data.draft, draft);
+  assert.equal(TOOL_DEFINITIONS.find(tool => tool.name === "loomex_workflow_create")?.uiUri, undefined);
+});
+
+test("authoring observations and compatibility preparations do not automatically open cards", () => {
+  for (const name of ["loomex_builder_get", "loomex_builder_prepare", "loomex_editor_prepare"]) {
+    assert.equal(TOOL_DEFINITIONS.find(tool => tool.name === name)?.uiUri, undefined, name);
+  }
+  assert.ok(TOOL_DEFINITIONS.find(tool => tool.name === "loomex_workflow_view")?.uiUri);
+  assert.ok(REQUIRED_RUNNER_CAPABILITIES.includes("workflows.atomic-draft-create/v1"));
+});

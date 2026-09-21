@@ -475,11 +475,13 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_workflow_create",
     rpcMethod: "workflows.create",
     title: "Create Loomex workflow",
-    description: "Create a new empty workflow record for subsequent editor or direct definition updates.",
+    description: "Create a workflow and, when definition is supplied, save its validated draft atomically. Publishing, activation, and execution remain separate actions.",
     inputSchema: z
       .object({
         name: z.string().min(1),
         slug: z.string().min(1).optional(),
+        definition: WorkflowDefinition.optional(),
+        notes: z.string().optional(),
         idempotencyKey: IdempotencyKey,
       })
       .strict(),
@@ -564,7 +566,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "builder.prepare",
     title: "Prepare Loomex workflow builder",
     description:
-      "Prepare, but do not start, a conversational workflow-building session. Returns the exact canonical workspace, provider, host_user/v1 authority, binding digest, and confirmation key for review.",
+      "Compatibility path for an existing execution-backed builder integration; active-chat conversational authoring instead uses the builder catalog, validation, and workflow create/update. This prepares, but does not start, that compatibility session and returns its exact canonical workspace, provider, host_user/v1 authority, binding digest, and confirmation key for explicit review before commit.",
     inputSchema: z
       .object({
         prompt: z.string().min(1),
@@ -577,14 +579,13 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       .strict(),
     mutating: true,
     destructive: false,
-    uiUri: PREPARE_UI_URI,
   },
   {
     name: "loomex_builder_commit",
     rpcMethod: "builder.commit",
     title: "Commit prepared Loomex workflow builder",
     description:
-      "Start exactly one prepared builder session after the user accepts its exact binding. Pass the preparation ID, digest, and confirmation key back unchanged.",
+      "Start exactly one prepared execution-backed compatibility builder session after explicit acceptance of its exact binding. Pass the preparation ID, digest, and confirmation key back unchanged.",
     inputSchema: z
       .object({
         preparationId: Uuid,
@@ -600,13 +601,12 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_builder_get",
     rpcMethod: "builder.get",
     title: "Get Loomex builder session",
-    description: "Get new builder events, draft state, and any typed question requiring a response.",
+    description: "Headlessly read an existing compatibility builder or editor session for observation and recovery. It does not start a new active-chat authoring route.",
     inputSchema: z
       .object({ sessionId: Uuid, ...BuilderStreamQuery })
       .strict(),
     mutating: false,
     destructive: false,
-    uiUri: AUTHORING_UI_URI,
   },
   {
     name: "loomex_builder_respond",
@@ -633,7 +633,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "editor.prepare",
     title: "Prepare Loomex workflow editor",
     description:
-      "Prepare, but do not start, a conversational edit session for an existing workflow. Returns its exact workspace, provider, host_user/v1 authority, binding digest, and confirmation key for review.",
+      "Compatibility path for an existing execution-backed editor integration; active-chat conversational edits instead read the workflow, use the builder catalog and validation, then update its draft at a fresh expected version. This prepares, but does not start, that compatibility session and returns its exact canonical workspace, provider, host_user/v1 authority, binding digest, and confirmation key for explicit review before commit.",
     inputSchema: z
       .object({
         workflowId: Uuid,
@@ -647,14 +647,13 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       .strict(),
     mutating: true,
     destructive: false,
-    uiUri: PREPARE_UI_URI,
   },
   {
     name: "loomex_editor_commit",
     rpcMethod: "editor.commit",
     title: "Commit prepared Loomex workflow editor",
     description:
-      "Start exactly one prepared editor session after the user accepts its exact binding. Pass the preparation ID, digest, and confirmation key back unchanged.",
+      "Start exactly one prepared execution-backed compatibility editor session after explicit acceptance of its exact binding. Pass the preparation ID, digest, and confirmation key back unchanged.",
     inputSchema: z
       .object({
         preparationId: Uuid,
@@ -1063,6 +1062,9 @@ export const APP_CALLABLE_TOOLS = new Set([
 ]);
 
 const SEMANTIC_CAPABILITIES = [
+  "workflows.atomic-draft-create/v1",
+  "workflows.canonical-authoring-contract/v1",
+  "workflows.runtime-draft-mutations/v1",
   "presentation.sessions/v1",
   "presentation.sessions.restore/v1",
   "presentation.delivery/v2",

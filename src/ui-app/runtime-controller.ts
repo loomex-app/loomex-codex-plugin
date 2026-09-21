@@ -1,3 +1,4 @@
+import { workflowFrontendUrl } from "./workflow-frontend.js";
 import { PersistenceFailureError, PresentationPersistenceError } from "./action-errors.js";
 import { beginActionTiming } from "./action-timing.js";
 import { ConcurrentReads } from "./read-coordinator.js";
@@ -130,6 +131,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   const runtimeShell = createRuntimeShell({
     elements: { title, context, summary, form, headerLeading, headerContextActions, headerStage, headerStatus, primary, secondary },
     statusClasses: __LOOMEX_STATUS_CLASSES__,
+    onActionError: error => setError(error),
     snapshot: () => {
       const request = headerRequest();
       const presentation = humanPresentation(request);
@@ -449,7 +451,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     setAction,
     setMutationAction,
     renderFailure,
-    renderIntegratedRunFlow: () => { runtimeShell.setContextualHeader(); runMonitorController.renderIntegratedRunFlow(); },
+    renderIntegratedRunFlow: () => { runtimeShell.setPagePresentation(); runMonitorController.renderIntegratedRunFlow(); },
     beginSetupReview: (inputs) => runActionsController.beginSetupReview(inputs),
     preparationView,
     preparationReviewable,
@@ -592,15 +594,25 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     createIdempotencyKey: uuid,
   });
 
+  async function openWorkflowFrontend(workflowId: string): Promise<void> {
+    if (!workflowIdValid(workflowId)) throw new Error("The selected workflow could not be verified.");
+    const connection = await callTool("loomex_connection_get", {}, false);
+    if (uiResultFailed(connection)) throw new Error("The Loomex website address could not be loaded. Refresh and try again.");
+    const url = workflowFrontendUrl(resultData(connection).webAppUrl, workflowId);
+    const text = `Open ${url} in the Codex side panel using open_in_codex with target type browser and placement right. This is the Loomex frontend page for the selected workflow. Only open the page; do not edit, publish, activate, prepare, or start a workflow.`;
+    const response = await send("ui/message", { role: "user", content: [{ type: "text", text }] });
+    if (record(response)?.isError === true) throw new Error("Loomex could not be opened in the side panel. Try again.");
+  }
+
   const browserController = createBrowserController({
     lifecycle,
     mode: mode === "browser" ? "browser" : "authoring",
     elements: { context, summary, form, primary, secondary, refresh },
     connected: () => connected,
     runFlowActive: () => runSetupController.flow !== null,
-    renderIntegratedRunFlow: () => { runtimeShell.setContextualHeader(); runMonitorController.renderIntegratedRunFlow(); },
+    renderIntegratedRunFlow: () => { runtimeShell.setPagePresentation(); runMonitorController.renderIntegratedRunFlow(); },
     syncChrome,
-    setContextualHeader: runtimeShell.setContextualHeader,
+    setPagePresentation: runtimeShell.setPagePresentation,
     updateActivity,
     setAction,
     actionIcon,
@@ -625,12 +637,14 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     },
     observeViewPersistence: async (result) => Boolean(await observeViewPersistence(rpcResult(result))),
     workflowIdValid,
-    beginRunSetup: (id, data) => { runtimeShell.setContextualHeader(); return runActionsController.beginRunSetup(id, data); },
+    beginRunSetup: (id, data) => { runtimeShell.setPagePresentation(); return runActionsController.beginRunSetup(id, data); },
     requestWorkflowAction: async (action, data) => {
       const workflowId = safeText(data.workflow?.id, 64);
       if (!workflowIdValid(workflowId)) throw new Error("The selected workflow could not be verified.");
-      const text = action === "edit"
-        ? `Prepare an edit session for Loomex workflow ${workflowId}. Present the exact binding for my review before applying any workflow update.`
+      if (action === "use-version" && !workflowIdValid(data.selectedVersion?.id)) throw new Error("The published version could not be verified. Refresh before selecting it.");
+      if (action === "edit") { await openWorkflowFrontend(workflowId); return; }
+      const text = action === "use-version"
+        ? `Inspect published version ${safeText(data.selectedVersion?.id, 64)} of Loomex workflow ${workflowId} and prepare making it current for future runs. Require my explicit approval before calling loomex_workflow_activate. Do not publish a new version or start a run.`
         : `Inspect Loomex workflow ${workflowId} and prepare its publish action for my review. Do not publish until I explicitly approve the exact action.`;
       const result = await send("ui/message", { role: "user", content: [{ type: "text", text }] });
       if (record(result)?.isError === true) throw new Error("The host could not open this workflow action in the conversation.");
@@ -652,6 +666,8 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   } = browserController;
 
   const authoringController = createAuthoringController({
+    setPagePresentation: runtimeShell.setPagePresentation,
+    openWorkflow: openWorkflowFrontend,
     elements: { context, summary, form, primary, refresh },
     connected: () => connected,
     authoritativeStateStale: () => authoritativeStateStale,
@@ -1754,9 +1770,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     errorDetails.hidden = true;
     summary.textContent = failed
       ? "Loomex could not complete this action. Refresh to check its current status before trying again."
-      : ["interaction", "authoring"].includes(mode)
-        ? ""
-        : "Current Loomex state loaded.";
+      : "";
     const envelope = record(result.structuredContent) ?? record(result);
     const reference = envelope?.requestId;
     supportReference.hidden = !(failed && typeof reference === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reference));
@@ -1771,6 +1785,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       if (mode === "runs") renderRuns();
       return;
     }
+    if (mode !== "browser" && !(mode === "authoring" && latest?.workflow && !builderSessionId(latest))) runtimeShell.setPagePresentation();
     primary.hidden = true;
     primary.disabled = true;
     primary.className = "";
@@ -1842,6 +1857,20 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     setupPending: boolean,
     sourceIdentity: string | undefined,
   ): void {
+      // Saved execution-backed authoring cards are recovery surfaces only.
+      // Their references remain intact, but a run handoff cannot authorize them.
+      if (preparedCommitTool() !== "loomex_run_commit" || output.binding?.authoring) {
+        runtimeShell.setPagePresentation({ title: "Authoring session" });
+        summary.textContent = "This saved preparation belongs to a separate authoring execution. Review its current state in the conversation. New workflow creation uses the active chat.";
+        context.replaceChildren();
+        context.hidden = true;
+        form.hidden = true;
+        primary.hidden = true;
+        primary.disabled = true;
+        refresh.hidden = false;
+        setAction(refresh, "Refresh", "refresh");
+        return;
+      }
       if (!failed && selectedWorkflowVersion(output) && !output.preparationId) {
         if (!runSetupController.flow || (!matchingSetup && !setupPending)) {
           initializeRunSetup(output, false, sourceIdentity || "");
@@ -1870,7 +1899,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
         if (!failed) summary.textContent = "";
         preparationView(output);
         if (!preparationReviewable(output)) summary.textContent = "The execution details could not be verified here. Continue in the conversation to review this preparation before starting.";
-        setMutationAction(primary, preparedCommitTool() === "loomex_run_commit" ? "Start run" : "Start authoring", "start");
+        setMutationAction(primary, "Start run", "start");
         refresh.hidden = false; setAction(refresh, "Check runner", "refresh");
         primary.hidden = false;
         // A direct preparation card cannot start until its runner-owned,
@@ -2483,6 +2512,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       }, { timeoutMs: 5_000 });
       if (runtimeDisposed) return;
       hostCapabilities = record(record(result)?.hostCapabilities) ?? {};
+
       connected = true;
       connection.textContent = "Connected";
       refresh.disabled = false;

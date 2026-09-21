@@ -1,8 +1,7 @@
 import type { ViewRestorationCoordinator } from "./persistence.js";
 import type { ActionIcon, JsonObject } from "./contracts.js";
 import { createPagination, createUiElement as element } from "./components.js";
-import { createWorkflowGraphPreview } from "./workflow-graph.js";
-import type { ActionId } from "./shell.js";
+import type { ActionId, PagePresentation, PageAction } from "./shell.js";
 import type { BrowserArguments, BrowserDetailResponse, FocusReturn, JsonSchema, PagedResponse, UiData, WorkflowData, WorkflowNode, WorkflowVersion } from "./page-models.js";
 
 const WORKFLOW_PAGE_SIZE = 5;
@@ -19,7 +18,7 @@ export interface BrowserControllerState {
 }
 
 type BrowserAction = () => Promise<void> | void;
-type DetailOptions = { onBack?: BrowserAction; onPrepare?: BrowserAction; onEdit?: BrowserAction; onPublish?: BrowserAction };
+type DetailOptions = { onBack?: BrowserAction; onPrepare?: BrowserAction; onEdit?: BrowserAction; onPublish?: BrowserAction; onUseVersion?: BrowserAction };
 type PagedOptions = { onBack?: BrowserAction };
 
 export interface BrowserControllerServices {
@@ -39,7 +38,7 @@ export interface BrowserControllerServices {
   syncChrome(): void;
   updateActivity(): void;
   setAction(button: HTMLButtonElement, label: string, actionId?: ActionId): void;
-  setContextualHeader(leading?: readonly Node[], actions?: readonly Node[]): void;
+  setPagePresentation(presentation?: PagePresentation): void;
   actionIcon(actionId: ActionId): ActionIcon;
   createIcon(name: ActionIcon): SVGSVGElement;
   setError(error: unknown): void;
@@ -61,7 +60,7 @@ export interface BrowserControllerServices {
   observeViewPersistence(result: unknown): Promise<boolean>;
   workflowIdValid(value: unknown): value is string;
   beginRunSetup(workflowId: string, detail: WorkflowData | null): Promise<void>;
-  requestWorkflowAction(action: "edit" | "publish", data: WorkflowData): Promise<void>;
+  requestWorkflowAction(action: "edit" | "publish" | "use-version", data: WorkflowData): Promise<void>;
   taskWorkspaceArguments(): JsonObject;
   selectedWorkflowVersion(data: UiData): WorkflowVersion | undefined;
   initializeRunSetup(data: UiData, restoring: boolean, sourceIdentity: unknown): void;
@@ -118,19 +117,6 @@ function object(value: unknown): JsonObject | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : undefined;
 }
 
-function schemaType(schema: JsonSchema | undefined): string | undefined {
-  if (!schema) return undefined;
-  if (Array.isArray(schema.type)) return schema.type.map((item) => safeText(item, 40)).filter(Boolean).join(" or ") || undefined;
-  return safeText(schema.type, 40) || (Array.isArray(schema.enum) ? "choice" : undefined);
-}
-
-function authoredLabel(key: string, schema: JsonSchema | undefined): string | undefined {
-  const title = safeText(schema?.title, 120);
-  if (title) return title;
-  const text = safeText(key, 120);
-  return text ? text.replaceAll("_", " ").replace(/([a-z0-9])([A-Z])/g, "$1 $2") : undefined;
-}
-
 function workflowProviders(nodes: readonly WorkflowNode[]): { items: Array<{ provider: string; model: string; effort: string }>; total: number } {
   const items: Array<{ provider: string; model: string; effort: string }> = [];
   const seen = new Set<string>();
@@ -145,7 +131,7 @@ function workflowProviders(nodes: readonly WorkflowNode[]): { items: Array<{ pro
     const key = [provider, model, effort].join("\u0000");
     if (!seen.has(key)) { seen.add(key); items.push({ provider, model, effort }); }
   }
-  return { items: items.slice(0, 20), total: items.length };
+  return { items, total: items.length };
 }
 
 /** Metadata-only workflow browsing. Run preparation remains owned by the run controller. */
@@ -303,7 +289,7 @@ export function createBrowserController(host: BrowserControllerServices) {
     finally {
       state.busy = false;
       clearBrowserSkeleton();
-      if (host.runFlowActive()) { host.setContextualHeader(); host.renderIntegratedRunFlow(); } else renderWorkflowDetail(detailData ?? {}, { onPrepare: () => requestWorkflowPreparation(id, detailData) });
+      if (host.runFlowActive()) { host.setPagePresentation(); host.renderIntegratedRunFlow(); } else renderWorkflowDetail(detailData ?? {}, { onPrepare: () => requestWorkflowPreparation(id, detailData) });
       restoreBrowserFocus(host.runFlowActive());
     }
   }
@@ -321,25 +307,19 @@ export function createBrowserController(host: BrowserControllerServices) {
   }
 
   function renderWorkflowPagedResponse(paged: PagedResponse, options: PagedOptions = {}): void {
-    host.setContextualHeader();
+    host.setPagePresentation();
     context.hidden = false; context.className = "ui-stack";
     context.setAttribute("aria-label", "Workflow response");
     context.setAttribute("aria-busy", String(state.busy));
     context.replaceChildren(); form.hidden = true; primary.hidden = true; secondary.hidden = true;
     refreshButton.disabled = !host.connected() || state.busy;
-    if (options.onBack) context.append(browserButton("Back to workflows", options.onBack, "back", false, "secondary", false, true));
+    if (options.onBack) host.setPagePresentation({ back: { id: "back", label: "Back to workflows", intent: "navigate", execute: options.onBack } });
     context.append(element("p", { className: "ui-caption" }, "This workflow response is too large for the inline view. Read the complete response in the conversation."));
     context.append(browserButton("View complete response", () => requestCompleteWorkflowResponse(paged, () => renderWorkflowPagedResponse(paged, options)), "results", host.authoritativeStateStale(), "secondary", false, true));
   }
 
   function detailButton(label: string, action: BrowserAction, actionId: ActionId, disabled = false, text = false): HTMLButtonElement {
     return browserButton(label, action, actionId, disabled, "secondary", text, true, !text);
-  }
-
-  function disclosure(label: string, content: Node): HTMLElement {
-    const details = element("details", { className: "ui-disclosure" });
-    details.append(element("summary", {}, label), content);
-    return details;
   }
 
   function renderWorkflowDetail(data: UiData, options: DetailOptions = {}): void {
@@ -350,15 +330,18 @@ export function createBrowserController(host: BrowserControllerServices) {
     const inputSchema = workflowInputSchema(data, definition);
     const properties = object(inputSchema.properties) ?? {};
     const entries = Object.entries(properties).filter((entry): entry is [string, JsonSchema] => object(entry[1]) !== undefined);
-    const required = new Set(Array.isArray(inputSchema.required) ? inputSchema.required.filter((item): item is string => typeof item === "string") : []);
     const providers = workflowProviders(nodes);
 
-    const leading: Node[] = [];
-    const actions: Node[] = [];
-    if (options.onBack) leading.push(detailButton("Back to workflows", options.onBack, "back"));
-    if (options.onEdit) actions.push(detailButton("Edit workflow", options.onEdit, "edit", host.authoritativeStateStale()));
-    if (options.onPrepare) actions.push(detailButton("Prepare run", options.onPrepare, "start", host.authoritativeStateStale()));
-    host.setContextualHeader(leading, actions);
+    const actions: PageAction[] = [];
+    if (options.onEdit) actions.push({ id: "open", label: "Open in Loomex", intent: "navigate", disabled: state.busy || !host.connected(), execute: () => runBrowserAction(options.onEdit!, true) });
+    const published = ["active", "archived", "published"].includes(safeText(version.status).toLowerCase());
+    if (options.onPrepare && (published || (version.status === undefined && (workflowVersionNumber(version) ?? 0) > 0))) actions.push({ id: "start", label: "Run", intent: "review", disabled: state.busy || !host.connected(), execute: () => runBrowserAction(options.onPrepare!, true) });
+    const current = version.isActive === true || Boolean(version.id && version.id === data.activeVersion?.id);
+    const overflow: PageAction[] = [];
+    if (published && !current && options.onUseVersion) overflow.push({ id: "use-version", label: "Use this version", intent: "review", disabled: state.busy || !host.connected(), execute: () => runBrowserAction(options.onUseVersion!, true) });
+    host.setPagePresentation({ title: safeText(workflow.name, 160) || "Workflow", actions, overflow,
+      ...(options.onBack ? { back: { id: "back", label: "Back to workflows", intent: "navigate", execute: () => runBrowserAction(options.onBack!, true) } as PageAction } : {}),
+    });
     host.setAction(refreshButton, "Refresh workflow", "refresh");
     refreshButton.disabled = !host.connected() || state.busy;
 
@@ -378,61 +361,16 @@ export function createBrowserController(host: BrowserControllerServices) {
       }
     }
     const meta = element("div", { className: "workflow-meta-strip", "aria-label": "Workflow version" });
-    const status = formatStatus(version.status ?? workflow.status);
+    const status = safeText(version.status).toLowerCase() === "draft" ? "Draft" : published ? "Published" : formatStatus(version.status ?? workflow.status);
     if (status) meta.append(element("span", { className: "ui-badge" }, status));
     const number = workflowVersionNumber(version);
-    if (number !== undefined) meta.append(element("span", { className: "ui-meta" }, `Version ${number}`));
+    if (number !== undefined && number > 0) meta.append(element("span", { className: "ui-meta" }, `Version ${number}`));
+    if (current) meta.append(element("span", { className: "ui-badge" }, "Current"));
     heading.append(meta); root.append(heading);
 
-    const summaryGrid = element("div", { className: "workflow-summary-grid", "aria-label": "Workflow configuration" });
-    const inputs = element("section", { className: "workflow-summary-card", "aria-label": "Inputs" });
-    inputs.append(element("span", { className: "ui-label" }, "Inputs"), element("strong", {}, entries.length ? `${entries.length} input${entries.length === 1 ? "" : "s"}` : "No inputs"));
-    if (entries.length) {
-      const requiredCount = [...required].filter(key => Object.hasOwn(properties, key)).length;
-      inputs.append(element("span", { className: "ui-caption" }, requiredCount ? `${requiredCount} required` : "All optional"));
-      const list = element("dl", { className: "workflow-detail-list" });
-      for (const [key, schema] of entries) {
-        const label = authoredLabel(key, schema); if (!label) continue;
-        const row = element("div", { className: "workflow-detail-item" });
-        row.append(element("dt", { className: "ui-value" }, label));
-        const tags = [schemaType(schema), required.has(key) ? "Required" : undefined].filter((value): value is string => Boolean(value));
-        row.append(element("dd", { className: "ui-meta" }, tags.join(" · "))); list.append(row);
-      }
-      inputs.append(disclosure("View inputs", list));
-    }
-    summaryGrid.append(inputs);
-
-    const ai = element("section", { className: "workflow-summary-card", "aria-label": "AI" });
-    ai.append(element("span", { className: "ui-label" }, "AI"), element("strong", {}, providers.total ? `${providers.total} configuration${providers.total === 1 ? "" : "s"}` : "No AI configuration"));
-    if (providers.total) {
-      const chips = element("div", { className: "workflow-chip-list" });
-      for (const provider of providers.items.slice(0, 3)) chips.append(element("span", { className: "workflow-chip" }, [provider.provider, provider.model, provider.effort].filter(Boolean).join(" · ") || "AI"));
-      ai.append(chips);
-      const list = element("dl", { className: "workflow-detail-list" });
-      for (const provider of providers.items) {
-        const row = element("div", { className: "workflow-detail-item" });
-        row.append(element("dt", { className: "ui-value" }, provider.provider || "AI"));
-        row.append(element("dd", { className: "ui-meta" }, [provider.model, provider.effort && `${provider.effort} effort`].filter(Boolean).join(" · "))); list.append(row);
-      }
-      ai.append(disclosure("View AI configuration", list));
-    }
-    summaryGrid.append(ai); root.append(summaryGrid);
-
-    const policy = safeText(definition.executionPolicy, 120);
-    if (policy === "host_user/v1") {
-      const execution = element("section", { className: "workflow-detail-section", "aria-label": "Execution" });
-      execution.append(element("h3", { className: "ui-label" }, "Execution"));
-      const row = element("div", { className: "workflow-summary-row" }); row.append(element("span", { className: "ui-badge" }, "Local execution"));
-      execution.append(row, disclosure("What this means", element("p", { className: "ui-caption" }, "After you review a run, Loomex may execute its configured provider commands in the selected workspace with your local macOS user permissions. This is not a sandbox.")));
-      root.append(execution);
-    }
-
-    const graph = createWorkflowGraphPreview(nodes, definition.transitions, {
-      createButton: (label, actionId) => detailButton(label, () => undefined, actionId),
-      createIcon: host.createIcon,
-    });
-    if (graph) root.append(graph);
-
+    const facts = element("p", { className: "ui-caption", "aria-label": "Workflow configuration" },
+      [entries.length ? `${entries.length} input${entries.length === 1 ? "" : "s"}` : "No inputs", providers.total ? `${providers.total} AI configuration${providers.total === 1 ? "" : "s"}` : "No AI configuration"].join(" · "));
+    root.append(facts);
     if (options.onPublish && safeText(version.status ?? workflow.status).toLowerCase() === "draft") {
       const versionActions = element("section", { className: "workflow-detail-section", "aria-label": "Version actions" });
       versionActions.append(element("h3", { className: "ui-label" }, "Version"));
@@ -452,6 +390,7 @@ export function createBrowserController(host: BrowserControllerServices) {
       onPrepare: () => requestWorkflowPreparation(workflow.id ?? "", data),
       onEdit: () => host.requestWorkflowAction("edit", data),
       onPublish: () => host.requestWorkflowAction("publish", data),
+      onUseVersion: () => host.requestWorkflowAction("use-version", data),
     });
   }
 
@@ -460,8 +399,8 @@ export function createBrowserController(host: BrowserControllerServices) {
   }
 
   function renderBrowserContent(): void {
-    if (host.runFlowActive()) { host.setContextualHeader(); host.renderIntegratedRunFlow(); return; }
-    if (!state.selected) host.setContextualHeader();
+    if (host.runFlowActive()) { host.setPagePresentation(); host.renderIntegratedRunFlow(); return; }
+    if (!state.selected) { host.setPagePresentation(); }
     context.hidden = false; context.className = "ui-stack"; context.setAttribute("aria-label", "Workflow browser");
     context.setAttribute("aria-busy", String(state.busy)); context.replaceChildren();
     form.hidden = true; primary.hidden = true; secondary.hidden = true;
@@ -479,6 +418,7 @@ export function createBrowserController(host: BrowserControllerServices) {
         onPrepare: () => requestWorkflowPreparation(workflow.id ?? ""),
         onEdit: () => host.requestWorkflowAction("edit", state.selected ?? {}),
         onPublish: () => host.requestWorkflowAction("publish", state.selected ?? {}),
+        onUseVersion: () => host.requestWorkflowAction("use-version", state.selected ?? {}),
       });
       return;
     }
@@ -511,7 +451,11 @@ export function createBrowserController(host: BrowserControllerServices) {
       const actions = element("div", { className: "workflow-row-actions" });
       const invalid = !host.workflowIdValid(workflow.id) || host.authoritativeStateStale();
       actions.append(browserButton("View", () => browserRead("loomex_workflow_get", { workflowId: workflow.id ?? "" }, (data) => { state.selected = data; }), "results", !host.workflowIdValid(workflow.id), "secondary", false, true));
-      actions.append(browserButton("Run", () => requestWorkflowPreparation(workflow.id ?? ""), "start", invalid, "secondary", false, false, true));
+      const runnable = workflow.definitionStatus !== "draft" && workflow.status !== "draft" &&
+        ((typeof workflow.activeVersion === "number" && workflow.activeVersion > 0) ||
+          host.workflowIdValid(workflow.activeVersionId) ||
+          (workflow.activeVersion === undefined && workflow.definitionStatus === "published" && typeof workflow.latestVersion === "number" && workflow.latestVersion > 0));
+      if (runnable) actions.append(browserButton("Run", () => requestWorkflowPreparation(workflow.id ?? ""), "start", invalid, "secondary", false, false, true));
       for (const button of [...actions.children]) if (button instanceof HTMLButtonElement) button.setAttribute("aria-label", `${button.textContent}: ${workflowRowName(workflow.name)}`);
       row.append(copy, actions); rows.append(row);
     }
@@ -542,7 +486,8 @@ export function createBrowserController(host: BrowserControllerServices) {
     if (state.detailResponse) {
       await browserRead("loomex_workflow_get", { workflowId: state.detailResponse.workflowId }, (data) => { state.selected = data; });
     } else if (state.selected?.workflow?.id && host.workflowIdValid(state.selected.workflow.id)) {
-      await browserRead("loomex_workflow_get", { workflowId: state.selected.workflow.id }, (data) => { state.selected = data; });
+      const version = workflowVersionNumber(state.selected.selectedVersion);
+      await browserRead("loomex_workflow_get", { workflowId: state.selected.workflow.id, ...(version !== undefined && version >= 0 ? { version: String(version) } : {}) }, (data) => { state.selected = data; });
     } else {
       await loadBrowserPage(state.args, state.history);
     }
@@ -556,7 +501,7 @@ export function createBrowserController(host: BrowserControllerServices) {
     const selectedVersion = workflowVersionNumber(data.selectedVersion);
     await browserRead("loomex_workflow_get", {
       workflowId,
-      ...(selectedVersion !== undefined && selectedVersion > 0 ? { version: String(selectedVersion) } : {}),
+      ...(selectedVersion !== undefined && selectedVersion >= 0 ? { version: String(selectedVersion) } : {}),
     }, (refreshed) => {
       state.selected = refreshed;
       renderAuthoringWorkflow(refreshed);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { restorationSurface, setupOwnsActivity } from '../src/ui-app/runtime-shell.js';
+import { restorationSurface, setupOwnsActivity, pageActionEnabled } from '../src/ui-app/runtime-shell.js';
 test('automatic setup suppresses only its own operations',()=>{
  assert.equal(setupOwnsActivity('loomex_workspace_grant',true),true);
  assert.equal(setupOwnsActivity('loomex_run_prepare',true),true);
@@ -21,4 +21,13 @@ test('restoration surface keeps unverified canonical content behind one skeleton
 test('legacy restoration remains skeletal when no lifecycle phase is supplied',()=>{
  assert.equal(restorationSurface(undefined,false,true),'skeleton');
  assert.equal(restorationSurface(undefined,false,false),'content');
+});
+
+test('contextual navigation survives storage loss while reviewed actions require current authority', () => {
+ const execute = () => {};
+ const pending = { authorityStale: true, reentry: false, mutationReady: false };
+ assert.equal(pageActionEnabled({ id: 'back', label: 'Back', intent: 'navigate', execute }, pending, false), true);
+ assert.equal(pageActionEnabled({ id: 'start', label: 'Run', intent: 'review', execute }, pending, false), false);
+ assert.equal(pageActionEnabled({ id: 'publish', label: 'Publish', intent: 'mutation', execute }, { authorityStale: false, reentry: false, mutationReady: true }, false), true);
+ assert.equal(pageActionEnabled({ id: 'publish', label: 'Publish', intent: 'mutation', execute }, { authorityStale: false, reentry: false, mutationReady: true }, true), false);
 });
