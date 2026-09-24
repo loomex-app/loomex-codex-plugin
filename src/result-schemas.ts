@@ -138,15 +138,15 @@ const ConnectionOrganization = z.object({
 }).strict();
 const ConnectionProjection = z.object({
   webAppUrl: z.string().url().nullable().optional(),
-  schemaVersion: z.literal("loomex.runner.connection/v1"),
-  state: z.enum(["signed_out", "verification_pending", "verification_expired", "authenticated", "recovery_pending", "logout_pending", "credential_store_unavailable"]),
+  schemaVersion: z.literal("loomex.runner.connection/v2"),
+  state: z.enum(["signed_out", "browser_pending", "authentication_completing", "verification_expired", "authenticated", "recovery_pending", "logout_pending", "credential_store_unavailable"]),
   organization: ConnectionOrganization,
   organizations: z.array(z.object({ id: z.uuid(), name: z.string().nullable(), enrolled: z.boolean() }).strict()),
   activeWork: NonNegativeInteger,
-  actions: z.array(z.enum(["auth.login", "auth.poll", "auth.logout", "organizations.list", "organizations.select"])),
+  actions: z.array(z.enum(["auth.login", "auth.cancel", "auth.recover", "auth.logout", "organizations.list", "organizations.select"])),
   login: z.object({
-    flowId: z.string().min(1).max(128), verificationUri: z.string().url(), userCode: z.string().min(1).max(256),
-    expiresAt: NonNegativeInteger, intervalSeconds: NonNegativeInteger, retryAfterSeconds: NonNegativeInteger,
+    flowId: z.string().min(1).max(128), authorizationUrl: z.string().url().nullable(),
+    expiresAt: NonNegativeInteger,
   }).strict().nullable(),
   details: Details,
 }).strict();
@@ -208,22 +208,15 @@ const primarySchemas = {
       pending: z.boolean().optional(),
       authenticated: z.boolean().optional(),
       flowId: z.string().min(1).max(160).optional(),
-      userCode: NullableString.optional(),
-      verificationUri: NullableString.optional(),
+      authorizationUrl: NullableString.optional(),
       expiresAt: NonNegativeInteger.optional(),
-      intervalSeconds: NonNegativeInteger.optional(),
       details: Details,
     })
     .strict(),
-  "auth.poll": z
-    .object({
-      status: z.string(),
-      pending: z.boolean().optional(),
-      authenticated: z.boolean().optional(),
-      retryAfterSeconds: NonNegativeInteger.optional(),
-      details: Details,
-    })
-    .strict(),
+  "auth.cancel": z.object({ canceled:z.boolean(), details:Details }).strict(),
+  "auth.recover": z.object({
+    reconciled: z.boolean(), authenticated: z.boolean(), activeOrganization: NullableString.optional(), details: Details,
+  }).strict(),
   "auth.logout": z
     .object({ revoked: z.boolean(), alreadyLoggedOut: z.boolean().optional(), details: Details })
     .strict(),
@@ -269,6 +262,15 @@ const primarySchemas = {
     .strict(),
   "workflows.update": z
     .object({ workflow: JsonObject, draft: ObjectOrNull.optional(), details: Details })
+    .strict(),
+  "workflow.operations.get": z
+    .object({
+      operation: z.enum(["workflows.create", "workflows.update", "workflows.publish"]),
+      idempotencyKey: z.string(),
+      status: z.enum(["not_found", "pending", "completed"]),
+      response: JsonObject.optional(),
+      details: Details,
+    })
     .strict(),
   "workflows.validate": z
     .object({

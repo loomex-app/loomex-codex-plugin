@@ -184,6 +184,9 @@ function usesCompactModelProjection(definition: ToolDefinition): boolean {
 }
 
 function timeoutFor(definition: ToolDefinition, params: Record<string, JsonValue>): number {
+  // Logout first lets idle lease and heartbeat tasks quiesce without
+  // cancelling provider work, then revokes the device credential.
+  if (definition.rpcMethod === "auth.logout") return 60_000;
   if (definition.rpcMethod === "runs.wait" || definition.rpcMethod === "builder.get") {
     const requested = typeof params.timeoutSeconds === "number" ? params.timeoutSeconds : 45;
     const seconds = Math.min(requested, 45);

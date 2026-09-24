@@ -868,6 +868,63 @@ test("safe run validation issues remain actionable across local control", async 
   assert.doesNotMatch(JSON.stringify(result), /backend-message-must-not-cross/);
 });
 
+test("definitive workflow authoring rejection remains definitive across local control", async () => {
+  const runner = new FakeRunner((request, socket) => {
+    runner.error(socket, request, "WORKFLOW_AUTHORING_INVALID", "Untrusted summary", false, {
+      authoringIssueVersion: "v1",
+      authoringIssues: [
+        {
+          code: "WORKFLOW_DEFINITION_INVALID",
+          path: "$.nodes[1].inputs.answer",
+          message: "The source field is not defined.",
+        },
+      ],
+    });
+  });
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_workflow_create", arguments: {
+    name: "Invalid",
+    definition: { nodes: [], transitions: [] },
+    idempotencyKey: "0b90bcfa-3508-45af-b269-c167d2613ab6",
+  } });
+  const error = (result.structuredContent as { error: Record<string, unknown> }).error;
+
+  assert.equal(result.isError, true);
+  assert.equal(error.code, "WORKFLOW_AUTHORING_INVALID");
+  assert.equal(error.outcome, "rejected");
+  assert.equal(error.recovery, "correct_input");
+  assert.equal(error.authoringIssueVersion, "v1");
+  assert.deepEqual(error.authoringIssues, [{
+    code: "WORKFLOW_DEFINITION_INVALID",
+    path: "$.nodes[1].inputs.answer",
+    message: "The source field is not defined.",
+  }]);
+  assert.doesNotMatch(String(error.message), /network|unknown/i);
+});
+
+test("workflow operation reconciliation preserves the exact operation and key", async () => {
+  const idempotencyKey = "99d68a8f-e10c-4e9c-ad63-d0f257cd2d17";
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => {
+    assert.equal(request.method, "workflow.operations.get");
+    assert.deepEqual(request.params, { operation: "workflows.create", idempotencyKey });
+    runner.respond(socket, request, {
+      operation: "workflows.create",
+      idempotencyKey,
+      status: "completed",
+      response: { workflowId: "591f2e31-a247-4e70-90ef-43a44ff866d4" },
+    });
+  });
+  const client = await connect(runner);
+  const result = await client.callTool({
+    name: "loomex_workflow_operation_get",
+    arguments: { operation: "workflows.create", idempotencyKey },
+  });
+  assert.equal(result.isError, undefined);
+  assert.equal((result.structuredContent as { data: Record<string, unknown> }).data.status, "completed");
+  assert.equal(runner.requests.length, 1);
+});
+
 test("untrusted validation details fail closed without leaking runner values", async () => {
   const runner = new FakeRunner((request, socket) => {
     runner.error(
@@ -1438,7 +1495,7 @@ test("workflow list text summaries are compact, safe projections and retain cano
 test("connection tools use dedicated resources and owner-local view sessions", async () => {
   const organizationId = "f4139cef-684b-4578-b908-293a0efb7f1a";
   const projection = {
-    schemaVersion: "loomex.runner.connection/v1",
+    schemaVersion: "loomex.runner.connection/v2",
     state: "authenticated",
     organization: { status: "organization_required", selected: null },
     organizations: [{ id: organizationId, name: "Example organization", enrolled: true }],

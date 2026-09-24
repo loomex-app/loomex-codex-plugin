@@ -15,6 +15,8 @@ unavailable. The current visual entry points are:
 
 | Visual purpose | Native tool | Headless fallback |
 | --- | --- | --- |
+| Connect or sign in | `loomex_connection_view` | `loomex_connection_get` and focused auth tools |
+| Choose an organization after sign-in | `loomex_organizations_view` | `loomex_organizations_list` and explicit `loomex_organization_select` |
 | Browse workflows | `loomex_workflows_view` | `loomex_workflows_list` |
 | Inspect a workflow | `loomex_workflow_view` | `loomex_workflow_get` |
 | Set up a run | `loomex_run_setup` | `loomex_workflow_get` for the schema and setup facts |

@@ -7,7 +7,7 @@ import { createUiElement, type ElementAttributes } from "./components.js";
 import { ContinuationDeliveryController, decodeDeliveryProjection } from "./continuation-delivery.js";
 import {reapplyPresentationEdits} from "./presentation-edits.js";
 // Compose the typed page domains, transport, persistence, and native DOM shell.
-import { decodePersistenceReceipt, decodeUiResult, normalizeUiRpcResult, UiResultDecodeError, type UiResultDiagnostic, type UiResultReceipt } from "./result-decoder.js";
+import { decodePersistenceReceipt, decodeUiResult, normalizeUiRpcResult, UiResultDecodeError, UiTransportError, type UiResultDiagnostic, type UiResultReceipt } from "./result-decoder.js";
 import { setRestoring } from "./lifecycle.js";
 import { RuntimeTransport } from "./runtime-transport.js";
 import { createViewPersistence, ViewRestorationCoordinator } from "./persistence.js";
@@ -16,7 +16,7 @@ import { ACTIONS, createIcon } from "./shell.js";
 import { eventElement, requireElement, requireMain } from "./dom.js";
 import { createConnectionController } from "./connection-controller.js";
 import { createRuntimeShell } from "./runtime-shell.js";
-import { createBrowserController } from "./browser-controller.js";
+import { createBrowserController, type PublishReview } from "./browser-controller.js";
 import { createRunListController, type RunListArguments } from "./runs-list-controller.js";
 import { createInteractionFormController, questionCopyValues as presentationQuestionCopyValues } from "./interaction-form.js";
 import { committedPreparationRun, createRunPresentation } from "./run-presentation.js";
@@ -51,7 +51,7 @@ declare const __LOOMEX_STATUS_CLASSES__: Readonly<Record<string, string>>;
 
 const UI_MODES = new Set<UiMode>(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]);
 const CONNECTION_STATUS = {
-  authenticated: "Signed in", signed_out: "Signed out", verification_pending: "Verification pending",
+  authenticated: "Signed in", signed_out: "Signed out", browser_pending: "Sign-in pending", authentication_completing: "Completing sign-in",
   verification_expired: "Expired", logout_pending: "Signing out", recovery_pending: "Recovery required",
   credential_store_unavailable: "Unavailable",
 } as const;
@@ -174,11 +174,12 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     elements: { context, title, headerStage, headerStatus, form, refresh, primary, secondary, summary },
     connected: () => connected,
     hostCapabilities: () => hostCapabilities,
-    callTool: (name, args, renderResult, observeResult) => callTool(name, args, renderResult, observeResult),
+    callTool: (name, args, renderResult, observeResult, activity) => callTool(name, args, renderResult, observeResult, activity),
     send: (method, args, request, options) => send(method, args, request, options),
     setAction,
     syncChrome,
     setError,
+    clearError: () => {summary.classList.remove("error");summary.removeAttribute("role");summary.textContent="";errorDetails.replaceChildren();errorDetails.hidden=true;},
     viewPersistenceFault,
     enterSafeViewReentry,
     renderSafeViewReentry,
@@ -193,7 +194,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   const connectionState = connectionController.state;
   const {
     clearConnectionPoll, hydrateConnectionView, loadConnectionOrganizations, navigateConnection,
-    refreshConnection, renderConnectionPage, renderConnectionResult, restoreConnectionView,
+    refreshConnection, renderConnectionPage, renderConnectionResult, restoreConnectionView, observeConnection,
     normalizedConnection, saveConnectionView, scheduleConnectionPoll,
   } = connectionController;
 
@@ -549,9 +550,9 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     transport: {
       beginAuthoritativeRequest: () => transport.beginAuthoritativeRequest(),
       isAuthoritativeRequestCurrent: (epoch) => transport.isAuthoritativeRequestCurrent(epoch),
-      callTool: async (name, args) => {
+      callTool: async (name, args, activity = "foreground") => {
         if (TASK_WORKSPACE_TOOLS.has(name)) taskWorkspace = taskWorkspaceFrom(args);
-        const result = rpcResult(await send("tools/call", { name, arguments: args }));
+        const result = rpcResult(await send("tools/call", { name, arguments: args }, true, { activity: activity === "foreground" }));
         latestAnswerChannel = safeText(result._meta?.answerChannel || result._meta?.["loomex/answerChannel"], 40) || latestAnswerChannel;
         if (TASK_WORKSPACE_TOOLS.has(name)) applyTaskWorkspaceResult(result);
         return result;
@@ -643,14 +644,77 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       if (!workflowIdValid(workflowId)) throw new Error("The selected workflow could not be verified.");
       if (action === "use-version" && !workflowIdValid(data.selectedVersion?.id)) throw new Error("The published version could not be verified. Refresh before selecting it.");
       if (action === "edit") { await openWorkflowFrontend(workflowId); return; }
+      if (action === "publish") throw new Error("Publish must be reviewed in the workflow card.");
       const text = action === "use-version"
         ? `Inspect published version ${safeText(data.selectedVersion?.id, 64)} of Loomex workflow ${workflowId} and prepare making it current for future runs. Require my explicit approval before calling loomex_workflow_activate. Do not publish a new version or start a run.`
-        : `Inspect Loomex workflow ${workflowId} and prepare its publish action for my review. Do not publish until I explicitly approve the exact action.`;
+        : "";
       const result = await send("ui/message", { role: "user", content: [{ type: "text", text }] });
       if (record(result)?.isError === true) throw new Error("The host could not open this workflow action in the conversation.");
       summary.classList.remove("error");
       summary.setAttribute("role", "status");
       summary.textContent = `${action[0]!.toUpperCase()}${action.slice(1)} was opened in the conversation for review.`;
+    },
+    reviewWorkflowPublish: async (displayed) => {
+      const workflowId = safeText(displayed.workflow?.id, 64);
+      if (!workflowIdValid(workflowId)) throw new Error("The workflow identity could not be verified.");
+      const currentResult = await callTool("loomex_workflow_get", { workflowId, version: "draft" }, false, false);
+      if (uiResultFailed(currentResult)) throw new Error("The current draft could not be verified. Refresh and try again.");
+      const current = resultData(currentResult);
+      const draft = current.selectedVersion;
+      const shown = displayed.selectedVersion;
+      if (current.workflow?.id !== workflowId || draft?.status !== "draft" || typeof draft.revision !== "number" || !Number.isSafeInteger(draft.revision) ||
+          typeof draft.definitionChecksum !== "string" || !draft.definitionChecksum || !draft.definition ||
+          shown?.id !== draft.id || shown?.revision !== draft.revision || shown?.definitionChecksum !== draft.definitionChecksum) {
+        throw new Error("The draft changed. Refresh its details before reviewing Publish.");
+      }
+      const validationResult = await callTool("loomex_workflow_validate", { definition: draft.definition as JsonObject }, false, false);
+      if (uiResultFailed(validationResult)) throw new Error("The draft could not be validated. Try again after checking the connection.");
+      const validation = resultData(validationResult);
+      if (validation.valid !== true) throw new Error("The draft has validation issues. Open it in Loomex to correct them before publishing.");
+      if (!exactJsonEqual(validation.workflow, draft.definition)) {
+        throw new Error("Validation normalized the draft. Save and review the updated definition before publishing.");
+      }
+      return { workflowId, revision: draft.revision, definitionChecksum: draft.definitionChecksum,
+        name: safeText(current.workflow?.name, 160) || "this workflow" };
+    },
+    publishWorkflow: async (review: PublishReview) => {
+      const slot = `workflow:publish:${review.workflowId}:${review.revision}`;
+      const pending = mutationController.get(slot);
+      if (pending && (pending.arguments.workflowId !== review.workflowId || pending.arguments.expectedVersion !== review.revision)) {
+        throw new Error("A different publish operation is pending. Reconcile its outcome before continuing.");
+      }
+      const result = await callMutation("loomex_workflow_publish", slot,
+        { workflowId: review.workflowId, expectedVersion: review.revision });
+      if (uiResultFailed(result)) throw new Error("Publish was not confirmed. Refresh to reconcile the exact operation before trying again.");
+    },
+    reconcileWorkflowPublish: async (workflowId) => {
+      const operation = mutationController.current();
+      if (operation?.name !== "loomex_workflow_publish" || operation.arguments.workflowId !== workflowId ||
+          typeof operation.arguments.idempotencyKey !== "string") {
+        throw new Error("No matching publish operation is available for reconciliation.");
+      }
+      const result = await callTool("loomex_workflow_operation_get", {
+        operation: "workflows.publish", idempotencyKey: operation.arguments.idempotencyKey,
+      }, false, false);
+      if (uiResultFailed(result)) throw new Error("The publish outcome could not be checked. Try again when connected.");
+      const receipt = resultData(result);
+      if (receipt.status !== "completed") {
+        throw new Error(receipt.status === "pending" ? "Publishing is still in progress. Check again shortly." :
+          "The exact publish request has no confirmed result. Keep this card open and check again before retrying.");
+      }
+      const response = record(receipt.response);
+      const workflow = record(response?.workflow);
+      const version = record(response?.version);
+      if (workflow?.id !== workflowId || version?.workflowId !== workflowId || !workflowIdValid(version?.id)) {
+        throw new Error("The publish receipt did not match this workflow. Keep the operation for support review.");
+      }
+      await mutationController.settle(operation, "completed", { structuredContent: { ok: true, data: response as UiData } });
+      mutationController.clearOperation(operation);
+      return true;
+    },
+    publishPending: (workflowId) => {
+      const pending = mutationController.current();
+      return pending?.name === "loomex_workflow_publish" && pending.arguments.workflowId === workflowId && pending.uncertain === true;
     },
     taskWorkspaceArguments,
     selectedWorkflowVersion: (data) => selectedWorkflowVersion(data)?.version,
@@ -1460,7 +1524,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
 
   function connectionStatus(state: string | undefined): string | undefined {
     if (state === undefined) return undefined;
-    return ({ authenticated: "Signed in", signed_out: "Signed out", verification_pending: "Verification pending", verification_expired: "Expired", logout_pending: "Signing out", recovery_pending: "Recovery required", credential_store_unavailable: "Unavailable" } as const)[state as keyof typeof CONNECTION_STATUS];
+    return ({ authenticated: "Signed in", signed_out: "Signed out", browser_pending: "Sign-in pending", authentication_completing: "Completing sign-in", verification_expired: "Expired", logout_pending: "Signing out", recovery_pending: "Recovery required", credential_store_unavailable: "Unavailable" } as const)[state as keyof typeof CONNECTION_STATUS];
   }
 
   function headerIdentity(request?: HumanRequest): string {
@@ -1615,7 +1679,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       errorDetails.hidden = false;
       return;
     }
-    const diagnostic = error instanceof UiResultDecodeError ? error.diagnostic : undefined;
+    const diagnostic = error instanceof UiResultDecodeError || error instanceof UiTransportError ? error.diagnostic : undefined;
     if (!diagnostic) return;
     uiDiagnostics.push(diagnostic);
     if (uiDiagnostics.length > 20) uiDiagnostics.shift();
@@ -1627,7 +1691,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       `fields: ${diagnostic.fields.join(", ") || "none"}`,
     ].join("\n");
     const details = element("details", { className: "ui-card" });
-    details.append(element("summary", {}, "Technical details"));
+    details.append(element("summary", {}, "Support details"));
     details.append(element("pre", { className: "ui-caption" }, text));
     const copy = element("button", { type: "button", className: "secondary" }, "Copy diagnostic details");
     copy.addEventListener("click", async () => {
@@ -2087,8 +2151,9 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     args: JsonObject,
     renderResult = true,
     observeResult = true,
+    activity: "foreground" | "background" = "foreground",
   ): Promise<RpcResult> {
-    return mutationController.callTool(name, args, { present: renderResult, observe: observeResult });
+    return mutationController.callTool(name, args, { present: renderResult, observe: observeResult, activity });
   }
 
   async function callMutation(name: MutationToolName, slot: string, args: JsonObject): Promise<RpcResult> {
@@ -2417,9 +2482,13 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     if (event.isTrusted && event.target instanceof Element && event.target.matches("details")) markViewDirty();
   }, { capture: true, signal: runtimeEvents.signal });
   document.addEventListener("visibilitychange", () => {
-    if (!isConnectionView || document.visibilityState !== "visible") return;
+    if (!isConnectionView) return;
+    if (document.visibilityState === "hidden") {clearConnectionPoll();return;}
     const projection = normalizedConnection(latest);
-    if (projection) scheduleConnectionPoll(projection);
+    if (projection && ["browser_pending","authentication_completing"].includes(projection.state)) {
+      scheduleConnectionPoll(projection);
+      void observeConnection();
+    } else void refreshConnection();
   }, { signal: runtimeEvents.signal });
 
   window.addEventListener("message", (event) => {

@@ -73,7 +73,7 @@ function expectedFollowMarkdown(runId: string, receipt = "A".repeat(16)): string
 
 function connectionProjection(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schemaVersion: "loomex.runner.connection/v1",
+    schemaVersion: "loomex.runner.connection/v2",
     state: "signed_out",
     organization: { status: "organization_required", selected: null },
     organizations: [],
@@ -190,10 +190,10 @@ async function mountApp(
     const appCallableNames = new Set(appCallableToolNames);
     const journalMethods = new Set([
       "interactions.respond", "interactions.decide", "builder.respond", "runs.cancel", "runs.commit",
-      "builder.commit", "editor.commit", "workspaces.grant", "runs.prepare",
+      "builder.commit", "editor.commit", "workspaces.grant", "runs.prepare", "workflows.publish",
       "runs.start_handoff.issue", "runs.start_handoff.approve",
     ]);
-    const reconciliationMethods = new Set(["interactions.get", "builder.get", "runs.get"]);
+    const reconciliationMethods = new Set(["interactions.get", "builder.get", "runs.get", "workflow.operations.get"]);
     // Match the installed MCP result: authoritative data is present in both
     // channels, while model-facing text is deliberately only a summary.
     const persistenceResult = (data: any) => ({
@@ -447,6 +447,11 @@ async function mountApp(
         const url = message.params?.url;
         if (typeof url !== "string" || !/^https?:\/\//.test(url)) {
           event.source.postMessage({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Invalid external URL" } }, "*");
+          return;
+        }
+        if (window.__failNextOpenLink) {
+          window.__failNextOpenLink = false;
+          event.source.postMessage({ jsonrpc: "2.0", id: message.id, result: { isError: true } }, "*");
           return;
         }
         window.__loomexOpenedLinks.push(url);
@@ -897,7 +902,33 @@ test("connection view renders fresh state without auto-starting authentication a
   assert.equal(await app.getByRole("button", { name: "Sign out", exact: true }).count(), 0);
 });
 
-test("connection verification displays one progress state and does not poll before its returned interval", async (t) => {
+test("explicit browser sign-in shows the current link without sending another chat prompt", async (t) => {
+  const available = await browserTools();
+  assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const app = await mountApp(page, "connection", connectionProjection(), false, false, null, false, undefined, { openLinks: {} });
+  const authorizationUrl = "https://example.test/authorize?transaction=example";
+  const pending = connectionProjection({
+    state: "browser_pending", actions: ["auth.cancel"],
+    login: { flowId: "flow-new", authorizationUrl, expiresAt: Math.floor(Date.now() / 1000) + 60 },
+  });
+  await page.evaluate((responses: unknown[]) => { window.__workflowResponses = responses; }, [
+    { structuredContent: { ok: true, data: { status: "pending", authorizationUrl } } },
+    { structuredContent: { ok: true, data: pending } },
+    { structuredContent: { ok: true, data: pending } },
+  ]);
+  await app.getByRole("button", { name: "Sign in", exact: true }).click();
+  await app.getByText("Waiting for browser approval…", { exact: true }).waitFor();
+  assert.equal(await app.locator("#authorization-url").textContent(), authorizationUrl);
+  assert.equal(await app.getByRole("button", { name: "Copy sign-in link", exact: true }).count(), 1);
+  assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
+  assert.deepEqual(await page.evaluate(() => window.__loomexOpenedLinks), []);
+  assert.equal(await app.getByText(/device code/i).count(), 0);
+});
+
+test("browser sign-in displays one stable progress state and observes local authority", async (t) => {
   const available = await browserTools();
   if (!available) {
     if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Playwright requires an installed Chromium browser");
@@ -908,17 +939,97 @@ test("connection verification displays one progress state and does not poll befo
   t.after(() => browser.close());
   const page = await browser.newPage();
   const pending = connectionProjection({
-    state: "verification_pending",
-    actions: ["auth.poll"],
-    login: { flowId: "flow-a", verificationUri: "https://example.test/verify", userCode: "ABCD-1234", expiresAt: Math.floor(Date.now() / 1000) + 60, intervalSeconds: 60, retryAfterSeconds: 60 },
+    state: "browser_pending",
+    actions: ["auth.cancel"],
+    login: { flowId: "flow-a", authorizationUrl: "https://example.test/authorize", expiresAt: Math.floor(Date.now() / 1000) + 60 },
   });
   const app = await mountApp(page, "connection", pending);
-  await app.getByText("Waiting for verification…", { exact: true }).waitFor();
-  assert.equal(await app.getByText("Waiting for verification…", { exact: true }).count(), 1);
-  assert.deepEqual(await page.evaluate(() => window.__loomexCalls), [], "polling waits for the returned interval");
+  await app.getByText("Waiting for browser approval…", { exact: true }).waitFor();
+  assert.equal(await app.getByText("Waiting for browser approval…", { exact: true }).count(), 1);
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls), [], "background observation does not start immediately");
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
   await waitForToolCount(page, "loomex_connection_get", 1);
-  assert.equal(await page.evaluate(() => window.__loomexCalls.some((call: any) => call.name === "loomex_auth_poll")), false);
+  assert.equal(await page.evaluate(() => window.__loomexCalls.some((call: any) => call.name === "loomex_auth_cancel")), false);
+});
+
+test("browser approval advances the same connection card to organization selection", async (t) => {
+  const available = await browserTools();
+  assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const pending = connectionProjection({
+    state: "browser_pending", actions: ["auth.cancel"],
+    login: { flowId: "flow-organization", authorizationUrl: "https://example.test/authorize", expiresAt: Math.floor(Date.now()/1000)+60 },
+  });
+  const authenticated = connectionProjection({
+    state: "authenticated", actions: ["organizations.list", "organizations.select", "auth.logout"],
+  });
+  const organization = { id: "7a6b8c10-9a11-4a12-8a13-141516171819", name: "Loomex Studio", enrolled: false };
+  const app = await mountApp(page, "connection", pending);
+  await page.evaluate((responses:unknown[]) => { window.__workflowResponses = responses; }, [
+    { structuredContent: { ok: true, data: authenticated } },
+    { structuredContent: { ok: true, data: { organizations: [organization] } } },
+  ]);
+  await page.evaluate(() => document.getElementById("app")?.contentDocument?.dispatchEvent(new Event("visibilitychange")));
+  await app.getByRole("heading", { name: "Organizations", exact: true }).waitFor();
+  await app.getByRole("radio", { name: "Loomex Studio", exact: true }).waitFor();
+  assert.equal(await app.getByRole("button", { name: "Use organization", exact: true }).isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls.map((call: {name:string}) => call.name)), ["loomex_connection_get", "loomex_organizations_list"]);
+  assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
+});
+
+test("organization selection after approval survives a connection-card remount", async (t) => {
+  const available = await browserTools();
+  assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const session = { ...viewSession(randomUUID(), "browser", "catalog", "00000000-0000-0000-0000-000000000000", {page:"connection"}), kind: "connection" };
+  const pending = connectionProjection({state:"browser_pending",actions:["auth.cancel"],login:{flowId:"flow-restored-organization",authorizationUrl:"https://example.test/authorize",expiresAt:Math.floor(Date.now()/1000)+60}});
+  const authenticated = connectionProjection({state:"authenticated",actions:["organizations.list","organizations.select","auth.logout"]});
+  const organization = {id:"7a6b8c10-9a11-4a12-8a13-141516171819",name:"Loomex Studio",enrolled:true};
+  let app = await mountApp(page,"connection",pending,false,false,null,false,{"loomex/viewSession":session},undefined,[
+    {structuredContent:{ok:true,data:pending}},
+  ]);
+  await app.getByText("Waiting for browser approval…",{exact:true}).waitFor();
+  await page.evaluate((responses:unknown[])=>{window.__workflowResponses=responses;},[
+    {structuredContent:{ok:true,data:authenticated}},
+    {structuredContent:{ok:true,data:{organizations:[organization]}}},
+  ]);
+  await page.evaluate(()=>document.getElementById("app")?.contentDocument?.dispatchEvent(new Event("visibilitychange")));
+  await app.getByRole("radio",{name:"Loomex Studio",exact:true}).waitFor();
+  await waitForPersistenceToolCount(page,"loomex_connection_view_update",1);
+  const saved = await page.evaluate((id:string)=>window.__loomexPersistenceStore.sessions[id],session.viewSessionId);
+  assert.equal(saved.state.page,"organizations");
+  app = await mountApp(page,"connection",authenticated,false,false,null,false,{"loomex/viewSession":session},undefined,[
+    {structuredContent:{ok:true,data:authenticated}},
+    {structuredContent:{ok:true,data:{organizations:[organization]}}},
+  ],true);
+  await app.getByRole("heading",{name:"Organizations",exact:true}).waitFor();
+  await app.getByRole("radio",{name:"Loomex Studio",exact:true}).waitFor();
+  assert.equal((await page.evaluate(()=>window.__loomexCalls)).some((call:{name:string})=>call.name==="loomex_auth_start"),false);
+});
+
+test("connection recovery offers exact reconciliation and explicit reconnect", async (t) => {
+  const available = await browserTools();
+  if (!available) {
+    if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Playwright requires an installed Chromium browser");
+    t.skip("Playwright browser unavailable");
+    return;
+  }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const recovery = connectionProjection({
+    state: "recovery_pending",
+    actions: ["auth.recover", "auth.logout"],
+  });
+  const app = await mountApp(page, "connection", recovery);
+  await app.getByText("A previous credential operation needs to be reconciled before Loomex can connect.", { exact: true }).waitFor();
+  await app.getByRole("button", { name: "Retry connection", exact: true }).click();
+  await waitForToolCount(page, "loomex_auth_recover", 1);
+  assert.equal(await app.getByRole("button", { name: "Reconnect", exact: true }).count(), 1);
 });
 
 test("a fresh authenticated connection loads organizations separately before selection", async (t) => {
@@ -4207,6 +4318,24 @@ test("reopening setup restores the verified preparation review and enables Start
   assert.equal(calls.some((call: any) => call.name === "loomex_run_commit"), false);
 });
 
+test("connection explains how sign out handles active execution work", async (t) => {
+  const available = await browserTools();
+  assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const organization = { id: "11111111-1111-4111-8111-111111111111", name: "Example", enrolled: true };
+  // The runner may have idle lease/heartbeat work even with no active jobs.
+  // Sign out remains available and the runner quiesces those connections.
+  const projection = connectionProjection({ state: "authenticated", activeWork: 3,
+    organization: { status: "connected", selected: organization }, organizations: [organization],
+    actions: ["organizations.list", "organizations.select", "auth.logout"] });
+  const app = await mountApp(page, "connection", projection);
+  await app.getByText("Sign out waits for idle connections to close. Running jobs must finish first.").waitFor();
+  assert.equal(await app.getByRole("button", { name: "Sign out", exact: true }).count(), 1);
+  assert.equal((await page.evaluate(() => window.__loomexCalls)).some((call: any) => call.name === "loomex_auth_logout"), false);
+});
+
 test("organizations remain distinct, paginate and preserve a candidate through refresh", async (t) => {
   const available = await browserTools();
   assert.ok(available, "Chromium required");
@@ -4237,18 +4366,90 @@ test("organizations remain distinct, paginate and preserve a candidate through r
   await captureRequestedScreenshots(page, "connection-connected");
 });
 
-test("opening the verification browser preserves polling and mounted code", async (t) => {
+test("opening the default browser preserves local observation and a stable waiting view", async (t) => {
   const available = await browserTools(); assert.ok(available);
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();
-  const pending = connectionProjection({ state: "verification_pending", actions: ["auth.poll"], login: { flowId: "flow-poll", verificationUri: "https://example.test/verify", userCode: "ABCD-1234", expiresAt: Math.floor(Date.now()/1000)+60, intervalSeconds: 1, retryAfterSeconds: 1 } });
-  const app = await mountApp(page, "connection", pending, false, false, null, false, undefined, { openLink: { url: {} } });
-  await app.getByRole("button", { name: "Open browser", exact: true }).click();
-  await waitForToolCount(page, "loomex_auth_poll", 1);
-  assert.equal(await app.getByText("ABCD-1234", { exact: true }).count(), 1);
-  assert.equal(await app.locator("#verification-url").count(), 0);
+  const pending = connectionProjection({ state: "browser_pending", actions: ["auth.cancel"], login: { flowId: "flow-poll", authorizationUrl: "https://example.test/authorize", expiresAt: Math.floor(Date.now()/1000)+60 } });
+  const app = await mountApp(page, "connection", pending, false, false, null, false, undefined, { openLinks: {} });
+  await page.evaluate(() => { window.__workflowDelayMs = 1200; });
+  await app.getByRole("button", { name: "Open in default browser", exact: true }).click();
+  await waitForToolCount(page, "loomex_connection_get", 1);
+  assert.equal(await app.locator("#activity").isVisible(), false, "background observation has no visible loading state");
+  assert.equal(await app.getByText("Waiting for browser approval…", { exact: true }).count(), 1);
+  assert.equal(await app.getByRole("button", { name: "Copy sign-in link", exact: true }).count(), 1);
+  assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
   await captureRequestedScreenshots(page, "connection-verification");
+});
+
+test("rejected default-browser request keeps the same flow and its copyable link", async (t) => {
+  const available = await browserTools(); assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const pending = connectionProjection({ state: "browser_pending", actions: ["auth.cancel"], login: { flowId: "flow-open-error", authorizationUrl: "https://example.test/authorize", expiresAt: Math.floor(Date.now()/1000)+60 } });
+  const app = await mountApp(page, "connection", pending, false, false, null, false, undefined, { openLinks: {} });
+  await page.evaluate(() => { window.__failNextOpenLink = true; });
+  await app.getByRole("button", { name: "Open in default browser", exact: true }).click();
+  await app.getByText("The browser could not be opened. Use the link in this card instead.", { exact: true }).waitFor();
+  assert.equal(await app.locator("#authorization-url").textContent(), "https://example.test/authorize");
+  assert.equal(await app.getByRole("button", { name: "Copy sign-in link", exact: true }).count(), 1);
+  assert.equal(await app.getByRole("button", { name: "Open in default browser", exact: true }).count(), 1);
+  assert.equal(await app.getByText("Support details", { exact: true }).count(), 1);
+  assert.equal((await page.evaluate(() => window.__loomexCalls)).some((call: {name:string}) => call.name === "loomex_auth_start"), false);
+});
+
+test("default-browser fallback verifies the pending flow before opening an external link", async (t) => {
+  const available = await browserTools(); assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const authorizationUrl = "https://example.test/authorize?transaction=external";
+  const pending = connectionProjection({ state: "browser_pending", actions: ["auth.cancel"], login: { flowId: "flow-external", authorizationUrl, expiresAt: Math.floor(Date.now()/1000)+60 } });
+  const app = await mountApp(page, "connection", pending, false, false, null, false, undefined, { openLinks: {} });
+  await app.getByRole("button", { name: "Open in default browser", exact: true }).click();
+  await page.waitForFunction((url: string) => window.__loomexOpenedLinks.includes(url), authorizationUrl);
+  assert.equal((await page.evaluate(() => window.__loomexCalls)).filter((call: {name:string}) => call.name === "loomex_connection_get").length, 1);
+  assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
+});
+
+test("link copy refuses a replaced sign-in flow", async (t) => {
+  const available = await browserTools(); assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const expiresAt = Math.floor(Date.now()/1000)+60;
+  const initial = connectionProjection({ state:"browser_pending", actions:["auth.cancel"], login:{flowId:"flow-old",authorizationUrl:"https://example.test/old",expiresAt} });
+  const current = connectionProjection({ state:"browser_pending", actions:["auth.cancel"], login:{flowId:"flow-new",authorizationUrl:"https://example.test/new",expiresAt} });
+  const app = await mountApp(page,"connection",initial);
+  await page.evaluate((value:unknown)=>{window.__workflowResponses=[{structuredContent:{ok:true,data:value}}];},current);
+  await app.getByRole("button",{name:"Copy sign-in link",exact:true}).click();
+  await app.getByText("This sign-in is no longer available. Check the current connection state.",{exact:true}).waitFor();
+  assert.deepEqual(await page.evaluate(()=>window.__loomexMessages),[]);
+  assert.deepEqual(await page.evaluate(()=>window.__loomexOpenedLinks),[]);
+});
+
+test("connection observation replaces an obsolete browser link and action set", async (t) => {
+  const available = await browserTools(); assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const expiresAt = Math.floor(Date.now()/1000)+60;
+  const initial = connectionProjection({state:"browser_pending",actions:["auth.cancel"],login:{flowId:"flow-updated",authorizationUrl:"https://example.test/old",expiresAt}});
+  const updated = connectionProjection({state:"browser_pending",actions:[],login:{flowId:"flow-updated",authorizationUrl:"https://example.test/new",expiresAt}});
+  const app = await mountApp(page,"connection",initial,false,false,null,false,undefined,{openLinks:{}});
+  const baseline=await page.evaluate(()=>window.__loomexCalls.filter((call:{name:string})=>call.name==="loomex_connection_get").length);
+  await page.evaluate((value:unknown)=>{window.__workflowResponses=Array.from({length:3},()=>({structuredContent:{ok:true,data:value}}));},updated);
+  await page.evaluate(() => document.getElementById("app")?.contentDocument?.dispatchEvent(new Event("visibilitychange")));
+  await waitForToolCount(page,"loomex_connection_get",baseline+1);
+  await app.locator("#authorization-url").waitFor({state:"attached"});
+  await page.waitForFunction(() => document.getElementById("app")?.contentDocument?.getElementById("authorization-url")?.textContent === "https://example.test/new",undefined,{timeout:10000}).catch(async(error:unknown)=>{
+    const observed=await page.evaluate(()=>({calls:window.__loomexCalls,body:document.getElementById("app")?.contentDocument?.body?.innerText,url:document.getElementById("app")?.contentDocument?.getElementById("authorization-url")?.textContent}));
+    throw new Error(JSON.stringify(observed),{cause:error});
+  });
+  assert.equal(await app.getByRole("button",{name:"Cancel sign-in",exact:true}).count(),0);
+  assert.equal(await app.getByText("Waiting for browser approval…",{exact:true}).count(),1);
 });
 
 test("connection navigation restores its page and fresh state after remount", async (t) => {
@@ -4659,6 +4860,113 @@ test("saved draft summary exposes publishing but never Run and refresh retains d
   await waitForToolCount(page, "loomex_workflow_get", 1);
   const calls = await page.evaluate(() => window.__loomexCalls);
   assert.equal(calls.find((call: any) => call.name === "loomex_workflow_get").arguments.version, "0");
+});
+
+test("Publish reviews the current validated revision in-card before one journaled mutation", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for publish qualification");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const workflowId = "9c120564-a7f3-485a-96f8-8da6b9015413";
+  const draftId = "c3525377-c5cf-467a-a366-bc75d514c2b5";
+  const definition = { executionPolicy: "host_user/v1", nodes: [], transitions: [] };
+  const detail = { workflow: { id: workflowId, name: "Reviewed draft", status: "draft" }, selectedVersion: {
+    id: draftId, workflowId, status: "draft", versionNumber: 0, revision: 2, definitionChecksum: "a".repeat(64), definition,
+  } };
+  const app = await mountApp(page, "authoring", detail);
+  await page.evaluate(({ detail, definition }: any) => { window.__workflowResponses = [
+    { structuredContent: { ok: true, data: detail } },
+    { structuredContent: { ok: true, data: { valid: true, errors: [], workflow: definition } } },
+  ]; }, { detail, definition });
+  await app.getByRole("button", { name: "Publish", exact: true }).click();
+  await app.getByRole("button", { name: "Confirm publish", exact: true }).waitFor();
+  let calls = await page.evaluate(() => window.__loomexCalls);
+  assert.equal(calls.filter((call: any) => call.name === "loomex_workflow_publish").length, 0);
+  assert.equal(calls.filter((call: any) => call.name === "loomex_workflow_validate").length, 1);
+  const published = { workflow: { id: workflowId, name: "Reviewed draft", status: "active" }, selectedVersion: {
+    ...detail.selectedVersion, id: "b948b891-4dcc-40eb-99cc-df58881e21af", status: "published", versionNumber: 1,
+  } };
+  await page.evaluate(({ published }: any) => { window.__workflowResponses = [
+    { structuredContent: { ok: true, data: { workflow: published.workflow, version: published.selectedVersion } } },
+    { structuredContent: { ok: true, data: published } },
+  ]; }, { published });
+  await app.getByRole("button", { name: "Confirm publish", exact: true }).click();
+  await waitForToolCount(page, "loomex_workflow_publish", 1).catch(async (error: unknown) => {
+    throw new Error(`${await app.locator("body").innerText()}\n${JSON.stringify(await page.evaluate(() => window.__loomexCalls))}`, { cause: error });
+  });
+  calls = await page.evaluate(() => window.__loomexCalls);
+  const publish = calls.find((call: any) => call.name === "loomex_workflow_publish");
+  assert.equal(publish.arguments.workflowId, workflowId);
+  assert.equal(publish.arguments.expectedVersion, 2);
+  assert.match(publish.arguments.idempotencyKey, /^[0-9a-f-]{36}$/i);
+  assert.equal(await page.evaluate(() => window.__loomexMessages.length), 0);
+});
+
+test("Publish refuses a stale draft without validating or mutating it", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for publish qualification");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const workflowId = "9c120564-a7f3-485a-96f8-8da6b9015413";
+  const detail = { workflow: { id: workflowId, name: "Changed draft", status: "draft" }, selectedVersion: {
+    id: "c3525377-c5cf-467a-a366-bc75d514c2b5", workflowId, status: "draft", versionNumber: 0,
+    revision: 1, definitionChecksum: "a".repeat(64), definition: { nodes: [] },
+  } };
+  const app = await mountApp(page, "authoring", detail, false, false, undefined, false, undefined, undefined, [
+    { structuredContent: { ok: true, data: { ...detail, selectedVersion: { ...detail.selectedVersion, revision: 2 } } } },
+  ]);
+  await app.getByRole("button", { name: "Publish", exact: true }).click();
+  await app.getByText(/draft changed/i).waitFor();
+  const calls = await page.evaluate(() => window.__loomexCalls);
+  assert.equal(calls.filter((call: any) => call.name === "loomex_workflow_validate").length, 0);
+  assert.equal(calls.filter((call: any) => call.name === "loomex_workflow_publish").length, 0);
+});
+
+test("an ambiguous Publish keeps the exact key and offers receipt reconciliation", async (t) => {
+  const available = await browserTools();
+  if (!available) assert.fail("Chromium is required for publish recovery qualification");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const workflowId = "9c120564-a7f3-485a-96f8-8da6b9015413";
+  const definition = { executionPolicy: "host_user/v1", nodes: [], transitions: [] };
+  const detail = { workflow: { id: workflowId, name: "Recoverable draft", status: "draft" }, selectedVersion: {
+    id: "c3525377-c5cf-467a-a366-bc75d514c2b5", workflowId, status: "draft", versionNumber: 0,
+    revision: 2, definitionChecksum: "a".repeat(64), definition,
+  } };
+  const app = await mountApp(page, "authoring", detail);
+  await page.evaluate(({ detail, definition }: any) => { window.__workflowResponses = [
+    { structuredContent: { ok: true, data: detail } },
+    { structuredContent: { ok: true, data: { valid: true, errors: [], workflow: definition } } },
+  ]; }, { detail, definition });
+  await app.getByRole("button", { name: "Publish", exact: true }).click();
+  await app.getByRole("button", { name: "Confirm publish", exact: true }).waitFor();
+  await page.evaluate(() => { window.__workflowResponses = [
+    { isError: true, structuredContent: { ok: false, error: { code: "NETWORK_AMBIGUOUS", message: "Lost reply" } } },
+  ]; });
+  await app.getByRole("button", { name: "Confirm publish", exact: true }).click();
+  await app.getByRole("button", { name: "Check publish outcome", exact: true }).waitFor();
+  const before = await page.evaluate(() => window.__loomexCalls);
+  const publish = before.find((call: any) => call.name === "loomex_workflow_publish");
+  assert.ok(publish?.arguments.idempotencyKey);
+  assert.equal(before.filter((call: any) => call.name === "loomex_workflow_publish").length, 1);
+  const published = { workflow: { id: workflowId, name: "Recoverable draft", status: "active" }, selectedVersion: {
+    ...detail.selectedVersion, id: "b948b891-4dcc-40eb-99cc-df58881e21af", status: "published", versionNumber: 1,
+  } };
+  await page.evaluate(({ published }: any) => { window.__workflowResponses = [
+    { structuredContent: { ok: true, data: { operation: "workflows.publish", status: "completed",
+      response: { workflow: published.workflow, version: published.selectedVersion } } } },
+    { structuredContent: { ok: true, data: published } },
+  ]; }, { published });
+  await app.getByRole("button", { name: "Check publish outcome", exact: true }).click();
+  await waitForToolCount(page, "loomex_workflow_operation_get", 1);
+  const after = await page.evaluate(() => window.__loomexCalls);
+  const lookup = after.find((call: any) => call.name === "loomex_workflow_operation_get");
+  assert.equal(lookup.arguments.operation, "workflows.publish");
+  assert.equal(lookup.arguments.idempotencyKey, publish.arguments.idempotencyKey);
+  assert.equal(after.filter((call: any) => call.name === "loomex_workflow_publish").length, 1);
 });
 
 test("workflow list retains draft discovery without offering execution", async (t) => {

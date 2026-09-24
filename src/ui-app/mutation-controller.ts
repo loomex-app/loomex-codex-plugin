@@ -22,6 +22,7 @@ export const MUTATION_JOURNAL_METHODS = Object.freeze({
   loomex_editor_commit: "editor.commit",
   loomex_workspace_grant: "workspaces.grant",
   loomex_run_prepare: "runs.prepare",
+  loomex_workflow_publish: "workflows.publish",
   // Start handoffs carry the sealed preparation arguments and an idempotency
   // key.  They must use the durable operation journal rather than the
   // presentation-state snapshot.
@@ -140,7 +141,7 @@ export interface RestoredMutationOperation {
 export interface MutationTransport {
   beginAuthoritativeRequest(): number;
   isAuthoritativeRequestCurrent(epoch: number): boolean;
-  callTool(name: string, arguments_: Readonly<JsonObject>): Promise<unknown>;
+  callTool(name: string, arguments_: Readonly<JsonObject>, activity?: "foreground" | "background"): Promise<unknown>;
 }
 
 export interface MutationPersistence {
@@ -178,6 +179,7 @@ export interface MutationControllerServices {
 export interface CallToolOptions {
   readonly present?: boolean;
   readonly observe?: boolean;
+  readonly activity?: "foreground" | "background";
 }
 
 export interface MutationCallOutcome {
@@ -348,6 +350,10 @@ function viewSessionProjection(result: RpcResult): MutationSessionProjection | u
 }
 
 function reconciliationFor(name: MutationToolName, args: Readonly<JsonObject>): MutationReconciliation | undefined {
+  if (name === "loomex_workflow_publish") {
+    if (typeof args.idempotencyKey !== "string") throw new Error("The publish recovery key is missing.");
+    return { method: "workflow.operations.get", params: immutableCopy({ operation: "workflows.publish", idempotencyKey: args.idempotencyKey }) };
+  }
   const method = MUTATION_JOURNAL_METHODS[name];
   const rules: Readonly<Record<string, {method:string;identity:string}>> = mutationRecovery.reconciliation;
   const rule=rules[method];
@@ -515,7 +521,7 @@ export class MutationController {
     const epoch = authoritative ? this.#services.transport.beginAuthoritativeRequest() : undefined;
     let result: RpcResult;
     try {
-      result = rpcResult(await this.#services.transport.callTool(name, immutableCopy(args)));
+      result = rpcResult(await this.#services.transport.callTool(name, immutableCopy(args), options.activity ?? "foreground"));
     } catch (error: unknown) {
       if (authoritative) this.#services.presentation.authoritativeFailure(error);
       throw error;

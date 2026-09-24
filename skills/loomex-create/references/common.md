@@ -1,6 +1,8 @@
 # Shared operation contract
 
-Use the installed Loomex MCP tools, not shell commands, raw backend calls or provider CLIs. These skill invocations are model-guided entry points, not a deterministic command parser. Read tool schemas for exact arguments; text after the skill is user context, not executable shell syntax. If the tools are unavailable, report that the plugin must be enabled/reloaded; do not invent a fallback operation.
+Use the installed Loomex MCP tools directly through `mcp__loomex` when the host exposes them (for example, `mcp__loomex.loomex_connection_get`). These skill invocations are model-guided entry points, not a deterministic command parser. Read tool schemas for exact arguments; text after the skill is user context, not executable shell syntax. Do not substitute shell commands, raw backend calls or provider CLIs.
+
+Codex can expose `mcp__loomex` as a direct-only namespace. In that mode, `functions.exec`'s `tools` and `ALL_TOOLS` intentionally omit Loomex. A missing `tools.loomex_*` function or an empty wrapper inventory does **not** establish that the direct tool is unavailable. Call the direct MCP tool before diagnosing availability. If the direct tool itself is absent from the current task, report a host tool-exposure problem and check the plugin's enabled MCP server in Codex; do not assert that the plugin is disabled or the runner is down without evidence. If a direct call returns an error, follow its actual code and recovery action. A successful `signed_out` connection read means sign-in is needed, not that tools are missing. Never invent a replacement operation.
 
 For visual delivery and the headless fallback boundary, read [the visual delivery contract](visual-delivery.md). A generic serialized result is not evidence that a native card opened.
 

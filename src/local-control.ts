@@ -19,6 +19,7 @@ import {
   type RpcErrorCode,
   type ToolOutput,
   type ValidationIssue,
+  type AuthoringIssue,
 } from "./protocol.js";
 import { parseMethodResult } from "./result-schemas.js";
 import { REQUIRED_RUNNER_CAPABILITIES } from "./tool-catalog.js";
@@ -37,6 +38,8 @@ export class LocalControlError extends Error {
   readonly idempotencyKey: string | undefined;
   readonly transportFailure: boolean;
   readonly validationIssues: readonly ValidationIssue[] | undefined;
+  readonly authoringIssues: readonly AuthoringIssue[] | undefined;
+  readonly authoringMessage: string | undefined;
 
   constructor(options: {
     code: RpcErrorCode;
@@ -46,6 +49,8 @@ export class LocalControlError extends Error {
     idempotencyKey?: string;
     transportFailure?: boolean;
     validationIssues?: readonly ValidationIssue[];
+    authoringIssues?: readonly AuthoringIssue[];
+    authoringMessage?: string;
   }) {
     super(safeErrorMessage(options.code));
     this.name = "LocalControlError";
@@ -56,6 +61,8 @@ export class LocalControlError extends Error {
     this.idempotencyKey = options.idempotencyKey;
     this.transportFailure = options.transportFailure ?? false;
     this.validationIssues = options.validationIssues;
+    this.authoringIssues = options.authoringIssues;
+    this.authoringMessage = options.authoringMessage;
   }
 }
 
@@ -294,8 +301,14 @@ export class LocalControlClient {
                   retryable: rpcError.retryable,
                   requestId: expectedId,
                   ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
-                  ...(code === "RUN_VALIDATION_FAILED" && rpcError.data !== undefined
+                  ...(code === "RUN_VALIDATION_FAILED" && rpcError.data !== undefined && "validationIssues" in rpcError.data
                     ? { validationIssues: rpcError.data.validationIssues }
+                    : {}),
+                  ...(code.startsWith("WORKFLOW_") && rpcError.data !== undefined && "authoringIssues" in rpcError.data
+                    ? { authoringIssues: rpcError.data.authoringIssues }
+                    : {}),
+                  ...(code.startsWith("WORKFLOW_") && rpcError.data !== undefined && "message" in rpcError.data
+                    ? { authoringMessage: rpcError.data.message }
                     : {}),
                 }),
               ),
@@ -376,7 +389,10 @@ export function toolErrorOutput(method: string, error: unknown): ToolOutput {
     requestId: local.requestId ?? randomUUID(),
     error: {
       code: local.code,
-      message: safeErrorMessage(local.code),
+      message:
+        local.authoringMessage ??
+        local.authoringIssues?.[0]?.message ??
+        safeErrorMessage(local.code),
       ...(local.correlationId === undefined ? {} : { correlationId: local.correlationId }),
       retryable: local.retryable,
       ...errorRecovery(local.code),
@@ -386,6 +402,12 @@ export function toolErrorOutput(method: string, error: unknown): ToolOutput {
       ...(local.validationIssues === undefined
         ? {}
         : { validationIssues: [...local.validationIssues] }),
+      ...(local.authoringIssues === undefined
+        ? {}
+        : { authoringIssueVersion: "v1" as const, authoringIssues: [...local.authoringIssues] }),
+      ...(local.authoringMessage === undefined
+        ? {}
+        : { authoringMessage: local.authoringMessage }),
     },
     ...(local.idempotencyKey === undefined ? {} : { idempotencyKey: local.idempotencyKey }),
   };

@@ -1,7 +1,7 @@
 {
   "schema": "loomex/frontend-design-system/v3",
-  "consumerSourcesSha256": "40830be5c35a57b48deeec270bb5d2a1ba4b916ebfe1e7ef662b4f3fc606d34b",
-  "frontendRevision": "4f4211c9cd7d9ea173475967cdee244709b0e536",
+  "consumerSourcesSha256": "08cd7a9157ccbbb0f26cb7c8a568de95bc0ad13663fc2c7ca67f76b1c56d89a6",
+  "frontendRevision": "383108e5689f18288b996b3d5b87679fdec2271d",
   "compiler": {
     "name": "@tailwindcss/node",
     "version": "4.3.0"
@@ -15,7 +15,7 @@
     "packages/ui/src/components/Select.tsx": "b39339178c7be4b8c4f9b51fd8fb62e3ef8244773755bb3cdcbda8550bef353d",
     "packages/theme/src/brandTokens.ts": "41144301a71319f47ad32eeda807f3c5ed497a7af08848f1b68233b1d672cd06",
     "packages/theme/src/neutralThemeOptions.ts": "0248fd4a0077a7212884f3b96b09db73ad4a7b002b40afdfd2122ffec799a2eb",
-    "pnpm-lock.yaml": "f432cad090bf9173090e7b227d850328a7a88e09ce0ba47665fcceb0c3e5c1f9"
+    "pnpm-lock.yaml": "70602085a48ca809829f8e3a8f86fabf38011629bd37b869652cf873505cdd10"
   },
   "statusClasses": {
     "active": "bg-brand-teal/10 text-brand-teal border-brand-teal/20",
@@ -48,6 +48,6 @@
     "low": "bg-white/5 text-gray-500 border-white/10",
     "unknown": "bg-white/5 text-gray-500 border-white/10"
   },
-  "candidatesSha256": "4bb89b3714882fc52cce37fcbd170322da2858ad8d5205126ec2c3b95c82f341",
+  "candidatesSha256": "032e7365631426f57a386626eb062733f17ce3dafb602acc8cccbf8138bc5ad0",
   "cssSha256": "d4a42756d3662e96499c4e3301f1872e0ea0717cd9ec222f8e7702f34a926e6d"
 }

@@ -9,11 +9,11 @@ type Page = 'connection' | 'organizations';
 type Action = () => void | Promise<void>;
 type Fault = {status:string; code:string; message:string; retryable?:boolean};
 const organizationSchema=z.object({id:z.uuid(),name:z.string().trim().min(1).max(240).nullable(),enrolled:z.boolean()});
-const loginSchema=z.object({flowId:z.string().min(1).max(128),verificationUri:z.string(),userCode:z.string().min(1).max(256),expiresAt:z.number().int().nonnegative(),intervalSeconds:z.number().int().min(1).max(3600),retryAfterSeconds:z.number().int().min(0).max(3600)});
-const projectionSchema=z.object({schemaVersion:z.literal('loomex.runner.connection/v1'),state:z.enum(['signed_out','verification_pending','verification_expired','authenticated','recovery_pending','logout_pending','credential_store_unavailable']),activeWork:z.number().int().min(0).max(1000000),actions:z.array(z.enum(['auth.login','auth.poll','auth.logout','organizations.list','organizations.select'])).max(8),organization:z.object({status:z.enum(['organization_required','connected']),selected:z.object({id:z.uuid(),name:z.string().trim().min(1).max(240).nullable()}).nullable()}),organizations:z.array(organizationSchema),login:loginSchema.nullable(),webAppUrl:z.unknown().optional()});
+const loginSchema=z.object({flowId:z.string().min(1).max(128),authorizationUrl:z.string().url().nullable().optional(),expiresAt:z.number().int().nonnegative()});
+const projectionSchema=z.object({schemaVersion:z.literal('loomex.runner.connection/v2'),state:z.enum(['signed_out','browser_pending','authentication_completing','verification_expired','authenticated','recovery_pending','logout_pending','credential_store_unavailable']),activeWork:z.number().int().min(0).max(1000000),actions:z.array(z.enum(['auth.login','auth.cancel','auth.recover','auth.logout','organizations.list','organizations.select'])).max(8),organization:z.object({status:z.enum(['organization_required','connected']),selected:z.object({id:z.uuid(),name:z.string().trim().min(1).max(240).nullable()}).nullable()}),organizations:z.array(organizationSchema),login:loginSchema.nullable(),webAppUrl:z.unknown().optional()});
 type RawProjection=z.infer<typeof projectionSchema>;
 type Projection=Omit<RawProjection,'actions'|'organizations'|'webAppUrl'> & {actions:Set<string>;organizations:Array<{id:string;name:string}>; webAppUrl:string|undefined};
-const pendingSchema=z.object({name:z.enum(['loomex_auth_start','loomex_auth_logout','loomex_organization_select']),args:z.record(z.string(),z.unknown()),key:z.uuid()});
+const pendingSchema=z.object({name:z.enum(['loomex_auth_start','loomex_auth_cancel','loomex_auth_recover','loomex_auth_logout','loomex_organization_select']),args:z.record(z.string(),z.unknown()),key:z.uuid()});
 type Pending=z.infer<typeof pendingSchema>;
 const sessionSchema=z.object({viewSessionId:z.uuid(),revision:z.number().int().nonnegative(),kind:z.enum(['connection','organizations']),state:z.record(z.string(),z.unknown()).default({})});
 export interface ConnectionServices {
@@ -23,11 +23,12 @@ export interface ConnectionServices {
  elements:{context:HTMLElement;title:HTMLElement;headerStage:HTMLElement;headerStatus:HTMLElement;form:HTMLFormElement;refresh:HTMLButtonElement;primary:HTMLButtonElement;secondary:HTMLButtonElement;summary:HTMLElement};
  connected():boolean;
  hostCapabilities():JsonObject;
- callTool(name:string,args:JsonObject,renderResult?:boolean,observeResult?:boolean):Promise<unknown>;
+ callTool(name:string,args:JsonObject,renderResult?:boolean,observeResult?:boolean,activity?:"foreground"|"background"):Promise<unknown>;
  send(method:string,args:JsonObject,request?:boolean,options?:{activity:boolean}):Promise<unknown>;
  setAction(button:HTMLButtonElement,label:string,id?:ActionId):void;
  syncChrome():void;
  setError(error:unknown):void;
+ clearError():void;
  viewPersistenceFault(result:unknown):Fault|null;
  enterSafeViewReentry(fault:Fault):void;
  renderSafeViewReentry():void;
@@ -40,7 +41,7 @@ export interface ConnectionState {
  page:Page;candidate:string;query:string;pageIndex:number;busy:boolean;pending:Pending|null;projection:Projection|null;
  list:Array<{id:string;name:string;slug:string}>;listState:'idle'|'loading'|'loaded'|'failed';
  viewSession:ViewSessionProjection|null;
- persistence:ViewPersistenceController|null;action:Action|null;secondaryAction:Action|null;fallbackUrl:string;structure:string;
+ persistence:ViewPersistenceController|null;action:Action|null;secondaryAction:Action|null;structure:string;
 }
 function record(value:unknown):JsonObject {return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as JsonObject:{};}
 function safeText(value:unknown,limit=4096):string {return typeof value==='string'&&value.trim().length<=limit?value.trim():'';}
@@ -80,8 +81,8 @@ export function normalizedConnection(value:unknown):Projection|undefined {
     const data=result.data;
     if(new Set(data.actions).size!==data.actions.length || new Set(data.organizations.map(o=>o.id)).size!==data.organizations.length)return undefined;
     if(data.organization.status==='connected'&&!data.organization.selected)return undefined;
-    if(data.state==='verification_pending'&&!data.login)return undefined;
-    if(data.login&&!publicHttpUrl(data.login.verificationUri))return undefined;
+    if((data.state==='browser_pending'||data.state==='authentication_completing')&&!data.login)return undefined;
+    if(data.login?.authorizationUrl&&!publicHttpUrl(data.login.authorizationUrl))return undefined;
     return {...data,actions:new Set(data.actions),webAppUrl:publicHttpUrl(data.webAppUrl),organizations:data.organizations.map(o=>({id:o.id,name:o.name||'Unnamed organization'}))};
   }
 
@@ -101,20 +102,33 @@ function connectionProjection(value: unknown): Projection {
   });
 }
 
+function connectionChanged(previous:Projection|null,current:Projection):boolean {
+  if (!previous) return true;
+  const display=(projection:Projection)=>JSON.stringify({
+    state:projection.state,login:projection.login,actions:[...projection.actions].sort(),
+    organization:projection.organization,organizations:projection.organizations,
+    activeWork:projection.activeWork,webAppUrl:projection.webAppUrl,
+  });
+  return display(previous)!==display(current);
+}
+
 export function createConnectionController(host:ConnectionServices) {
  const {context,title,headerStage,headerStatus,form,refresh,primary,secondary,summary}=host.elements;
  const {setAction,syncChrome,viewPersistenceFault,enterSafeViewReentry,renderSafeViewReentry}=host;
  const callTool=host.callTool.bind(host),send=host.send.bind(host),uuid=()=>{if(!globalThis.crypto?.randomUUID)throw new Error("This host cannot generate a secure operation identity.");return crypto.randomUUID();};
- const connectionState:ConnectionState={page:host.mode,candidate:'',query:'',pageIndex:0,busy:false,pending:null,projection:null,list:[],listState:'idle',viewSession:null,persistence:null,action:null,secondaryAction:null,fallbackUrl:'',structure:''};
+ const connectionState:ConnectionState={page:host.mode,candidate:'',query:'',pageIndex:0,busy:false,pending:null,projection:null,list:[],listState:'idle',viewSession:null,persistence:null,action:null,secondaryAction:null,structure:''};
  const lifecycle=host.lifecycle ?? new ViewRestorationCoordinator();
- let connectionPollTimer:ReturnType<typeof setTimeout>|null=null,connectionPollFlowId='';
+ let connectionPollTimer:ReturnType<typeof setTimeout>|null=null,connectionPollFlowId='',connectionPollInFlight=false;
  let disposed=false;
  const unsubscribe=lifecycle.subscribe(state=>{
    if(disposed)return;
    if(["ready","read_only","verification_failed"].includes(state.phase))renderConnectionPage();
  });
+ type ConnectionErrorKind = 'observation' | 'browser' | 'organizations' | 'operation' | 'presentation';
  let connectionError:unknown;
- const setError=(error:unknown)=>{connectionError=error;host.setError(error);};
+ let connectionErrorKind:ConnectionErrorKind|undefined;
+ const setError=(error:unknown,kind:ConnectionErrorKind='operation')=>{connectionError=error;connectionErrorKind=kind;host.setError(error);};
+ const clearConnectionError=()=>{connectionError=undefined;connectionErrorKind=undefined;host.clearError();};
  const actions=new WeakMap<HTMLButtonElement,Action>();
   function clearConnectionPoll() {
     if (connectionPollTimer !== null) clearTimeout(connectionPollTimer);
@@ -125,13 +139,58 @@ export function createConnectionController(host:ConnectionServices) {
 
   function hostCanOpenExternalLink() {
     const capabilities=host.hostCapabilities();
-    const capability=capabilities.openLink || capabilities["open-link"];
-    return Boolean(capability && (record(capability).url || record(capability).href || capability === true));
+    return Object.hasOwn(capabilities,"openLinks") && capabilities.openLinks !== null && typeof capabilities.openLinks === "object";
   }
 
   async function openExternalLink(url:string) {
     if (!hostCanOpenExternalLink()) throw new Error("This host cannot open an external link. Copy the displayed URL into your browser.");
-    await send("ui/open-link", { url }, true, { activity: false });
+    try {
+      const response=await send("ui/open-link", { url }, true, { activity: false });
+      if(record(response).isError===true)throw new Error("BROWSER_OPEN_REJECTED");
+    } catch(error) {
+      // The host may include the authorization URL in its error. Never put
+      // that value in the card's error or support details.
+      const code=error instanceof UiTransportError&&error.code==="HOST_TIMEOUT"?"BROWSER_OPEN_TIMEOUT"
+        :error instanceof Error&&error.message==="BROWSER_OPEN_REJECTED"?"BROWSER_OPEN_REJECTED":"BROWSER_OPEN_HOST_ERROR";
+      throw new UiTransportError({code,message:"The browser could not be opened. Use the link in this card instead.",retryable:true},
+        {format:"loomex/ui-result-diagnostic/v1",stage:"error",channel:"connection",code,fields:["host:openLinks","request:ui/open-link"]});
+    }
+  }
+  function announceBrowserOpening(message:string) {
+    const status=context.querySelector<HTMLElement>("#browser-open-status");
+    if(status){status.textContent=message;status.hidden=!message;}
+  }
+  async function verifiedPendingLogin(flowId:string):Promise<string> {
+    announceBrowserOpening("Checking this sign-in…");
+    let freshResult:unknown, fresh:Projection;
+    try {
+      freshResult=await callTool("loomex_connection_get",{},false,false,"background");
+      fresh=connectionProjection(connectionData(freshResult));
+    } catch(error) {
+      announceBrowserOpening("This sign-in could not be checked. Refresh and try again.");
+      throw error;
+    }
+    if (fresh.state!=="browser_pending" || fresh.login?.flowId!==flowId || fresh.login.expiresAt*1000<=Date.now()) {
+      renderConnectionResult(freshResult);
+      throw new Error("This sign-in is no longer available. Check the current connection state.");
+    }
+    if (connectionChanged(connectionState.projection,fresh)) renderConnectionResult(freshResult);
+    if (!fresh.login.authorizationUrl)throw new Error("The browser link is unavailable. Refresh this connection.");
+    return fresh.login.authorizationUrl;
+  }
+  async function copyCurrentLogin(flowId:string) {
+    const url=await verifiedPendingLogin(flowId);
+    try { await navigator.clipboard.writeText(url); }
+    catch { throw new Error("Copy is unavailable. Select the sign-in link and copy it."); }
+    announceBrowserOpening("Sign-in link copied.");
+  }
+  async function openCurrentLoginExternally(flowId:string) {
+    const url=await verifiedPendingLogin(flowId);
+    await openExternalLink(url);
+    announceBrowserOpening("Default browser request sent. If no browser appears, copy the link below.");
+  }
+  async function startBrowserSignIn() {
+    await connectionMutation("loomex_auth_start",{});
   }
 
   async function saveConnectionView() {
@@ -199,6 +258,9 @@ export function createConnectionController(host:ConnectionServices) {
       failed:(_,error)=>{setError(error);context.setAttribute("aria-busy","false");syncChrome();},
       cleanup:clearConnectionPoll,
     });
+    if(connectionState.page==='organizations' && connectionState.viewSession && lifecycle.permissions().save) {
+      void saveConnectionView().catch(error=>setError(error,'presentation'));
+    }
   }
 
   async function reloadSaved() {
@@ -220,7 +282,7 @@ export function createConnectionController(host:ConnectionServices) {
     const button = element("button", { type: "button", className, disabled: disabled || !host.connected() });
     setAction(button, label, actionId);
     actions.set(button,action);
-    button.addEventListener("click", () => { void Promise.resolve().then(()=>actions.get(button)?.()).catch(setError); });
+    button.addEventListener("click", () => { void Promise.resolve().then(()=>actions.get(button)?.()).catch(error=>setError(error,actionId==='open'||actionId==='copy'?'browser':'operation')); });
     return button;
   }
 
@@ -254,7 +316,8 @@ export function createConnectionController(host:ConnectionServices) {
         if (!current) throw new Error("The earlier action could not be verified. Try again.");
         reconciled = (name === "loomex_organization_select" && current.organization?.selected?.id === attempt.args.organizationId)
           || (name === "loomex_auth_logout" && current.state === "signed_out")
-          || (name === "loomex_auth_start" && current.state === "verification_pending");
+          || (name === "loomex_auth_cancel" && current.state === "signed_out")
+          || (name === "loomex_auth_recover" && current.state === "authenticated");
       }
       if (!reconciled) connectionData(await callTool(name, { ...attempt.args, idempotencyKey: attempt.key }, false, false));
       if(!mutationFence.current())return;
@@ -270,6 +333,7 @@ export function createConnectionController(host:ConnectionServices) {
 
   async function refreshConnection() {
     if(disposed)return;
+    clearConnectionPoll();
     if(!["ready","read_only"].includes(lifecycle.state.phase)) {
       const session=connectionState.viewSession;
       return restoreConnectionView({_meta:session?{"loomex/viewSession":session}:{}});
@@ -282,7 +346,9 @@ export function createConnectionController(host:ConnectionServices) {
       });
     } catch(error) {
       setError(error);renderConnectionPage();scheduleConnectionPoll(connectionState.projection);
-    } finally {if(!disposed)context.setAttribute("aria-busy","false");}
+    } finally {
+      if(!disposed){context.setAttribute("aria-busy","false");scheduleConnectionPoll(connectionState.projection);}
+    }
   }
 
   async function loadConnectionOrganizations() {
@@ -304,8 +370,9 @@ export function createConnectionController(host:ConnectionServices) {
       });
       connectionState.listState = "loaded";
       if (!ids.has(connectionState.candidate)) connectionState.candidate = "";
+      if(connectionErrorKind==='organizations')clearConnectionError();
     } catch (error) {
-      if (fence.current()) { connectionState.listState = "failed"; setError(error); }
+      if (fence.current()) { connectionState.listState = "failed"; setError(error,'organizations'); }
     }
     if (fence.current()) renderConnectionPage();
   }
@@ -321,37 +388,56 @@ export function createConnectionController(host:ConnectionServices) {
 
   function scheduleConnectionPoll(projection:Projection|null) {
     const login = projection?.login;
-    if (disposed || projection?.state !== "verification_pending" || !login || login.expiresAt * 1000 <= Date.now() || !projection.actions.has("auth.poll") || document.visibilityState !== "visible") { clearConnectionPoll(); return; }
+    if (disposed || !["browser_pending","authentication_completing"].includes(projection?.state||"") || !login || document.visibilityState !== "visible") { clearConnectionPoll(); return; }
+    if (connectionPollInFlight && connectionPollFlowId===login.flowId)return;
     if (connectionPollTimer !== null && connectionPollFlowId === login.flowId) return;
     clearConnectionPoll();
     lifecycle.ownResource("authentication-poll",clearConnectionPoll);
     connectionPollFlowId = login.flowId;
-    connectionPollTimer = setTimeout(async () => {
-      connectionPollTimer = null;
-      if (connectionPollFlowId !== login.flowId || document.visibilityState !== "visible") return;
+    connectionPollTimer = setTimeout(() => {connectionPollTimer=null;void observeConnection();},
+      login.expiresAt*1000<=Date.now()?5000:Math.min(5000,Math.max(100,login.expiresAt*1000-Date.now())));
+  }
+
+  async function observeConnection() {
+      const login=connectionState.projection?.login;
+      if(disposed||!login||connectionPollInFlight||connectionPollFlowId!==login.flowId||document.visibilityState!=="visible")return;
+      connectionPollInFlight=true;
       const fence=lifecycle.request("authentication-poll");
       try {
-        connectionData(await callTool("loomex_auth_poll", { flowId: login.flowId, idempotencyKey: uuid() }, false, false));
-        if (fence.current() && connectionPollFlowId === login.flowId) await refreshConnection();
+        const currentResult=await callTool("loomex_connection_get", {}, false, false,"background");
+        const current=connectionProjection(connectionData(currentResult));
+        if (!fence.current() || connectionPollFlowId !== login.flowId)return;
+        if (connectionChanged(connectionState.projection,current)||connectionErrorKind==='observation')renderConnectionResult(currentResult);
       } catch (error) {
-        if (fence.current() && connectionPollFlowId === login.flowId) { setError(error); scheduleConnectionPoll(projection); }
+        if (fence.current() && connectionPollFlowId === login.flowId && connectionError===undefined) setError(error,'observation');
+      } finally {
+        connectionPollInFlight=false;
+        if(!disposed&&connectionPollFlowId===login.flowId)scheduleConnectionPoll(connectionState.projection);
       }
-    }, Math.max(1, login.retryAfterSeconds, login.intervalSeconds) * 1000);
   }
 
   function renderConnectionResult(result:unknown, hydrateOrganizations = true) {
     if(disposed)return;
     const projection = connectionProjection(connectionData(result));
+    const previous=connectionState.projection;
+    const needsOrganization=projection.state==='authenticated' && projection.organization.status==='organization_required';
+    const advanced=needsOrganization && connectionState.page==='connection';
+    if(advanced){connectionState.page='organizations';connectionState.structure='';}
     if (projection.state !== "authenticated") {
       lifecycle.request("organization-list");
       connectionState.list = []; connectionState.listState = "idle"; connectionState.candidate = "";
     }
-    connectionError=undefined;
+    if(connectionErrorKind==='observation'
+      || (connectionErrorKind==='browser' && (projection.state!=='browser_pending' || previous?.login?.flowId!==projection.login?.flowId))
+      || (connectionErrorKind==='operation' && !connectionState.pending))clearConnectionError();
     connectionState.projection = projection;
     host.onProjection(connectionData(result));
     renderConnectionPage();
     scheduleConnectionPoll(projection);
     if (hydrateOrganizations && connectionState.page === "organizations" && projection.state === "authenticated" && connectionState.listState === "idle") void loadConnectionOrganizations();
+    if(advanced && connectionState.viewSession && lifecycle.permissions().save) {
+      void saveConnectionView().catch(error=>setError(error,'presentation'));
+    }
   }
 
   // Reconcile the connection body without detaching focused controls. Event
@@ -387,7 +473,7 @@ export function createConnectionController(host:ConnectionServices) {
     headerStatus.hidden = false;
     headerStatus.setAttribute("role", "status");
     title.setAttribute("tabindex", "-1");
-    headerStatus.textContent = p.state === "authenticated" ? "Signed in" : ({ signed_out: "Signed out", verification_pending: "Verification pending", verification_expired: "Expired", logout_pending: "Signing out", recovery_pending: "Recovery required", credential_store_unavailable: "Unavailable" }[p.state]);
+    headerStatus.textContent = p.state === "authenticated" ? "Signed in" : ({ signed_out: "Signed out", browser_pending: "Sign-in pending", authentication_completing:"Completing sign-in", verification_expired: "Expired", logout_pending: "Signing out", recovery_pending: "Recovery required", credential_store_unavailable: "Unavailable" }[p.state]);
     form.hidden = true; form.replaceChildren();
     refresh.hidden = false; refresh.disabled = !host.connected() || connectionState.busy;
     primary.hidden = true; secondary.hidden = true;
@@ -398,19 +484,21 @@ export function createConnectionController(host:ConnectionServices) {
     const focusId = focus instanceof HTMLElement ? focus.id : undefined;
     const scroll = window.scrollY;
     // The verification screen remains mounted across polls, preserving focus.
-    const structure = `${connectionState.page}:${p.state}:${p.login?.flowId || ""}`;
-    const stableVerification = structure === connectionState.structure && p.state === "verification_pending";
+    const structure = `${connectionState.page}:${p.state}:${p.login?.flowId || ""}:${p.login?.authorizationUrl || ""}:${p.login?.expiresAt || ""}`;
+    const stableVerification = structure === connectionState.structure && p.state === "browser_pending";
     const preserveBody = structure === connectionState.structure;
     const contentTarget = stableVerification ? context : document.createDocumentFragment();
     connectionState.structure = structure;
     const primaryAction = (label:string, action:Action, disabled = false, actionId:ActionId="next", mutation=true) => {
+      primary.hidden = false; setAction(primary, label, actionId);
       primary.dataset.businessMutation=String(mutation);
-      primary.hidden = false; setAction(primary, label, actionId); primary.disabled = disabled || !host.connected() || connectionState.busy || (mutation && !(lifecycle.permissions().mutate || lifecycle.permissions().retryPersistence));
+      primary.disabled = disabled || !host.connected() || connectionState.busy || (mutation && !(lifecycle.permissions().mutate || lifecycle.permissions().retryPersistence));
       connectionState.action = action;
     };
     const secondaryAction = (label:string, action:Action, actionId:ActionId="next", mutation=true) => {
+      secondary.hidden = false; setAction(secondary, label, actionId);
       secondary.dataset.businessMutation=String(mutation);
-      secondary.hidden = false; setAction(secondary, label, actionId); secondary.disabled = !host.connected() || connectionState.busy || (mutation && !(lifecycle.permissions().mutate || lifecycle.permissions().retryPersistence));
+      secondary.disabled = !host.connected() || connectionState.busy || (mutation && !(lifecycle.permissions().mutate || lifecycle.permissions().retryPersistence));
       connectionState.secondaryAction = action;
     };
     if (connectionState.page === "organizations") {
@@ -457,32 +545,35 @@ export function createConnectionController(host:ConnectionServices) {
       secondaryAction("Connection", () => navigateConnection("connection"), "connection", false);
     } else if (["signed_out", "verification_expired"].includes(p.state)) {
       contentTarget.append(element("p", { className: "ui-caption" }, p.state === "signed_out" ? "Sign in securely in your browser." : "Verification expired. Start again when you are ready."));
-      primaryAction(p.state === "signed_out" ? "Sign in" : "Start again", () => connectionMutation("loomex_auth_start", {}), !p.actions.has("auth.login"));
-    } else if (p.state === "verification_pending" && p.login) {
+      primaryAction(p.state === "signed_out" ? "Sign in" : "Start again", startBrowserSignIn, !p.actions.has("auth.login"));
+    } else if (p.state === "browser_pending" && p.login) {
       const login=p.login;
       if (!stableVerification) {
-        contentTarget.append(element("p", { className: "ui-caption" }, "Enter this code in your browser to finish signing in."));
-        const row = element("div", { className: "ui-organization-row" });
-        row.append(element("code", { className: "ui-value" }, login.userCode), connectionButton("Copy code", async () => {
-          try { await navigator.clipboard.writeText(login.userCode); } catch { throw new Error("Copy is unavailable. Select the displayed code and copy it."); }
-        }, false, "secondary", "copy"));
-        contentTarget.append(row, element("p", { className: "ui-caption" }, `Expires ${new Date(login.expiresAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`), element("p", { className: "ui-caption", role: "status" }, "Waiting for verification…"));
+        contentTarget.append(element("p", { className: "ui-caption" }, "Finish signing in and approve this runner in your browser."));
+        contentTarget.append(element("p", { className: "ui-caption" }, `Expires ${new Date(login.expiresAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`), element("p", { className: "ui-caption", role: "status" }, "Waiting for browser approval…"));
+        contentTarget.append(element("p",{id:"browser-open-status",className:"ui-caption",role:"status",hidden:true}));
+        if(login.authorizationUrl){
+          contentTarget.append(element("p",{id:"authorization-url",className:"workspace-path"},login.authorizationUrl));
+          if(hostCanOpenExternalLink())contentTarget.append(connectionButton("Open in default browser",()=>openCurrentLoginExternally(login.flowId),false,"secondary","open"));
+        }else contentTarget.append(element("p",{className:"ui-caption"},"The browser link is unavailable. Refresh this connection."));
       }
-      const showUrl = () => {
-        if (!document.getElementById("verification-url") && !contentTarget.querySelector?.("#verification-url")) (connectionState.structure === structure && stableVerification ? context : contentTarget).append(element("p", { id: "verification-url", className: "workspace-path" }, login.verificationUri));
-      };
-      if (!hostCanOpenExternalLink() || connectionState.fallbackUrl === login.flowId) showUrl();
-      else document.getElementById("verification-url")?.remove();
-      primaryAction("Open browser", async () => { try { await openExternalLink(login.verificationUri); } catch (e) { connectionState.fallbackUrl = login.flowId; if (!document.getElementById("verification-url")) context.append(element("p", { id: "verification-url", className: "workspace-path" }, login.verificationUri)); throw e; } }, !hostCanOpenExternalLink(), "open", false);
-      if (p.actions.has("auth.logout")) secondaryAction("Cancel sign-in", () => connectionMutation("loomex_auth_logout", {}), "cancel");
+      primaryAction("Copy sign-in link", () => copyCurrentLogin(login.flowId), !login.authorizationUrl, "copy", false);
+      if (p.actions.has("auth.cancel")) secondaryAction("Cancel sign-in", () => connectionMutation("loomex_auth_cancel", {flowId:login.flowId}), "cancel");
+    } else if(p.state==="authentication_completing") {
+      contentTarget.append(element("p",{className:"ui-caption",role:"status"},"Completing sign-in…"));
+      if(p.actions.has("auth.recover"))primaryAction("Retry completion",()=>connectionMutation("loomex_auth_recover",{}),false,"refresh");
     } else if (p.state === "authenticated") {
       const row = element("div", { className: "ui-organization-row" });
       row.append(element("span", { className: "ui-value" }, p.organization.selected?.name || "Choose an organization to get started."));
       contentTarget.append(row);
       primaryAction(p.organization.selected ? "Change organization" : "Choose organization", () => navigateConnection("organizations"),false,"next",false);
+      if (p.activeWork > 0) contentTarget.append(element("p", { className: "ui-caption" }, "Sign out waits for idle connections to close. Running jobs must finish first."));
       if (p.actions.has("auth.logout")) secondaryAction("Sign out", () => connectionMutation("loomex_auth_logout", {}), "logout");
     } else {
-      contentTarget.append(element("p", { className: "ui-caption" }, p.state === "credential_store_unavailable" ? "Unlock your credential store, then refresh." : "The previous connection operation needs recovery. Refresh to check its state."));
+      contentTarget.append(element("p", { className: "ui-caption" }, p.state === "credential_store_unavailable" ? "Unlock your credential store, then refresh." : "A previous credential operation needs to be reconciled before Loomex can connect."));
+      if(p.state==="recovery_pending" && p.login && p.actions.has("auth.cancel"))primaryAction("Restart sign-in",()=>connectionMutation("loomex_auth_cancel",{flowId:p.login!.flowId}),false,"refresh");
+      if (p.state === "recovery_pending" && p.actions.has("auth.recover")) primaryAction("Retry connection", () => connectionMutation("loomex_auth_recover", {}), false, "refresh");
+      if (p.state === "recovery_pending" && p.actions.has("auth.logout")) secondaryAction("Reconnect", () => connectionMutation("loomex_auth_logout", {}), "logout");
       if (p.state === "logout_pending" && p.actions.has("auth.logout")) primaryAction("Retry sign out", () => connectionMutation("loomex_auth_logout", {}), false, "logout");
     }
     if (connectionState.pending && !connectionState.busy) {
@@ -499,6 +590,6 @@ export function createConnectionController(host:ConnectionServices) {
   }
 
 
- return {reloadSaved,reapplyLocalEdits,state:connectionState, hydrateConnectionView, restoreConnectionView, refreshConnection, renderConnectionResult, renderConnectionPage, navigateConnection, connectionMutation, loadConnectionOrganizations, clearConnectionPoll, scheduleConnectionPoll, saveConnectionView, normalizedConnection,
+ return {reloadSaved,reapplyLocalEdits,state:connectionState, hydrateConnectionView, restoreConnectionView, refreshConnection, renderConnectionResult, renderConnectionPage, navigateConnection, connectionMutation, loadConnectionOrganizations, clearConnectionPoll, scheduleConnectionPoll, observeConnection, saveConnectionView, normalizedConnection,
  dispose(){disposed=true;unsubscribe();lifecycle.dispose();clearConnectionPoll();connectionState.persistence?.clear();}};
 }

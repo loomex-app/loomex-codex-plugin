@@ -20,7 +20,7 @@ Canonical Loomex backend
 Codex / Claude / Gemini CLI and command processes
 ```
 
-The backend remains authoritative for identities, organizations, workflow graphs and immutable versions, prepared execution bindings, executions, interactions, events, leases, artifacts, retention, and deletion policy. The runner owns browser device authentication, local credentials, the runner-wide selected organization, workspace grants, provider discovery, execution, process control, recovery journals, output spools, artifact transfer, and the local socket. The plugin owns MCP discovery, strict tool inputs and outputs, safe text projections, optional local task-context routing, and optional MCP Apps resources.
+The backend remains authoritative for identities, organizations, workflow graphs and immutable versions, prepared execution bindings, executions, interactions, events, leases, artifacts, retention, and deletion policy. The runner owns browser authentication with PKCE and a loopback callback, local credentials, the runner-wide selected organization, workspace grants, provider discovery, execution, process control, recovery journals, output spools, artifact transfer, and the local socket. The plugin owns MCP discovery, strict tool inputs and outputs, safe text projections, optional local task-context routing, and optional MCP Apps resources.
 
 ## Trust boundaries
 

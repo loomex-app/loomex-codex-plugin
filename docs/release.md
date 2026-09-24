@@ -12,9 +12,10 @@ any hook update. The installer does not create or alter hook trust. See
 [lifecycle hooks](lifecycle-hooks.md) for the fail-open lifecycle contract.
 
 It adds the runner-owned connection projection and a content-addressed Connection resource.
-The card displays only public device-verification values, fetches organization
-names as a separately retryable read, binds polls to the exact opaque login
-flow, and refuses logout while managed work is active.
+The card displays only the browser authorization link and sign-in status, fetches organization
+names as a separately retryable read, and binds quiet local status checks to the exact opaque login
+flow. The browser handles account credentials and runner approval; no device code or password enters
+the Codex card. Logout lets idle runner sessions quiesce before revoking credentials and refuses to cancel a running provider job.
 
 `scripts/build-release.sh --production` requires a clean committed source revision and builds from a temporary `git archive` snapshot of that exact revision. It runs `npm ci`, type checking, tests, and the compiled bundle build. It downloads the pinned Node archive (or accepts `LOOMEX_NODE_ARCHIVE`), checks its digest, validates the plugin manifest and entrypoints, signs the runtime with hardened runtime options and the minimal JIT entitlement required by V8, and runs a post-sign JIT launch check. An unsigned development build may instead use `LOOMEX_NODE_RUNTIME_ROOT` only when its regular `bin/node`, `LICENSE`, binary digest, and reported version match the pinned runtime lock; production builds cannot use that local-runtime option. It rejects any payload containing the build machine's home path, emits a create-only deterministic release envelope, signs its canonical manifest, requires an `Accepted` Apple notarization result, and performs code-signature and Gatekeeper assessment. Production requires `LOOMEX_CODESIGN_IDENTITY`, `LOOMEX_NOTARY_PROFILE`, and `LOOMEX_MANIFEST_SIGNING_KEY`.
 

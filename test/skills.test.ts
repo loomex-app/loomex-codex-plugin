@@ -192,6 +192,22 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     }
   });
 
+  await t.test("packaged skills distinguish direct MCP availability from code-mode wrappers", async () => {
+    const connect = await readFile(join(skillsRoot, "loomex-connect/SKILL.md"), "utf8");
+    assert.match(connect, /mcp__loomex\.loomex_connection_get/);
+    assert.match(connect, /absence from `functions\.exec` or `ALL_TOOLS` does not mean the plugin is unavailable/);
+
+    for (const skill of skillFolders) {
+      const common = await readFile(join(skillsRoot, skill, "references/common.md"), "utf8");
+      assert.match(common, /Call the direct MCP tool before diagnosing availability/);
+      assert.match(common, /empty wrapper inventory does \*\*not\*\* establish that the direct tool is unavailable/);
+      assert.match(common, /If the direct tool itself is absent.*host tool-exposure problem/);
+      assert.match(common, /If a direct call returns an error, follow its actual code/);
+      assert.match(common, /successful `signed_out` connection read means sign-in is needed/);
+      assert.doesNotMatch(common, /If the tools are unavailable, report that the plugin must be enabled\/reloaded/);
+    }
+  });
+
   await t.test("execution entry points carry local task workspace context", async () => {
     const common = await readFile(join(skillsRoot, "loomex-browse/references/common.md"), "utf8");
     assert.match(common, /actual current working directory/);

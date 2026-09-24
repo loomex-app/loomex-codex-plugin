@@ -1,12 +1,14 @@
 import {test} from 'node:test';
 import * as assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {errorRecovery} from '../src/protocol.js';
+import {errorRecovery, safeErrorMessage} from '../src/protocol.js';
 import {createMutationOperation, dispatchJournaledOperation} from '../src/ui-app/mutation-controller.js';
 
 test('unknown failures require reconciliation, not replay',()=>{
  assert.deepEqual(errorRecovery('UNRECOGNIZED_PROVIDER_FAILURE'),{recovery:'reconcile_outcome',outcome:'unknown'});
  assert.deepEqual(errorRecovery('OPERATION_PENDING'),{recovery:'reconcile_outcome',outcome:'not_dispatched'});
+ assert.deepEqual(errorRecovery('ACTIVE_WORK_REQUIRES_DRAIN'),{recovery:'refresh_authority',outcome:'rejected'});
+ assert.match(safeErrorMessage('ACTIVE_WORK_REQUIRES_DRAIN'), /current work to finish/);
 });
 for (const name of ['error-recovery.json', 'mutation-recovery.json']) {
  test(`integration: ${name} matches the runner-owned export`, async (t) => {

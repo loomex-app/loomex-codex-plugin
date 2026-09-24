@@ -68,6 +68,8 @@ export interface WorkflowSettings extends MutableJson {
 }
 
 export interface WorkflowVersion extends MutableJson {
+  revision?: number;
+  definitionChecksum?: string;
   status?: string;
   isActive?: boolean;
   id?: string;
@@ -336,7 +338,7 @@ export interface ChatHandoff extends MutableJson {
 }
 
 export interface HostCapabilities {
-  readonly openLink?: { readonly url?: JsonObject };
+  readonly openLinks?: JsonObject;
   readonly [name: string]: JsonValue | undefined;
 }
 

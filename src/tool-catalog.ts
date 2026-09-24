@@ -262,7 +262,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_connection_get",
     rpcMethod: "connection.get",
     title: "Get Loomex connection",
-    description: "Read the current Loomex sign-in and organization connection state without starting, polling, or changing a login flow.",
+    description: "Read current sign-in and organization state without changing it. For a visual Connect request, open loomex_organizations_view when authenticated without a selected organization; otherwise open loomex_connection_view. Use chat selection only when native views are unavailable or headless use was requested.",
     inputSchema: Empty,
     mutating: false,
     destructive: false,
@@ -272,7 +272,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "connection.get",
     uiUri: CONNECTION_UI_URI,
     title: "View Loomex connection",
-    description: "Show the current Loomex connection, sign-in, and organization state. Opening or refreshing this view never starts or changes authentication.",
+    description: "Show one Loomex connection card for sign-in, recovery, and current scope. When sign-in completes without an organization, this same card opens organization selection. Opening or refreshing never starts authentication.",
     inputSchema: Empty,
     mutating: false,
     destructive: false,
@@ -314,7 +314,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "auth.login",
     title: "Start Loomex authentication",
     description:
-      "Start device authentication and return a verification URI, user code, expiry, and polling interval. This tool never accepts a credential.",
+      "Start browser authentication with PKCE. The runner owns the callback and credentials; this tool returns only a safe browser URL and flow identity.",
     inputSchema: z
       .object({
         runnerName: z.string().min(1).optional(),
@@ -325,12 +325,22 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     destructive: false,
   },
   {
-    name: "loomex_auth_poll",
-    rpcMethod: "auth.poll",
-    title: "Poll Loomex authentication",
+    name: "loomex_auth_cancel",
+    rpcMethod: "auth.cancel",
+    title: "Cancel Loomex authentication",
     description:
-      "Poll one exact active device flow. On success, the runner stores Loomex credentials in the user's Keychain and returns only non-secret IDs.",
+      "Cancel one exact pending browser sign-in. This does not sign out an authenticated installation.",
     inputSchema: z.object({ flowId: z.string().min(1).max(160), idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true,
+    destructive: false,
+  },
+  {
+    name: "loomex_auth_recover",
+    rpcMethod: "auth.recover",
+    title: "Recover Loomex authentication",
+    description:
+      "Reconcile the exact pending Loomex authentication operation. This never starts a new login or credential rotation.",
+    inputSchema: z.object({ idempotencyKey: IdempotencyKey }).strict(),
     mutating: true,
     destructive: false,
   },
@@ -508,6 +518,19 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     destructive: true,
   },
   {
+    name: "loomex_workflow_operation_get",
+    rpcMethod: "workflow.operations.get",
+    title: "Reconcile Loomex workflow operation",
+    description:
+      "Read the exact durable outcome of a workflow create, update, or publish operation after an ambiguous response. Use the original operation and idempotency key; do not infer completion from names or workflow listings.",
+    inputSchema: z.object({
+      operation: z.enum(["workflows.create", "workflows.update", "workflows.publish"]),
+      idempotencyKey: IdempotencyKey,
+    }).strict(),
+    mutating: false,
+    destructive: false,
+  },
+  {
     name: "loomex_workflow_validate",
     rpcMethod: "workflows.validate",
     title: "Validate Loomex workflow",
@@ -526,7 +549,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       .object({
         workflowId: Uuid,
         notes: z.string().optional(),
-        expectedVersion: z.number().int().min(0).optional(),
+        expectedVersion: z.number().int().min(0),
         idempotencyKey: IdempotencyKey,
       })
       .strict(),
@@ -1049,12 +1072,12 @@ export const APP_CALLABLE_TOOLS = new Set([
   ...TOOL_DEFINITIONS.filter((definition) => definition.appOnly === true).map((definition) => definition.name),
   "loomex_connection_view_create", "loomex_connection_view_get", "loomex_connection_view_update",
   "loomex_connection_get",
-  "loomex_auth_start", "loomex_auth_poll", "loomex_auth_logout", "loomex_organizations_list", "loomex_organization_select",
+  "loomex_auth_start", "loomex_auth_cancel", "loomex_auth_recover", "loomex_auth_logout", "loomex_organizations_list", "loomex_organization_select",
   "loomex_preparation_get",
   "loomex_view_session_create", "loomex_view_session_get", "loomex_view_session_restore", "loomex_view_session_update", "loomex_view_session_delete",
   "loomex_view_operation_get", "loomex_view_operation_settle",
   "loomex_readiness", "loomex_workspaces_list", "loomex_workspace_grant",
-  "loomex_workflows_list", "loomex_workflow_get", "loomex_run_setup", "loomex_runs_list",
+  "loomex_workflows_list", "loomex_workflow_get", "loomex_workflow_validate", "loomex_workflow_publish", "loomex_workflow_operation_get", "loomex_run_setup", "loomex_runs_list",
   "loomex_run_prepare", "loomex_run_commit", "loomex_run_start_handoff_issue", "loomex_run_start_handoff_approve", "loomex_run_start_handoff_get", "loomex_run_start_handoff_commit", "loomex_run_get", "loomex_run_cancel",
   "loomex_builder_get", "loomex_builder_commit", "loomex_builder_respond", "loomex_editor_commit",
   "loomex_interaction_get", "loomex_interaction_view", "loomex_interaction_respond", "loomex_interaction_decide",
@@ -1072,8 +1095,8 @@ const SEMANTIC_CAPABILITIES = [
   "interactions.drafts/v1",
   "execution.host_user/v1",
   "authorization.prepare-commit/v1",
-  "auth.device-v2/v1",
-  "connection.projection/v1",
+  "auth:browser-pkce/v1",
+  "connection.projection/v2",
   "transfer.chunked/v1",
   VALIDATION_ERRORS_CAPABILITY,
 ] as const;

@@ -107,6 +107,25 @@ export const RpcErrorDataSchema = z
   })
   .strict();
 
+export const AuthoringIssueSchema = z
+  .object({
+    code: z.string().min(1).max(120),
+    path: z.string().min(1).max(512),
+    message: z.string().min(1).max(4096),
+  })
+  .strict();
+export type AuthoringIssue = z.infer<typeof AuthoringIssueSchema>;
+
+export const AuthoringErrorDataSchema = z.union([
+  z.object({ message: z.string().min(1).max(4096) }).strict(),
+  z
+    .object({
+      authoringIssueVersion: z.literal("v1"),
+      authoringIssues: z.array(AuthoringIssueSchema).min(1).max(32),
+    })
+    .strict(),
+]);
+
 export const RpcRequestSchema = z
   .object({
     protocol: z.literal(LOCAL_PROTOCOL),
@@ -131,10 +150,15 @@ export const RpcErrorSchema = z
     retryable: z.boolean(),
     recovery: RecoverySchema.optional(),
     outcome: OutcomeSchema.optional(),
-    data: RpcErrorDataSchema.optional(),
+    data: z.union([RpcErrorDataSchema, AuthoringErrorDataSchema]).optional(),
   })
   .strict()
-  .refine((error) => error.data === undefined || error.code === "RUN_VALIDATION_FAILED");
+  .refine(
+    (error) =>
+      error.data === undefined ||
+      error.code === "RUN_VALIDATION_FAILED" ||
+      error.code.startsWith("WORKFLOW_"),
+  );
 
 export const RpcResponseSchema = z.union([
   z
@@ -184,12 +208,17 @@ export const ToolErrorSchema = z
     outcome: OutcomeSchema.optional(),
     validationIssueVersion: z.literal(VALIDATION_ISSUE_VERSION).optional(),
     validationIssues: z.array(ValidationIssueSchema).min(1).max(32).optional(),
+    authoringIssueVersion: z.literal("v1").optional(),
+    authoringIssues: z.array(AuthoringIssueSchema).min(1).max(32).optional(),
+    authoringMessage: z.string().min(1).max(4096).optional(),
   })
   .strict()
   .refine(
     (error) =>
       (error.validationIssueVersion === undefined) === (error.validationIssues === undefined) &&
-      (error.validationIssues === undefined || error.code === "RUN_VALIDATION_FAILED"),
+      (error.authoringIssueVersion === undefined) === (error.authoringIssues === undefined) &&
+      (error.validationIssues === undefined || error.code === "RUN_VALIDATION_FAILED") &&
+      (error.authoringIssues === undefined || error.code.startsWith("WORKFLOW_")),
   );
 
 export const ToolOutputSchema = z
@@ -235,6 +264,11 @@ const SAFE_MESSAGES: Readonly<Record<string, string>> = {
   METHOD_NOT_FOUND: "The installed local runner does not support this operation.",
   RUNNER_UNAVAILABLE: "The owner-checked local Loomex runner is unavailable.",
   RUNNER_NOT_READY: "The local Loomex runner is not ready.",
+  ACTIVE_WORK_REQUIRES_DRAIN: "Loomex is still working. Wait for current work to finish, then refresh Connection and sign out.",
+  NETWORK_UNAVAILABLE: "Loomex cannot reach its backend. Your connection information has been retained; retry when the service is available.",
+  AUTH_RECOVERY_PENDING: "A credential operation needs to be reconciled before Loomex can connect.",
+  AUTH_RECOVERY_NOT_REQUIRED: "There is no pending credential operation to recover.",
+  AUTH_RECOVERY_EXHAUSTED: "The saved credential operation cannot be reconciled. Reconnect Loomex to continue.",
   AUTH_REQUIRED: "Loomex authentication is required.",
   AUTH_PENDING: "Loomex authentication is still pending.",
   AUTH_EXPIRED: "The Loomex authentication flow expired.",

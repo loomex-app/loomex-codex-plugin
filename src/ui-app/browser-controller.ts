@@ -18,6 +18,12 @@ export interface BrowserControllerState {
 }
 
 type BrowserAction = () => Promise<void> | void;
+export interface PublishReview {
+  workflowId: string;
+  revision: number;
+  definitionChecksum: string;
+  name: string;
+}
 type DetailOptions = { onBack?: BrowserAction; onPrepare?: BrowserAction; onEdit?: BrowserAction; onPublish?: BrowserAction; onUseVersion?: BrowserAction };
 type PagedOptions = { onBack?: BrowserAction };
 
@@ -61,6 +67,10 @@ export interface BrowserControllerServices {
   workflowIdValid(value: unknown): value is string;
   beginRunSetup(workflowId: string, detail: WorkflowData | null): Promise<void>;
   requestWorkflowAction(action: "edit" | "publish" | "use-version", data: WorkflowData): Promise<void>;
+  reviewWorkflowPublish(data: WorkflowData): Promise<PublishReview>;
+  publishWorkflow(review: PublishReview): Promise<void>;
+  reconcileWorkflowPublish(workflowId: string): Promise<boolean>;
+  publishPending(workflowId: string): boolean;
   taskWorkspaceArguments(): JsonObject;
   selectedWorkflowVersion(data: UiData): WorkflowVersion | undefined;
   initializeRunSetup(data: UiData, restoring: boolean, sourceIdentity: unknown): void;
@@ -141,6 +151,7 @@ export function createBrowserController(host: BrowserControllerServices) {
     page: null, args: { limit: WORKFLOW_PAGE_SIZE }, history: [], selected: null,
     detailResponse: null, busy: false, epoch: 0, focusReturn: null,
   };
+  let publishReview: PublishReview | null = null;
 
   function browserButton(label: string, action: BrowserAction, actionId: ActionId = "next", disabled = false, className = "secondary", visibleLabel = false, allowWithoutPersistence = false, iconOnly = false): HTMLButtonElement {
     const button = element("button", { type: "button", className, disabled: disabled || !host.connected() || state.busy || (host.viewPersistenceUnavailable() && !allowWithoutPersistence) });
@@ -163,10 +174,14 @@ export function createBrowserController(host: BrowserControllerServices) {
   }
 
   async function runBrowserAction(action: BrowserAction, allowWithoutPersistence: boolean): Promise<void> {
-    if (state.busy || !host.connected()) return;
-    if (!allowWithoutPersistence && (host.viewPersistenceUnavailable() || !await host.flushCurrentPersistence())) return;
-    if (allowWithoutPersistence && !host.viewPersistenceUnavailable()) void host.flushViewState().catch(() => undefined);
-    await action();
+    try {
+      if (state.busy || !host.connected()) return;
+      if (!allowWithoutPersistence && (host.viewPersistenceUnavailable() || !await host.flushCurrentPersistence())) return;
+      if (allowWithoutPersistence && !host.viewPersistenceUnavailable()) void host.flushViewState().catch(() => undefined);
+      await action();
+    } catch (error: unknown) {
+      host.setError(error);
+    }
   }
 
   function showBrowserSkeleton(label: string, retainContent=false): void {
@@ -374,8 +389,57 @@ export function createBrowserController(host: BrowserControllerServices) {
     if (options.onPublish && safeText(version.status ?? workflow.status).toLowerCase() === "draft") {
       const versionActions = element("section", { className: "workflow-detail-section", "aria-label": "Version actions" });
       versionActions.append(element("h3", { className: "ui-label" }, "Version"));
-      versionActions.append(element("p", { className: "ui-caption" }, "Publishing creates the immutable version used for future runs."));
-      versionActions.append(detailButton("Publish", options.onPublish, "publish", host.authoritativeStateStale(), true));
+      if (host.publishPending(String(workflow.id ?? ""))) {
+        versionActions.append(element("p", { className: "ui-caption" }, "The publish outcome needs verification."));
+        versionActions.append(detailButton("Check publish outcome", async () => {
+          const complete = await host.reconcileWorkflowPublish(String(workflow.id));
+          if (complete) {
+            publishReview = null;
+            await browserRead("loomex_workflow_get", { workflowId: String(workflow.id) }, (refreshed) => {
+              state.selected = refreshed;
+              if (host.mode === "authoring") renderAuthoringWorkflow(refreshed);
+            });
+          }
+        }, "refresh", false, true));
+        root.append(versionActions);
+        context.className = "ui-stack"; context.hidden = false; context.setAttribute("aria-label", "Workflow detail");
+        context.setAttribute("aria-busy", String(state.busy)); context.replaceChildren(root);
+        return;
+      }
+      const preparedReview = publishReview;
+      const review = preparedReview && preparedReview.workflowId === workflow.id && preparedReview.revision === version.revision &&
+        preparedReview.definitionChecksum === version.definitionChecksum ? preparedReview : null;
+      if (review) {
+        versionActions.append(element("p", { className: "ui-caption" },
+          `Publish ${review.name} draft revision ${review.revision} as the current version for future runs?`));
+        versionActions.append(detailButton("Confirm publish", async () => {
+          try {
+            await host.publishWorkflow(review);
+          } catch (error: unknown) {
+            if (host.mode === "authoring") renderAuthoringWorkflow(data);
+            else renderBrowser();
+            throw error;
+          }
+          publishReview = null;
+          await browserRead("loomex_workflow_get", { workflowId: review.workflowId }, (refreshed) => {
+            state.selected = refreshed;
+            if (host.mode === "authoring") renderAuthoringWorkflow(refreshed);
+          });
+        }, "publish", host.authoritativeStateStale() || host.publishPending(review.workflowId), true));
+        versionActions.append(detailButton("Cancel", () => {
+          publishReview = null;
+          if (host.mode === "authoring") renderAuthoringWorkflow(data);
+          else renderBrowser();
+        }, "close", false, true));
+      } else {
+        versionActions.append(element("p", { className: "ui-caption" }, "Publishing creates a version for future runs."));
+        versionActions.append(detailButton("Publish", async () => {
+          const preparedReview = await host.reviewWorkflowPublish(data);
+          publishReview = preparedReview;
+          if (host.mode === "authoring") renderAuthoringWorkflow(data);
+          else renderBrowser();
+        }, "publish", host.authoritativeStateStale() || host.publishPending(String(workflow.id ?? "")), true));
+      }
       root.append(versionActions);
     }
     context.className = "ui-stack"; context.hidden = false; context.setAttribute("aria-label", "Workflow detail");
@@ -541,6 +605,7 @@ export function createBrowserController(host: BrowserControllerServices) {
   }
 
   function dispose(): void {
+    publishReview = null;
     state.epoch += 1;
     state.busy = false;
     state.focusReturn = null;

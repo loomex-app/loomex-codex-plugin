@@ -42,9 +42,9 @@ function deterministicTimers(): {
 test("result decoding accepts host-shaped metadata and rejects a missing canonical envelope", () => {
   const data = decodeUiResult({
     structuredContent: { ok: true, data: { stale: true } },
-    _meta: { "loomex/uiData": { ok: true, data: { schemaVersion: "loomex.runner.connection/v1" } } },
+    _meta: { "loomex/uiData": { ok: true, data: { schemaVersion: "loomex.runner.connection/v2" } } },
   });
-  assert.deepEqual(data, { schemaVersion: "loomex.runner.connection/v1" });
+  assert.deepEqual(data, { schemaVersion: "loomex.runner.connection/v2" });
   assert.throws(() => decodeUiResult({ structuredContent: {} }), (error: unknown) => {
     return error instanceof UiResultDecodeError && error.diagnostic.code === "UI_CANONICAL_DATA_MISSING";
   });

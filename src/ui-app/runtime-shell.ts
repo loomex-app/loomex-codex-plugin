@@ -56,7 +56,7 @@ export function createRuntimeShell(host:ShellServices) {
     delete button.dataset.interactionAction;
     delete button.dataset.answerIntent;
     applyButtonStyle(button);
-    const showLabel = ACTIONS[actionId].labelVisibility === "text" || (host.snapshot().isConnectionView && button === primary);
+    const showLabel = ACTIONS[actionId].labelVisibility === "text" || (host.snapshot().isConnectionView && (button === primary || button === secondary));
     button.classList.toggle("icon-button", !showLabel);
     button.classList.toggle("ui-button-icon", !showLabel);
     button.classList.toggle("action-with-label", showLabel);

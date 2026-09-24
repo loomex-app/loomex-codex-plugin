@@ -1,29 +1,31 @@
 # Connection and organization scope
 
-Loomex connection is owned by the local runner. The plugin has no credentials and does not perform backend sign-in itself. The user authenticates through the runner's browser device flow, while the runner stores and protects the resulting local authentication state.
+Loomex connection is owned by the local runner. The plugin has no credentials and does not perform backend sign-in itself. The user signs in through a runner-owned authorization-code and PKCE flow in a browser. The runner stores the resulting credentials in the native credential store.
 
-The connection surface is available through the intended `loomex_connection_get` and `loomex_connection_view` tools. `loomex_connection_get` is the headless read for scripts, hosts without MCP Apps rendering, and recovery after a browser or UI interruption. `loomex_connection_view` focuses account connection only: sign-in, recovery, and sign-out. It shows the selected organization as context but does not offer organization selection. `loomex_organizations_view` is the dedicated visual organization picker. A visual card is a presentation surface; readiness, authentication, organization selection and logout results still come from the runner.
+The connection surface is available through `loomex_connection_get` and `loomex_connection_view`. The data tool is the headless read and recovery path. Connection handles sign-in, recovery and sign-out, then advances to organization selection within the same card when needed. A later Connect command for an authenticated installation without a selected organization opens the dedicated `loomex_organizations_view`. The runner remains authoritative for authentication and organization scope.
+
+In Codex, use the direct `mcp__loomex` tool surface for connection reads and actions. When `features.code_mode.direct_only_tool_namespaces` includes `mcp__loomex`, the `functions.exec` wrapper and its `ALL_TOOLS` inventory intentionally omit those tools. Their absence there is not an installation or runner-health failure. Diagnose availability through direct tool exposure and an actual direct call; distinguish an absent direct tool from a returned runner error or a successful `signed_out` state.
 
 The connection flow is:
 
 1. Read readiness and authentication state. An already connected runner is not sent through sign-in again.
-2. For a requested sign-in, start the device flow and display only its verification URI, user code, expiry and polling interval.
-3. Let the user finish in the browser. Poll at the returned interval until the runner reports success, expiry or a concrete error.
-4. Read the connection state again after browser completion, a restart, a closed tab or an interrupted poll. Reopen the same connection view when the user asks to continue the visual flow.
-5. List organizations and wait for an explicit organization choice when more than one is available.
+2. In a UI-capable host, open one Connection card and let the user explicitly start sign-in there. The card offers a verified Open browser action and a copyable link fallback. For headless sign-in, reuse a pending flow or start one with the focused auth tool, then present the current URL in chat. Do not promise which browser a host will open. A link click or host acknowledgement does not prove sign-in completion.
+3. The runner receives the loopback callback and completes the credential exchange. The visible card reads local connection state every five seconds as a quiet background observation. Only changed connection state updates the card; explicit Refresh uses the visible refresh lifecycle.
+4. Once the runner confirms sign-in and no organization is selected, show Organizations in the same card and fetch the authoritative list. Remount verifies state before enabling selection. A new Connect request may open the dedicated Organizations resource directly.
+5. Wait for an explicit organization choice, including when only one organization is available. Headless hosts list organizations and ask in chat.
 
-The plugin never asks for passwords, tokens, recovery codes or provider credentials. Users should enter authentication data only in the browser device flow. The plugin does not provide a web organization-admin fallback; membership and scope come from the runner and backend authorization.
+The plugin never asks for passwords, authorization codes, PKCE verifiers, tokens or provider credentials. Users enter their account credentials only on the backend's browser page. Membership and scope come from the runner and backend authorization.
 
 The selected organization is runner-wide for the authenticated installation. It is used by later workflow, workspace and run operations. Loomex never auto-selects an organization from a workflow name, workspace, previous task or failed operation. Use `$loomex:loomex-connect` to list available organizations and switch only after the user names the desired organization.
 
-Logout is an explicit, safety-sensitive request. The runner may refuse logout while active managed work still depends on the connection. Preserve the returned cleanup or recovery state and explain what must finish before retrying. A successful logout clears local authentication state according to the runner contract; it does not delete workflows, organization data or workspace files. If a logout response is lost, read connection/auth status before considering another attempt.
+Logout is an explicit, safety-sensitive request. The runner stops admitting new work, lets idle lease and heartbeat sessions close, then revokes credentials. It refuses to interrupt an active provider job; that job must finish before retrying. Preserve the returned cleanup or recovery state and explain what must finish. A successful logout clears local authentication state according to the runner contract; it does not delete workflows, organization data or workspace files. If a logout response is lost, read connection/auth status before considering another attempt.
 
 ## Headless tool workflow
 
 Use the focused tools when visual delivery is unavailable or not requested:
 
 - `loomex_readiness` and `loomex_auth_status` inspect local runner and authentication state.
-- `loomex_auth_start` begins the browser device flow; `loomex_auth_poll` completes it.
+- `loomex_auth_start` begins browser authentication; the runner completes it after its callback. `loomex_auth_cancel` cancels one pending flow without signing out.
 - `loomex_organizations_list` lists available organizations; `loomex_organization_select` applies an explicit choice.
 - `loomex_auth_logout` requests safe logout after the user explicitly asks for it.
 
@@ -36,5 +38,7 @@ Connection and Organizations use separate content-addressed `ui://loomex/…` re
 Organizations are fetched on opening and refresh, including when one is already selected. Accessible unenrolled entries remain selectable: explicit submission invokes the existing enrollment/selection operation. Search filters the complete returned list, with five entries per page. Failed refresh retains the old list as unverified and disables switching; only successful empty responses show an empty state. Selection affects subsequent operations, not existing run or preparation bindings.
 
 Verification polling belongs to the active login flow. Copying, opening the browser and navigating do not cancel it. Hiding/unmounting suspends polling; visible restoration checks the current flow. Pending mutations retain their original arguments and idempotency key; retry first reads current state, then reuses that operation only if needed. No navigation or refresh initiates authentication, enrollment or logout.
+
+The loopback callback page uses the frontend-owned browser-auth stylesheet embedded in the runner binary. The backend approval and runner completion pages share the generated design export while remaining independently deployable. The callback reports sign-in success only after the runner has durably stored credentials; organization selection still happens in the card.
 
 The optional web-app destination comes from the runner's `webAppUrl`, configured at build time through `LOOMEX_WEB_APP_ORIGIN` and validated as an HTTPS origin. If unset, no web-app link is rendered. Verification links continue to come from the active authentication flow.

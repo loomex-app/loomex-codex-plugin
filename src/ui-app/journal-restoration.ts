@@ -73,6 +73,9 @@ export function restoredOperationSlot(operation: RestoredMutationOperation): str
   if (name === "loomex_run_prepare") {
     return `prepare:${String(operation.params.versionId ?? "")}:${String(operation.params.workspacePath ?? "")}`;
   }
+  if (name === "loomex_workflow_publish") {
+    return `workflow:publish:${String(operation.params.workflowId ?? "")}:${String(operation.params.expectedVersion ?? "")}`;
+  }
   if (name === "loomex_run_start_handoff_issue") {
     return `start-handoff:issue:${String(operation.params.preparationId ?? "")}`;
   }
