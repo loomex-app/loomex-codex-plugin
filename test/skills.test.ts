@@ -229,6 +229,11 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(authoring, /Do not add a project-directory input or `settings\.workspaceInputField`/);
     assert.match(authoring, /Existing stored versions.*remain valid and readable/);
     assert.match(authoring, /"source": "execution_context", "value": "workspace\.path"/);
+    assert.match(authoring, /at most three automatic repairs/);
+    assert.match(authoring, /same candidate and issue set recur/);
+    assert.match(authoring, /version: "draft".*`loomex_workflow_get`/);
+    assert.match(authoring, /verify the draft identity, revision, and saved definition/);
+    assert.match(authoring, /transport, authentication, catalog, permission, and backend failures are operational errors/);
   });
 
   await t.test("accepted interaction continuations route through the runs skill", async () => {

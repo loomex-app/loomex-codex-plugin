@@ -213,6 +213,7 @@ const primarySchemas = {
       details: Details,
     })
     .strict(),
+  "auth.open_browser": z.object({status:z.literal("launch_requested"),flowId:z.string().min(1).max(160)}).strict(),
   "auth.cancel": z.object({ canceled:z.boolean(), details:Details }).strict(),
   "auth.recover": z.object({
     reconciled: z.boolean(), authenticated: z.boolean(), activeOrganization: NullableString.optional(), details: Details,

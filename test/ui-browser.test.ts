@@ -159,6 +159,7 @@ async function mountApp(
       window.__loomexCalls = [];
       window.__loomexMessages = [];
       window.__loomexOpenedLinks = [];
+      window.__loomexBrowserLaunches = [];
       window.__loomexModelContexts = [];
       window.__loomexSizes = [];
       window.__loomexPersistenceCalls = [];
@@ -167,6 +168,7 @@ async function mountApp(
       window.__loomexCalls ||= [];
       window.__loomexMessages ||= [];
       window.__loomexOpenedLinks ||= [];
+      window.__loomexBrowserLaunches ||= [];
       window.__loomexModelContexts ||= [];
       window.__loomexSizes ||= [];
       window.__loomexPersistenceCalls ||= [];
@@ -481,6 +483,16 @@ async function mountApp(
         }
         if (window.__dropNextToolResponse) {
           window.__dropNextToolResponse = false;
+          return;
+        }
+        if (message.params.name === "loomex_auth_open_browser") {
+          const failed = Boolean(window.__failNextBrowserLaunch);
+          window.__failNextBrowserLaunch = false;
+          if (!failed) window.__loomexBrowserLaunches.push(message.params.arguments?.flowId);
+          const result = failed
+            ? { isError: true, structuredContent: { ok: false, error: { code: "BROWSER_LAUNCH_FAILED", message: "The system browser could not be opened. Use the sign-in link in this card." } } }
+            : { structuredContent: { ok: true, data: { status: "launch_requested", flowId: message.params.arguments?.flowId } } };
+          window.setTimeout(() => event.source.postMessage({ jsonrpc: "2.0", id: message.id, result }, "*"), Number(window.__workflowDelayMs || 0));
           return;
         }
         const callNumber = window.__loomexCalls.length;
@@ -902,13 +914,13 @@ test("connection view renders fresh state without auto-starting authentication a
   assert.equal(await app.getByRole("button", { name: "Sign out", exact: true }).count(), 0);
 });
 
-test("explicit browser sign-in shows the current link without sending another chat prompt", async (t) => {
+test("explicit browser sign-in opens once and keeps the link behind a fallback disclosure", async (t) => {
   const available = await browserTools();
   assert.ok(available, "Chromium required");
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();
-  const app = await mountApp(page, "connection", connectionProjection(), false, false, null, false, undefined, { openLinks: {} });
+  const app = await mountApp(page, "connection", connectionProjection(), false, false, null, false, undefined, {});
   const authorizationUrl = "https://example.test/authorize?transaction=example";
   const pending = connectionProjection({
     state: "browser_pending", actions: ["auth.cancel"],
@@ -918,14 +930,68 @@ test("explicit browser sign-in shows the current link without sending another ch
     { structuredContent: { ok: true, data: { status: "pending", authorizationUrl } } },
     { structuredContent: { ok: true, data: pending } },
     { structuredContent: { ok: true, data: pending } },
+    { structuredContent: { ok: true, data: pending } },
   ]);
   await app.getByRole("button", { name: "Sign in", exact: true }).click();
   await app.getByText("Waiting for browser approval…", { exact: true }).waitFor();
+  await page.waitForFunction(() => window.__loomexBrowserLaunches.includes("flow-new"));
+  assert.deepEqual(await page.evaluate(() => window.__loomexBrowserLaunches), ["flow-new"]);
+  assert.deepEqual(await page.evaluate(() => window.__loomexOpenedLinks), [], "sign-in does not depend on the host link bridge");
+  assert.equal(await app.locator("#browser-sign-in-fallback").evaluate((node: HTMLDetailsElement) => node.open), false);
+  assert.equal(await app.getByRole("button", { name: "Open browser", exact: true }).count(), 1);
+  await app.getByText("Browser didn’t open?", { exact: true }).click();
   assert.equal(await app.locator("#authorization-url").textContent(), authorizationUrl);
   assert.equal(await app.getByRole("button", { name: "Copy sign-in link", exact: true }).count(), 1);
   assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
-  assert.deepEqual(await page.evaluate(() => window.__loomexOpenedLinks), []);
   assert.equal(await app.getByText(/device code/i).count(), 0);
+});
+
+test("sign-in launches through the runner even when the host cannot open links", async (t) => {
+  const available = await browserTools(); assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const pending = connectionProjection({ state: "browser_pending", actions: ["auth.cancel"], login: {
+    flowId: "flow-no-links", authorizationUrl: "https://example.test/authorize", expiresAt: Math.floor(Date.now()/1000)+60,
+  }});
+  const app = await mountApp(page, "connection", connectionProjection(), false, false, null, false, undefined, {}, [
+    { structuredContent: { ok: true, data: { status: "pending" } } },
+    { structuredContent: { ok: true, data: pending } },
+    { structuredContent: { ok: true, data: pending } },
+    { structuredContent: { ok: true, data: pending } },
+  ]);
+  await app.getByRole("button", { name: "Sign in", exact: true }).click();
+  await app.getByText("Waiting for browser approval…", { exact: true }).waitFor();
+  await page.waitForFunction(() => window.__loomexBrowserLaunches.includes("flow-no-links"));
+  assert.equal(await app.locator("#browser-sign-in-fallback").evaluate((node: HTMLDetailsElement) => node.open), false);
+  await app.getByText("Browser didn’t open?", { exact: true }).click();
+  assert.equal(await app.locator("#authorization-url").textContent(), "https://example.test/authorize");
+  assert.deepEqual(await page.evaluate(() => window.__loomexOpenedLinks), []);
+  assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
+});
+
+test("rejected automatic browser opening retains the accepted sign-in flow", async (t) => {
+  const available = await browserTools(); assert.ok(available, "Chromium required");
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const pending = connectionProjection({ state: "browser_pending", actions: ["auth.cancel"], login: {
+    flowId: "flow-rejected", authorizationUrl: "https://example.test/authorize", expiresAt: Math.floor(Date.now()/1000)+60,
+  }});
+  const app = await mountApp(page, "connection", connectionProjection(), false, false, null, false, undefined, { openLinks: {} }, [
+    { structuredContent: { ok: true, data: { status: "pending" } } },
+    { structuredContent: { ok: true, data: pending } },
+    { structuredContent: { ok: true, data: pending } },
+    { structuredContent: { ok: true, data: pending } },
+  ]);
+  await page.evaluate(() => { window.__failNextBrowserLaunch = true; });
+  await app.getByRole("button", { name: "Sign in", exact: true }).click();
+  await app.getByText("The system browser could not be opened. Use the sign-in link in this card.", { exact: true }).waitFor();
+  assert.equal(await app.locator("#browser-sign-in-fallback").evaluate((node: HTMLDetailsElement) => node.open), true);
+  assert.equal((await page.evaluate(() => window.__loomexCalls)).filter((call: {name:string}) => call.name === "loomex_auth_start").length, 1);
+  assert.deepEqual(await page.evaluate(() => window.__loomexBrowserLaunches), []);
+  assert.equal(await app.getByRole("button", { name: "Open browser", exact: true }).count(), 1);
+  assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
 });
 
 test("browser sign-in displays one stable progress state and observes local authority", async (t) => {
@@ -4366,41 +4432,46 @@ test("organizations remain distinct, paginate and preserve a candidate through r
   await captureRequestedScreenshots(page, "connection-connected");
 });
 
-test("opening the default browser preserves local observation and a stable waiting view", async (t) => {
+test("runner browser launch preserves local observation and a stable waiting view", async (t) => {
   const available = await browserTools(); assert.ok(available);
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();
   const pending = connectionProjection({ state: "browser_pending", actions: ["auth.cancel"], login: { flowId: "flow-poll", authorizationUrl: "https://example.test/authorize", expiresAt: Math.floor(Date.now()/1000)+60 } });
   const app = await mountApp(page, "connection", pending, false, false, null, false, undefined, { openLinks: {} });
-  await page.evaluate(() => { window.__workflowDelayMs = 1200; });
-  await app.getByRole("button", { name: "Open in default browser", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.__loomexBrowserLaunches), [], "restoring a pending sign-in does not reopen the browser");
+  await app.getByRole("button", { name: "Refresh", exact: true }).click();
   await waitForToolCount(page, "loomex_connection_get", 1);
+  assert.deepEqual(await page.evaluate(() => window.__loomexBrowserLaunches), [], "refreshing a pending sign-in does not reopen the browser");
+  await page.evaluate(() => { window.__workflowDelayMs = 1200; });
+  await app.getByRole("button", { name: "Open browser", exact: true }).click();
+  await waitForToolCount(page, "loomex_connection_get", 2);
+  await waitForToolCount(page, "loomex_auth_open_browser", 1);
   assert.equal(await app.locator("#activity").isVisible(), false, "background observation has no visible loading state");
   assert.equal(await app.getByText("Waiting for browser approval…", { exact: true }).count(), 1);
-  assert.equal(await app.getByRole("button", { name: "Copy sign-in link", exact: true }).count(), 1);
+  assert.equal(await app.locator("#browser-sign-in-fallback").evaluate((node: HTMLDetailsElement) => node.open), false);
   assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
   await captureRequestedScreenshots(page, "connection-verification");
 });
 
-test("rejected default-browser request keeps the same flow and its copyable link", async (t) => {
+test("rejected runner browser launch keeps the same flow and its copyable link", async (t) => {
   const available = await browserTools(); assert.ok(available, "Chromium required");
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();
   const pending = connectionProjection({ state: "browser_pending", actions: ["auth.cancel"], login: { flowId: "flow-open-error", authorizationUrl: "https://example.test/authorize", expiresAt: Math.floor(Date.now()/1000)+60 } });
   const app = await mountApp(page, "connection", pending, false, false, null, false, undefined, { openLinks: {} });
-  await page.evaluate(() => { window.__failNextOpenLink = true; });
-  await app.getByRole("button", { name: "Open in default browser", exact: true }).click();
-  await app.getByText("The browser could not be opened. Use the link in this card instead.", { exact: true }).waitFor();
+  await page.evaluate(() => { window.__failNextBrowserLaunch = true; });
+  await app.getByRole("button", { name: "Open browser", exact: true }).click();
+  await app.getByText("The system browser could not be opened. Use the sign-in link in this card.", { exact: true }).waitFor();
   assert.equal(await app.locator("#authorization-url").textContent(), "https://example.test/authorize");
+  assert.equal(await app.locator("#browser-sign-in-fallback").evaluate((node: HTMLDetailsElement) => node.open), true);
   assert.equal(await app.getByRole("button", { name: "Copy sign-in link", exact: true }).count(), 1);
-  assert.equal(await app.getByRole("button", { name: "Open in default browser", exact: true }).count(), 1);
-  assert.equal(await app.getByText("Support details", { exact: true }).count(), 1);
+  assert.equal(await app.getByRole("button", { name: "Open browser", exact: true }).count(), 1);
   assert.equal((await page.evaluate(() => window.__loomexCalls)).some((call: {name:string}) => call.name === "loomex_auth_start"), false);
 });
 
-test("default-browser fallback verifies the pending flow before opening an external link", async (t) => {
+test("runner browser launch verifies the pending flow and never passes a URL from the card", async (t) => {
   const available = await browserTools(); assert.ok(available, "Chromium required");
   const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
   t.after(() => browser.close());
@@ -4408,9 +4479,13 @@ test("default-browser fallback verifies the pending flow before opening an exter
   const authorizationUrl = "https://example.test/authorize?transaction=external";
   const pending = connectionProjection({ state: "browser_pending", actions: ["auth.cancel"], login: { flowId: "flow-external", authorizationUrl, expiresAt: Math.floor(Date.now()/1000)+60 } });
   const app = await mountApp(page, "connection", pending, false, false, null, false, undefined, { openLinks: {} });
-  await app.getByRole("button", { name: "Open in default browser", exact: true }).click();
-  await page.waitForFunction((url: string) => window.__loomexOpenedLinks.includes(url), authorizationUrl);
+  await app.getByRole("button", { name: "Open browser", exact: true }).click();
+  await page.waitForFunction(() => window.__loomexBrowserLaunches.includes("flow-external"));
   assert.equal((await page.evaluate(() => window.__loomexCalls)).filter((call: {name:string}) => call.name === "loomex_connection_get").length, 1);
+  const launch = (await page.evaluate(() => window.__loomexCalls)).find((call: {name:string}) => call.name === "loomex_auth_open_browser");
+  assert.deepEqual(Object.keys(launch.arguments).sort(), ["flowId", "idempotencyKey"]);
+  assert.equal(launch.arguments.flowId, "flow-external");
+  assert.deepEqual(await page.evaluate(() => window.__loomexOpenedLinks), []);
   assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
 });
 
@@ -4424,6 +4499,7 @@ test("link copy refuses a replaced sign-in flow", async (t) => {
   const current = connectionProjection({ state:"browser_pending", actions:["auth.cancel"], login:{flowId:"flow-new",authorizationUrl:"https://example.test/new",expiresAt} });
   const app = await mountApp(page,"connection",initial);
   await page.evaluate((value:unknown)=>{window.__workflowResponses=[{structuredContent:{ok:true,data:value}}];},current);
+  await app.getByText("Browser didn’t open?",{exact:true}).click();
   await app.getByRole("button",{name:"Copy sign-in link",exact:true}).click();
   await app.getByText("This sign-in is no longer available. Check the current connection state.",{exact:true}).waitFor();
   assert.deepEqual(await page.evaluate(()=>window.__loomexMessages),[]);

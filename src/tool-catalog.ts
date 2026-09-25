@@ -325,6 +325,18 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     destructive: false,
   },
   {
+    name: "loomex_auth_open_browser",
+    rpcMethod: "auth.open_browser",
+    title: "Open Loomex sign-in browser",
+    description:
+      "Ask the local runner to open the current verified sign-in flow in the system browser. This app-only action never accepts a URL and does not complete authentication.",
+    inputSchema: z.object({ flowId: z.string().min(1).max(160), idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true,
+    destructive: false,
+    idempotent: false,
+    appOnly: true,
+  },
+  {
     name: "loomex_auth_cancel",
     rpcMethod: "auth.cancel",
     title: "Cancel Loomex authentication",

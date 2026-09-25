@@ -11,7 +11,7 @@ is paired with one of these exact continuation contexts.
 A `reviewed-handoff` continuation initially names a handoff reference, not a run.
 Read that reference and commit only its runner-verified approval as specified in
 the skill. After commit, derive the exact run ID solely from the runner result;
-for an already committed handoff, use its existing recorded run. Immediately
+for an already committed or exactly reconciled handoff, use its existing recorded run. An ambiguous handoff has no verified run to follow; reread that exact handoff after the lookup becomes available without retrying commit. Immediately
 enter the loop below. Do not stop at a queued/running receipt or commit again.
 
 Once the handoff has resolved, the continuation must identify one exact `runId`. The current v2 context is

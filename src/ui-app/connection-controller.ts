@@ -127,6 +127,7 @@ export function createConnectionController(host:ConnectionServices) {
  type ConnectionErrorKind = 'observation' | 'browser' | 'organizations' | 'operation' | 'presentation';
  let connectionError:unknown;
  let connectionErrorKind:ConnectionErrorKind|undefined;
+ let browserFallbackFlowId:string|undefined;
  const setError=(error:unknown,kind:ConnectionErrorKind='operation')=>{connectionError=error;connectionErrorKind=kind;host.setError(error);};
  const clearConnectionError=()=>{connectionError=undefined;connectionErrorKind=undefined;host.clearError();};
  const actions=new WeakMap<HTMLButtonElement,Action>();
@@ -160,6 +161,11 @@ export function createConnectionController(host:ConnectionServices) {
     const status=context.querySelector<HTMLElement>("#browser-open-status");
     if(status){status.textContent=message;status.hidden=!message;}
   }
+  function revealBrowserFallback(flowId:string) {
+    browserFallbackFlowId=flowId;
+    const details=context.querySelector<HTMLDetailsElement>("#browser-sign-in-fallback");
+    if(details && connectionState.projection?.login?.flowId===flowId)details.open=true;
+  }
   async function verifiedPendingLogin(flowId:string):Promise<string> {
     announceBrowserOpening("Checking this sign-in…");
     let freshResult:unknown, fresh:Projection;
@@ -185,12 +191,26 @@ export function createConnectionController(host:ConnectionServices) {
     announceBrowserOpening("Sign-in link copied.");
   }
   async function openCurrentLoginExternally(flowId:string) {
-    const url=await verifiedPendingLogin(flowId);
-    await openExternalLink(url);
-    announceBrowserOpening("Default browser request sent. If no browser appears, copy the link below.");
+    try {
+      await verifiedPendingLogin(flowId);
+      connectionData(await callTool("loomex_auth_open_browser",{flowId,idempotencyKey:uuid()},false,false,"background"));
+      if(connectionErrorKind==='browser')clearConnectionError();
+      announceBrowserOpening("System browser launch requested. Complete sign-in there.");
+    } catch(error) {
+      revealBrowserFallback(flowId);
+      announceBrowserOpening("");
+      setError(error,'browser');
+    }
   }
   async function startBrowserSignIn() {
     await connectionMutation("loomex_auth_start",{});
+    // Start may have been reconciled after a lost reply. Check runner authority
+    // before using a URL; no opening occurs during restoration or observation.
+    const freshResult=await callTool("loomex_connection_get",{},false,false,"background");
+    const fresh=connectionProjection(connectionData(freshResult));
+    if(connectionChanged(connectionState.projection,fresh))renderConnectionResult(freshResult);
+    if(fresh.state!=="browser_pending" || !fresh.login)return;
+    await openCurrentLoginExternally(fresh.login.flowId);
   }
 
   async function saveConnectionView() {
@@ -420,6 +440,7 @@ export function createConnectionController(host:ConnectionServices) {
     if(disposed)return;
     const projection = connectionProjection(connectionData(result));
     const previous=connectionState.projection;
+    if(projection.login?.flowId!==previous?.login?.flowId)browserFallbackFlowId=undefined;
     const needsOrganization=projection.state==='authenticated' && projection.organization.status==='organization_required';
     const advanced=needsOrganization && connectionState.page==='connection';
     if(advanced){connectionState.page='organizations';connectionState.structure='';}
@@ -553,11 +574,14 @@ export function createConnectionController(host:ConnectionServices) {
         contentTarget.append(element("p", { className: "ui-caption" }, `Expires ${new Date(login.expiresAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`), element("p", { className: "ui-caption", role: "status" }, "Waiting for browser approval…"));
         contentTarget.append(element("p",{id:"browser-open-status",className:"ui-caption",role:"status",hidden:true}));
         if(login.authorizationUrl){
-          contentTarget.append(element("p",{id:"authorization-url",className:"workspace-path"},login.authorizationUrl));
-          if(hostCanOpenExternalLink())contentTarget.append(connectionButton("Open in default browser",()=>openCurrentLoginExternally(login.flowId),false,"secondary","open"));
+          const fallback=element("details",{id:"browser-sign-in-fallback",className:"ui-disclosure"});
+          fallback.open=browserFallbackFlowId===login.flowId;
+          fallback.append(element("summary",{},"Browser didn’t open?"),element("p",{id:"authorization-url",className:"workspace-path"},login.authorizationUrl),
+            connectionButton("Copy sign-in link",()=>copyCurrentLogin(login.flowId),false,"secondary","copy"));
+          contentTarget.append(fallback);
         }else contentTarget.append(element("p",{className:"ui-caption"},"The browser link is unavailable. Refresh this connection."));
       }
-      primaryAction("Copy sign-in link", () => copyCurrentLogin(login.flowId), !login.authorizationUrl, "copy", false);
+      primaryAction("Open browser", () => openCurrentLoginExternally(login.flowId), !login.authorizationUrl, "open", false);
       if (p.actions.has("auth.cancel")) secondaryAction("Cancel sign-in", () => connectionMutation("loomex_auth_cancel", {flowId:login.flowId}), "cancel");
     } else if(p.state==="authentication_completing") {
       contentTarget.append(element("p",{className:"ui-caption",role:"status"},"Completing sign-in…"));
@@ -577,7 +601,7 @@ export function createConnectionController(host:ConnectionServices) {
       if (p.state === "logout_pending" && p.actions.has("auth.logout")) primaryAction("Retry sign out", () => connectionMutation("loomex_auth_logout", {}), false, "logout");
     }
     if (connectionState.pending && !connectionState.busy) {
-      primaryAction("Retry previous action", () => connectionState.pending ? connectionMutation(connectionState.pending.name, connectionState.pending.args) : undefined);
+      primaryAction("Retry previous action", () => connectionState.pending?.name==="loomex_auth_start" ? startBrowserSignIn() : connectionState.pending ? connectionMutation(connectionState.pending.name, connectionState.pending.args) : undefined);
     }
     if (!stableVerification) {
       if (preserveBody) patchConnectionChildren(context, contentTarget);
