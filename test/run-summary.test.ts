@@ -122,6 +122,22 @@ test("terminal failures retain actionable diagnostics without raw provider outpu
   assert.doesNotMatch(JSON.stringify(result), /private-token/);
 });
 
+test("unsupported account model gives a safe targeted recovery", () => {
+  const result = runSummary("runs.result", {
+    execution: { id: runId, status: "failed", organizationId,
+      error: { code: "WORKFLOW_RUNTIME_NODE_FAILED", details: { pluginAgentError: { details: { error: {
+        code: "PROVIDER_MODEL_UNAVAILABLE", provider: "codex", model: "gpt-6-sol",
+        message: "private provider output",
+      } } } } } },
+    latestSequence: 4, hasMoreEvents: false, events: [],
+  });
+  const failure = result?.failure as { code?: string; message?: string } | undefined;
+  assert.equal(failure?.code, "PROVIDER_MODEL_UNAVAILABLE");
+  assert.equal(failure?.message,
+    "The configured provider account cannot use this model. Select an available model and prepare a new run.");
+  assert.doesNotMatch(JSON.stringify(result), /private provider output/);
+});
+
 test("provider completion remains distinct from authoritative workflow completion", () => {
   const result = runSummary("runs.wait", {
     execution: { id: runId, status: "running", organizationId }, latestSequence: 18,
@@ -315,4 +331,18 @@ test("monitoring observations stay bounded, categorical, and private", () => {
   assert.doesNotMatch(JSON.stringify(evidence),/session-0|task-private|task-0/);
   input.details.monitoring.runId = requestId;
   assert.equal(runSummary("runs.get",input)?.monitoringEvidence,undefined);
+});
+
+test("semantic failure keeps safe issue locations without provider content", () => {
+  const result = runSummary("runs.result", {
+    execution: { id: runId, status: "failed", organizationId,
+    error: { code: "PLUGIN_AGENT_OUTPUT_REPAIR_UNSUPPORTED", message: "private-provider-content",
+      details: { originalError: { code: "PLUGIN_AGENT_OUTPUT_INVALID", details: { validation: {
+        errors: [{ validator: "semantic", code: "HUMAN_INPUT_INVALID", path: "$.questions[0]", message: "private-answer" }],
+      } } } },
+    } },
+  });
+  assert.match(JSON.stringify(result), /generated questions were invalid/);
+  assert.match(JSON.stringify(result), /questions\[0\]/);
+  assert.doesNotMatch(JSON.stringify(result), /private-|runner setup/);
 });

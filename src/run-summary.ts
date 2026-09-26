@@ -162,8 +162,25 @@ function failure(value: JsonValue | undefined): ObjectValue | undefined {
   Object.assign(result, node);
   const code = String(result.code ?? source.code ?? "");
   const message = [effective.message, source.message].find((candidate): candidate is string => typeof candidate === "string");
-  if (/usage\s+limit|rate\s+limit/i.test(message ?? "") || /USAGE_LIMIT|RATE_LIMIT/i.test(code)) {
+  const original = object(object(effective.details).originalError);
+  const validation = object(object(original.details).validation);
+  const directValidation = object(object(effective.details).validation);
+  const errors = Array.isArray(validation.errors) ? validation.errors
+    : Array.isArray(directValidation.errors) ? directValidation.errors : [];
+  const semanticIssues = errors.map(object).filter((issue) => issue.validator === "semantic"
+    && issue.code === "HUMAN_INPUT_INVALID" && typeof issue.path === "string"
+    && /^\$\.[A-Za-z_][A-Za-z0-9_]*(?:\[\d+\]|\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(issue.path));
+  if (["PLUGIN_AGENT_OUTPUT_INVALID", "PLUGIN_AGENT_OUTPUT_REPAIR_UNSUPPORTED"].includes(code)) {
+    result.message = semanticIssues.length
+      ? "The generated questions were invalid. No question form was created; automatic output repair is unavailable."
+      : "The AI output did not satisfy the workflow contract. Automatic output repair is unavailable.";
+    if (semanticIssues.length) {
+      result.validationIssues = semanticIssues.slice(0, 5).map((issue) => fields(issue, ["path", "code"], 200));
+    }
+  } else if (/usage\s+limit|rate\s+limit/i.test(message ?? "") || /USAGE_LIMIT|RATE_LIMIT/i.test(code)) {
     result.message = "The provider usage limit was reached. Wait for provider availability, then start a new run.";
+  } else if (code === "PROVIDER_MODEL_UNAVAILABLE") {
+    result.message = "The configured provider account cannot use this model. Select an available model and prepare a new run.";
   } else if (/AUTH|CREDENTIAL|LOGIN/i.test(code)) {
     result.message = "The provider could not authenticate. Reconnect the provider, then start a new run.";
   } else if (/UNAVAILABLE|NOT_FOUND|NOT_INSTALLED/i.test(code)) {

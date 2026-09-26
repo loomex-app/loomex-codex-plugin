@@ -281,6 +281,8 @@ export function createRunPresentation(host: RunPresentationServices) {
         row.append(element("p", { className: "ui-caption" }, provider.model || "Model selected by workflow"));
         providers.append(row);
       }
+      providers.append(element("p", { className: "ui-caption" },
+        "Installed providers are checked before Start. Model access depends on the provider account and is confirmed when an AI step runs."));
     } else if (Array.isArray(info.providers)) {
       providers.append(element("p", { className: "ui-value" }, "No AI steps"));
       providers.append(element("p", { className: "ui-caption" }, "This workflow does not select an AI provider."));
