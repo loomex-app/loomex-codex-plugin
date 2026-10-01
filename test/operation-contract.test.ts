@@ -8,6 +8,8 @@ test('unknown failures require reconciliation, not replay',()=>{
  assert.deepEqual(errorRecovery('UNRECOGNIZED_PROVIDER_FAILURE'),{recovery:'reconcile_outcome',outcome:'unknown'});
  assert.deepEqual(errorRecovery('OPERATION_PENDING'),{recovery:'reconcile_outcome',outcome:'not_dispatched'});
  assert.deepEqual(errorRecovery('ACTIVE_WORK_REQUIRES_DRAIN'),{recovery:'refresh_authority',outcome:'rejected'});
+ assert.deepEqual(errorRecovery('WORKFLOW_NOT_FOUND'),{recovery:'refresh_authority',outcome:'rejected'});
+ assert.deepEqual(errorRecovery('RUNNER_RESPONSE_UNAVAILABLE'),{recovery:'reconcile_outcome',outcome:'unknown'});
  assert.match(safeErrorMessage('ACTIVE_WORK_REQUIRES_DRAIN'), /current work to finish/);
 });
 for (const name of ['error-recovery.json', 'mutation-recovery.json']) {

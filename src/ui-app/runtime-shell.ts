@@ -157,6 +157,11 @@ export function createRuntimeShell(host:ShellServices) {
     const buttonFor = (action: PageAction): HTMLButtonElement => {
       const button = element("button", { type: "button", className: "secondary" });
       setAction(button, action.label, action.id);
+      if (action.labelVisibility === "text") {
+        button.classList.remove("icon-button", "ui-button-icon");
+        button.classList.add("action-with-label");
+        button.querySelector("span")?.classList.replace("sr-only", "action-label");
+      }
       button.dataset.pageAction = action.id;
       contextualButtons.set(button, action);
       button.addEventListener("click", () => {

@@ -7,7 +7,7 @@ export interface PersistenceDiagnostic {
 }
 export function persistenceDiagnostic(stage: PersistenceStage, cause: Error, mismatches: Record<string, boolean> = {}): PersistenceDiagnostic {
   const code = "code" in cause ? cause.code : undefined;
-  const known = ["HOST_TIMEOUT", "NETWORK_AMBIGUOUS", "RUNNER_UNAVAILABLE", "REVISION_CONFLICT", "INTERACTION_DRAFT_CONFLICT", "CONFLICT", "RECEIPT_MISMATCH", "VIEW_SESSION_NOT_FOUND", "INTERNAL"];
+  const known = ["HOST_TIMEOUT", "NETWORK_AMBIGUOUS", "RUNNER_UNAVAILABLE", "REVISION_CONFLICT", "PRESENTATION_SESSION_CONFLICT", "INTERACTION_DRAFT_CONFLICT", "CONFLICT", "RECEIPT_MISMATCH", "VIEW_SESSION_NOT_FOUND", "INTERNAL"];
   return { stage, code: typeof code === "string" && known.includes(code) ? code : "PERSISTENCE_UNAVAILABLE", mismatches };
 }
 export class PersistenceFailureError extends Error {
@@ -24,14 +24,18 @@ export class PresentationPersistenceError extends Error {
   readonly recovery = "save_then_retry" as const;
   readonly diagnostic: PersistenceDiagnostic;
   constructor(action: string, cause: Error, stage: PersistenceStage = "draft_write") {
-    super(messageFor(action, stage), { cause }); this.name = "PresentationPersistenceError";
-    this.diagnostic = cause instanceof PersistenceFailureError ? cause.diagnostic : persistenceDiagnostic(stage, cause);
+    const diagnostic = cause instanceof PersistenceFailureError ? cause.diagnostic : persistenceDiagnostic(stage, cause);
+    super(messageFor(action, stage, diagnostic.code), { cause }); this.name = "PresentationPersistenceError";
+    this.diagnostic = diagnostic;
   }
 }
 export function persistenceSaveError(action: string | undefined, cause: Error, stage: PersistenceStage = "draft_write"): PresentationPersistenceError {
   return new PresentationPersistenceError(action?.trim().toLowerCase() || "answers", cause, stage);
 }
-function messageFor(action: string, stage: PersistenceStage): string {
+function messageFor(action: string, stage: PersistenceStage, code: string): string {
+  if (stage === "presentation_write" && action === "run preparation") return /CONFLICT/.test(code)
+    ? "The saved run view changed elsewhere. Load the saved version before continuing."
+    : "This run view could not be saved. Retry saving the view before continuing.";
   if (action === "run preparation") return "The run preparation could not be saved. Save it before starting.";
   if (stage === "presentation_write") return "Your answers were saved, but this view could not be updated. Retry saving the view before submitting.";
   if (stage === "operation_reconciliation") return "The previous submission could not be verified. Check its outcome before submitting again.";

@@ -1,6 +1,7 @@
 import { createUiElement as element } from "./components.js";
 import type { HumanRequest, InputSpec, ExecutionProjection, PagedResponse, UiData, JsonSchema, PreparedRun, PreparationPresentation, RpcResult, RunPresentation } from "./page-models.js";
 import type { JsonObject } from "./contracts.js";
+import { compactQuestion, createPromptContent, createReadingPromptContent, enablePromptReading, type PromptFormattingBudget } from "./prompt-content.js";
 
 export interface RunPresentationServices {
   readonly context: HTMLElement;
@@ -78,46 +79,81 @@ export function createRunPresentation(host: RunPresentationServices) {
   function humanPresentation(request?: HumanRequest | null) {
     const presentation = request && request.presentation;
     if (!presentation || presentation.version !== 1 || !presentation.kind || !["review", "clarification", "progress"].includes(presentation.kind)) return undefined;
-    const textFields = ["stageLabel", "summary", "question"];
+    if (presentation.stageLabel !== undefined && !safeText(presentation.stageLabel)) return undefined;
+    const textFields = ["summary", "question"];
     const listFields = ["changedFiles", "verification", "limitations", "artifacts", "priorRequirements", "decisions", "openQuestions"];
-    if (textFields.some((key) => presentation[key] !== undefined && !safeText(presentation[key]))) return undefined;
-    if (listFields.some((key) => presentation[key] !== undefined && !safeTextList(presentation[key]))) return undefined;
+    if (textFields.some((key) => presentation[key] !== undefined && (typeof presentation[key] !== "string" || !presentation[key]?.trim()))) return undefined;
+    if (listFields.some((key) => presentation[key] !== undefined && (!Array.isArray(presentation[key]) || !(presentation[key] as unknown[]).every(item => typeof item === "string" && item.trim())))) return undefined;
     return presentation;
   }
 
-  function appendTextList(parent: HTMLElement, label: string, values: unknown, excluded: ReadonlySet<string> = new Set()): number {
-    const items = (safeTextList(values) || []).filter((item) => !excluded.has(normalizedCopy(item)));
+  function appendTextList(parent: HTMLElement, label: string, values: unknown, excluded: ReadonlySet<string> = new Set(), budget: PromptFormattingBudget = { remaining: 512 }, formatItems = true, readingLabel?: string): number {
+    const items = (Array.isArray(values) ? values.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : []).filter((item) => !excluded.has(item.trim()));
     if (!items.length) return 0;
     const section = element("section", { className: "ui-section" });
     section.append(element("h3", { className: "ui-label" }, label));
-    const list = element("ul", { className: "ui-list" });
-    for (const item of items) list.append(element("li", {}, item));
-    section.append(list);
+    if (items.length > 50) {
+      // Keep every entry and its boundary while avoiding one DOM subtree per item.
+      const plain = element("div", { className: "ui-rich-text" });
+      plain.append(element("p", {}, items.map((item, index) => `${index + 1}. ${item}`).join("\n\n")));
+      section.append(plain);
+    } else {
+      const list = element("ul", { className: "ui-list" });
+      for (const item of items) {
+        const entry = element("li");
+        if (formatItems) entry.append(createPromptContent(item, {}, budget));
+        else {
+          const plain = element("div", { className: "ui-rich-text" });
+          plain.append(element("p", {}, item));
+          entry.append(plain);
+        }
+        list.append(entry);
+      }
+      section.append(list);
+    }
     parent.append(section);
+    const body = section.lastElementChild;
+    if (readingLabel && body instanceof HTMLElement) enablePromptReading(body, readingLabel);
     return items.length;
   }
 
   function renderHumanPresentation(request: HumanRequest, spec?: InputSpec): boolean {
     const presentation = humanPresentation(request);
     if (!presentation) return false;
-    const wrapper = element("div", { className: "ui-stack" });
-    const questionTexts = new Set(questionCopyValues(spec).map(normalizedCopy));
+    const wrapper = element("div", { className: "ui-stack ui-report-context" });
+    const questionTexts = new Set(questionCopyValues(spec));
+    const formattingBudget: PromptFormattingBudget = { remaining: 512 };
     if (presentation.kind === "review") {
       const hero = element("div", { className: "ui-hero" });
-      hero.append(element("h2", {}, safeText(request && request.title) || "Implementation review"));
-      if (safeText(presentation.summary)) hero.append(element("p", { className: "ui-caption" }, safeText(presentation.summary)));
+      const title = typeof request.title === "string" ? request.title : "";
+      hero.append(element("h2", {}, title && compactQuestion(title) ? title : "Implementation review"));
+      if (title && !compactQuestion(title) && !questionTexts.has(title.trim())) hero.append(createReadingPromptContent(title, "Review title details", {}, formattingBudget));
+      if (typeof presentation.summary === "string") hero.append(createReadingPromptContent(presentation.summary, "Implementation summary", {}, formattingBudget));
       wrapper.append(hero);
-      appendTextList(wrapper, "Changed files", presentation.changedFiles, questionTexts);
-      appendTextList(wrapper, "Checks", presentation.verification, questionTexts);
-      appendTextList(wrapper, "Limitations", presentation.limitations, questionTexts);
-      appendTextList(wrapper, "Artifacts", presentation.artifacts, questionTexts);
-      appendTextList(wrapper, "Requirements gathered", presentation.priorRequirements, questionTexts);
-      appendTextList(wrapper, "Decisions", presentation.decisions, questionTexts);
-      appendTextList(wrapper, "Open questions", presentation.openQuestions, questionTexts);
+      appendTextList(wrapper, "Checks", presentation.verification, questionTexts, formattingBudget, true, "Check details");
+      appendTextList(wrapper, "Limitations", presentation.limitations, questionTexts, formattingBudget, true, "Limitation details");
+      appendTextList(wrapper, "Open questions", presentation.openQuestions, questionTexts, formattingBudget, true, "Open question details");
     }
     context.className = "ui-stack";
     context.replaceChildren(wrapper);
     context.hidden = !wrapper.childElementCount;
+    if (!context.hidden) {
+      const report = element("div", { className: "ui-stack ui-report-context" });
+      wrapper.className = "ui-stack ui-report-primary";
+      report.append(wrapper);
+      context.append(report);
+      const appendDisclosure = (label: string, fields: readonly (readonly [string, unknown])[]): void => {
+        const disclosure = element("details", { className: "ui-disclosure" });
+        const body = element("div", { className: "ui-stack" });
+        for (const [heading, values] of fields) appendTextList(body, heading, values, questionTexts, formattingBudget, false);
+        if (!body.childElementCount) return;
+        disclosure.append(element("summary", {}, label), body);
+        report.append(disclosure);
+        enablePromptReading(body, label);
+      };
+      appendDisclosure("Details", [["Changed files", presentation.changedFiles], ["Artifacts", presentation.artifacts]]);
+      appendDisclosure("Earlier answers", [["Requirements gathered", presentation.priorRequirements], ["Decisions", presentation.decisions]]);
+    }
     return true;
   }
 
@@ -189,7 +225,7 @@ export function createRunPresentation(host: RunPresentationServices) {
     if (!presentation || presentation.version !== 1) return undefined;
     if (presentation.summary !== undefined && !safeText(presentation.summary)) return undefined;
     const listFields = ["changedFiles", "artifacts", "verification", "limitations"];
-    if (listFields.some((key) => presentation[key] !== undefined && !safeTextList(presentation[key]))) return undefined;
+    if (listFields.some((key) => presentation[key] !== undefined && (!Array.isArray(presentation[key]) || !(presentation[key] as unknown[]).every(item => typeof item === "string" && item.trim())))) return undefined;
     return presentation;
   }
 

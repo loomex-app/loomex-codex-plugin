@@ -24,7 +24,7 @@ export interface PublishReview {
   definitionChecksum: string;
   name: string;
 }
-type DetailOptions = { onBack?: BrowserAction; onPrepare?: BrowserAction; onEdit?: BrowserAction; onPublish?: BrowserAction; onUseVersion?: BrowserAction };
+type DetailOptions = { onBack?: BrowserAction; onPrepare?: BrowserAction; onEdit?: BrowserAction; onOpen?: BrowserAction; onPublish?: BrowserAction; onUseVersion?: BrowserAction };
 type PagedOptions = { onBack?: BrowserAction };
 
 export interface BrowserControllerServices {
@@ -66,6 +66,7 @@ export interface BrowserControllerServices {
   observeViewPersistence(result: unknown): Promise<boolean>;
   workflowIdValid(value: unknown): value is string;
   beginRunSetup(workflowId: string, detail: WorkflowData | null): Promise<void>;
+  openWorkflow(workflowId: string): Promise<void>;
   requestWorkflowAction(action: "edit" | "publish" | "use-version", data: WorkflowData): Promise<void>;
   reviewWorkflowPublish(data: WorkflowData): Promise<PublishReview>;
   publishWorkflow(review: PublishReview): Promise<void>;
@@ -152,6 +153,7 @@ export function createBrowserController(host: BrowserControllerServices) {
     detailResponse: null, busy: false, epoch: 0, focusReturn: null,
   };
   let publishReview: PublishReview | null = null;
+  let currentDetailData: UiData | null = null;
 
   function browserButton(label: string, action: BrowserAction, actionId: ActionId = "next", disabled = false, className = "secondary", visibleLabel = false, allowWithoutPersistence = false, iconOnly = false): HTMLButtonElement {
     const button = element("button", { type: "button", className, disabled: disabled || !host.connected() || state.busy || (host.viewPersistenceUnavailable() && !allowWithoutPersistence) });
@@ -338,6 +340,7 @@ export function createBrowserController(host: BrowserControllerServices) {
   }
 
   function renderWorkflowDetail(data: UiData, options: DetailOptions = {}): void {
+    currentDetailData = data;
     const workflow = data.workflow ?? {};
     const { version, definition } = workflowDefinition(data);
     const nodes = workflowNodes(data, definition);
@@ -348,7 +351,11 @@ export function createBrowserController(host: BrowserControllerServices) {
     const providers = workflowProviders(nodes);
 
     const actions: PageAction[] = [];
-    if (options.onEdit) actions.push({ id: "open", label: "Open in Loomex", intent: "navigate", disabled: state.busy || !host.connected(), execute: () => runBrowserAction(options.onEdit!, true) });
+    if (options.onEdit && workflow.isSystem !== true) actions.push({ id: "edit", label: "Edit with Codex", labelVisibility: "text", intent: "review", disabled: state.busy || !host.connected() || host.authoritativeStateStale() || !host.workflowIdValid(version.id), execute: () => runBrowserAction(() => {
+      if (currentDetailData !== data || host.authoritativeStateStale()) throw new Error("The selected workflow changed. Refresh its details before editing.");
+      return options.onEdit!();
+    }, true) });
+    if (options.onOpen) actions.push({ id: "open", label: "Open in Loomex", intent: "navigate", disabled: state.busy || !host.connected(), execute: () => runBrowserAction(options.onOpen!, true) });
     const published = ["active", "archived", "published"].includes(safeText(version.status).toLowerCase());
     if (options.onPrepare && (published || (version.status === undefined && (workflowVersionNumber(version) ?? 0) > 0))) actions.push({ id: "start", label: "Run", intent: "review", disabled: state.busy || !host.connected(), execute: () => runBrowserAction(options.onPrepare!, true) });
     const current = version.isActive === true || Boolean(version.id && version.id === data.activeVersion?.id);
@@ -448,11 +455,12 @@ export function createBrowserController(host: BrowserControllerServices) {
 
   function renderAuthoringWorkflow(data: UiData): void {
     const paged = host.pagedResponse(data);
-    if (paged) { renderWorkflowPagedResponse(paged); return; }
+    if (paged) { currentDetailData = null; renderWorkflowPagedResponse(paged); return; }
     const workflow = data.workflow ?? {};
     renderWorkflowDetail(data, {
       onPrepare: () => requestWorkflowPreparation(workflow.id ?? "", data),
       onEdit: () => host.requestWorkflowAction("edit", data),
+      onOpen: () => host.openWorkflow(workflow.id ?? ""),
       onPublish: () => host.requestWorkflowAction("publish", data),
       onUseVersion: () => host.requestWorkflowAction("use-version", data),
     });
@@ -463,6 +471,7 @@ export function createBrowserController(host: BrowserControllerServices) {
   }
 
   function renderBrowserContent(): void {
+    currentDetailData = null;
     if (host.runFlowActive()) { host.setPagePresentation(); host.renderIntegratedRunFlow(); return; }
     if (!state.selected) { host.setPagePresentation(); }
     context.hidden = false; context.className = "ui-stack"; context.setAttribute("aria-label", "Workflow browser");
@@ -476,13 +485,15 @@ export function createBrowserController(host: BrowserControllerServices) {
       return;
     }
     if (state.selected) {
-      const workflow = state.selected.workflow ?? {};
-      renderWorkflowDetail(state.selected, {
+      const detail = state.selected;
+      const workflow = detail.workflow ?? {};
+      renderWorkflowDetail(detail, {
         onBack: () => { state.selected = null; renderBrowser(); summary.textContent = ""; },
         onPrepare: () => requestWorkflowPreparation(workflow.id ?? ""),
-        onEdit: () => host.requestWorkflowAction("edit", state.selected ?? {}),
-        onPublish: () => host.requestWorkflowAction("publish", state.selected ?? {}),
-        onUseVersion: () => host.requestWorkflowAction("use-version", state.selected ?? {}),
+        onEdit: () => host.requestWorkflowAction("edit", detail),
+        onOpen: () => host.openWorkflow(workflow.id ?? ""),
+        onPublish: () => host.requestWorkflowAction("publish", detail),
+        onUseVersion: () => host.requestWorkflowAction("use-version", detail),
       });
       return;
     }

@@ -16,6 +16,7 @@ const ICONS: Record<ActionIcon, string> = {
 export interface PageAction {
   readonly id: ActionId;
   readonly label: string;
+  readonly labelVisibility?: "icon" | "text";
   readonly intent: "navigate" | "review" | "mutation";
   readonly disabled?: boolean;
   readonly execute: () => void | Promise<void>;

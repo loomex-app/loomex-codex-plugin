@@ -12,7 +12,7 @@ const organizationSchema=z.object({id:z.uuid(),name:z.string().trim().min(1).max
 const loginSchema=z.object({flowId:z.string().min(1).max(128),authorizationUrl:z.string().url().nullable().optional(),expiresAt:z.number().int().nonnegative()});
 const projectionSchema=z.object({schemaVersion:z.literal('loomex.runner.connection/v2'),state:z.enum(['signed_out','browser_pending','authentication_completing','verification_expired','authenticated','recovery_pending','logout_pending','credential_store_unavailable']),activeWork:z.number().int().min(0).max(1000000),actions:z.array(z.enum(['auth.login','auth.cancel','auth.recover','auth.logout','organizations.list','organizations.select'])).max(8),organization:z.object({status:z.enum(['organization_required','connected']),selected:z.object({id:z.uuid(),name:z.string().trim().min(1).max(240).nullable()}).nullable()}),organizations:z.array(organizationSchema),login:loginSchema.nullable(),webAppUrl:z.unknown().optional()});
 type RawProjection=z.infer<typeof projectionSchema>;
-type Projection=Omit<RawProjection,'actions'|'organizations'|'webAppUrl'> & {actions:Set<string>;organizations:Array<{id:string;name:string}>; webAppUrl:string|undefined};
+type Projection=Omit<RawProjection,'actions'|'organizations'|'webAppUrl'> & {actions:Set<string>;organizations:Array<{id:string;name:string}>; webAppUrl:string|undefined;credentialStoreCode:string|undefined};
 const pendingSchema=z.object({name:z.enum(['loomex_auth_start','loomex_auth_cancel','loomex_auth_recover','loomex_auth_logout','loomex_organization_select']),args:z.record(z.string(),z.unknown()),key:z.uuid()});
 type Pending=z.infer<typeof pendingSchema>;
 const sessionSchema=z.object({viewSessionId:z.uuid(),revision:z.number().int().nonnegative(),kind:z.enum(['connection','organizations']),state:z.record(z.string(),z.unknown()).default({})});
@@ -45,6 +45,16 @@ export interface ConnectionState {
 }
 function record(value:unknown):JsonObject {return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as JsonObject:{};}
 function safeText(value:unknown,limit=4096):string {return typeof value==='string'&&value.trim().length<=limit?value.trim():'';}
+const credentialStoreMessages:Readonly<Record<string,string>>={
+ STORE_ACCESS_REQUIRED:"Loomex may need access to the system credential store. Check its access settings, then refresh Connection.",
+ STORE_ACCESS_DENIED:"The system credential store denied Loomex access. Review its access settings, then refresh Connection.",
+ STORE_UNAVAILABLE:"Loomex cannot read the system credential store. Restore its availability, then refresh Connection.",
+ STORE_OPERATION_PENDING:"A credential-store operation has not returned a confirmed outcome. Reconcile the existing operation before taking another action.",
+};
+export function credentialStoreMessage(code:unknown):string {
+ return typeof code==='string'&&Object.hasOwn(credentialStoreMessages,code)?credentialStoreMessages[code]!
+  :"Loomex cannot access the system credential store. Check its availability and access settings, then refresh Connection.";
+}
 function publicHttpUrl(value:unknown) {
     if (!safeText(value, 4096)) return undefined;
     try {
@@ -83,7 +93,9 @@ export function normalizedConnection(value:unknown):Projection|undefined {
     if(data.organization.status==='connected'&&!data.organization.selected)return undefined;
     if((data.state==='browser_pending'||data.state==='authentication_completing')&&!data.login)return undefined;
     if(data.login?.authorizationUrl&&!publicHttpUrl(data.login.authorizationUrl))return undefined;
-    return {...data,actions:new Set(data.actions),webAppUrl:publicHttpUrl(data.webAppUrl),organizations:data.organizations.map(o=>({id:o.id,name:o.name||'Unnamed organization'}))};
+    const code=record(record(value).details).credentialStoreCode;
+    const credentialStoreCode=data.state==='credential_store_unavailable'&&typeof code==='string'&&Object.hasOwn(credentialStoreMessages,code)?code:undefined;
+    return {...data,credentialStoreCode,actions:new Set(data.actions),webAppUrl:publicHttpUrl(data.webAppUrl),organizations:data.organizations.map(o=>({id:o.id,name:o.name||'Unnamed organization'}))};
   }
 
 function connectionProjection(value: unknown): Projection {
@@ -107,7 +119,7 @@ function connectionChanged(previous:Projection|null,current:Projection):boolean 
   const display=(projection:Projection)=>JSON.stringify({
     state:projection.state,login:projection.login,actions:[...projection.actions].sort(),
     organization:projection.organization,organizations:projection.organizations,
-    activeWork:projection.activeWork,webAppUrl:projection.webAppUrl,
+    activeWork:projection.activeWork,webAppUrl:projection.webAppUrl,credentialStoreCode:projection.credentialStoreCode,
   });
   return display(previous)!==display(current);
 }
@@ -594,7 +606,7 @@ export function createConnectionController(host:ConnectionServices) {
       if (p.activeWork > 0) contentTarget.append(element("p", { className: "ui-caption" }, "Sign out waits for idle connections to close. Running jobs must finish first."));
       if (p.actions.has("auth.logout")) secondaryAction("Sign out", () => connectionMutation("loomex_auth_logout", {}), "logout");
     } else {
-      contentTarget.append(element("p", { className: "ui-caption" }, p.state === "credential_store_unavailable" ? "Unlock your credential store, then refresh." : "A previous credential operation needs to be reconciled before Loomex can connect."));
+      contentTarget.append(element("p", { className: "ui-caption" }, p.state === "credential_store_unavailable" ? credentialStoreMessage(p.credentialStoreCode) : "A previous credential operation needs to be reconciled before Loomex can connect."));
       if(p.state==="recovery_pending" && p.login && p.actions.has("auth.cancel"))primaryAction("Restart sign-in",()=>connectionMutation("loomex_auth_cancel",{flowId:p.login!.flowId}),false,"refresh");
       if (p.state === "recovery_pending" && p.actions.has("auth.recover")) primaryAction("Retry connection", () => connectionMutation("loomex_auth_recover", {}), false, "refresh");
       if (p.state === "recovery_pending" && p.actions.has("auth.logout")) secondaryAction("Reconnect", () => connectionMutation("loomex_auth_logout", {}), "logout");

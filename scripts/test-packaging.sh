@@ -351,6 +351,93 @@ fi
 grep -Fq '"token":"fixture-new-owner"' "$base/.lifecycle.lock/owner.json"
 test ! -e "$base/.lifecycle.lock.recovery"
 rm -rf "$base/.lifecycle.lock"
+# Prune is an exact receipt-owned maintenance transaction. A third synthetic
+# release leaves 0.1.0 as rollback while 0.1.1 remains current after rollback.
+payload3="$fixture/payload3"; cp -R "$payload2" "$payload3"
+python3 - "$payload3" <<'PY'
+import json,sys
+from pathlib import Path
+root=Path(sys.argv[1])
+for path in (root/'plugin/.codex-plugin/plugin.json',root/'.agents/plugins/marketplace.json'):
+ data=json.loads(path.read_text())
+ if 'plugins' in data: data['plugins'][0]['version']='0.1.2'
+ else: data['version']='0.1.2'
+ path.write_text(json.dumps(data,indent=2)+'\n')
+PY
+release3="$fixture/release3"
+python3 "$repo/scripts/artifact.py" source-manifest --root "$payload3" --output "$fixture/source-content-3.json" --source-revision test3
+SOURCE_DATE_EPOCH=3 python3 "$repo/scripts/artifact.py" create --payload "$payload3" --output "$release3" --project loomex-plugin --version 0.1.2 --platform darwin-arm64 --source-revision test3 --source-manifest "$fixture/source-content-3.json" --unsigned-development
+mkdir -p "$release3/lifecycle-runtime"
+cp "$payload3/plugin/runtime/bin/node" "$release3/lifecycle-runtime/node"; chmod 0755 "$release3/lifecycle-runtime/node"
+cp "$payload3/plugin/dist/lifecycle.mjs" "$release3/lifecycle.mjs"
+LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release3" --allow-unsigned-development --install-base "$base"
+"$repo/scripts/lifecycle.sh" rollback --install-base "$base" --version 0.1.1
+expect_prune_reject() {
+  if "$repo/scripts/lifecycle.sh" prune --install-base "$base" "$@" >/dev/null 2>&1; then
+    echo "prune accepted an unsafe plan: $*" >&2; exit 1
+  fi
+}
+expect_prune_reject --remove 0.1.1 --retain 0.1.0
+expect_prune_reject --remove 0.1.2 --retain 0.1.1
+expect_prune_reject --remove 9.9.9 --retain 0.1.0
+expect_prune_reject --remove 0.1.2 --retain 0.1.0 --retain 0.1.2
+outside_prune="$fixture/outside-prune"; printf preserve > "$outside_prune"
+mv "$base/versions/0.1.2/plugin/.mcp.json" "$fixture/mcp-prune-original"
+ln -s "$outside_prune" "$base/versions/0.1.2/plugin/.mcp.json"
+expect_prune_reject --remove 0.1.2 --retain 0.1.0
+test "$(cat "$outside_prune")" = preserve
+unlink "$base/versions/0.1.2/plugin/.mcp.json"
+mv "$fixture/mcp-prune-original" "$base/versions/0.1.2/plugin/.mcp.json"
+( exec 3< "$base/versions/0.1.2/plugin/dist/server.js"; touch "$fixture/open-prune-ref"; exec sleep 60 ) & held_prune=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -e "$fixture/open-prune-ref" ]] && break; sleep .1; done
+test -e "$fixture/open-prune-ref"
+expect_prune_reject --remove 0.1.2 --retain 0.1.0
+kill "$held_prune"; wait "$held_prune" 2>/dev/null || true
+test ! -e "$base/lifecycle.json"
+if LOOMEX_PLUGIN_PRUNE_FAIL_PHASE=before-rename "$repo/scripts/lifecycle.sh" prune --install-base "$base" --remove 0.1.2 --retain 0.1.0 >/dev/null 2>&1; then echo "prune before-rename fault did not interrupt" >&2; exit 1; fi
+test -f "$base/lifecycle.json"
+if "$repo/scripts/lifecycle.sh" repair --install-base "$base" >/dev/null 2>&1; then echo "prune journal allowed a competing repair" >&2; exit 1; fi
+expect_prune_reject --remove 0.1.2 --retain 0.1.0 --retain 0.1.1
+cp "$base/lifecycle.json" "$fixture/prune-journal-original"
+python3 - "$base/lifecycle.json" <<'PY'
+import json,sys
+from pathlib import Path
+path=Path(sys.argv[1]); state=json.loads(path.read_text())
+state['phase']='receipt'; state['pruneIndex']=len(state['pruneRemove'])
+path.write_text(json.dumps(state,sort_keys=True,separators=(',',':'))+'\n')
+PY
+if "$repo/scripts/lifecycle.sh" resume --install-base "$base" >/dev/null 2>&1; then echo "prune accepted a forged receipt checkpoint with live target bytes" >&2; exit 1; fi
+test -d "$base/versions/0.1.2"
+python3 - "$base/install-receipt.json" <<'PY'
+import json,sys
+assert '0.1.2' in json.load(open(sys.argv[1]))['versions']
+PY
+cp "$fixture/prune-journal-original" "$base/lifecycle.json"
+python3 - "$base/lifecycle.json" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+path=Path(sys.argv[1]); state=json.loads(path.read_text())
+state['pruneRecords']['0.1.2']['inventory'][0]['sha256']='0'*64
+plan={'target':state['target'],'remove':state['pruneRemove'],'retain':state['pruneRetain'],'records':state['pruneRecords'],'receiptBefore':state['pruneReceiptBefore'],'receiptAfter':state['pruneReceiptAfter']}
+state['prunePlanSha256']=hashlib.sha256((json.dumps(plan,sort_keys=True,separators=(',',':'))+'\n').encode()).hexdigest()
+path.write_text(json.dumps(state,sort_keys=True,separators=(',',':'))+'\n')
+PY
+if "$repo/scripts/lifecycle.sh" resume --install-base "$base" >/dev/null 2>&1; then echo "prune accepted a sealed snapshot different from the receipt" >&2; exit 1; fi
+cp "$fixture/prune-journal-original" "$base/lifecycle.json"
+if LOOMEX_PLUGIN_PRUNE_FAIL_PHASE=after-rename "$repo/scripts/lifecycle.sh" resume --install-base "$base" >/dev/null 2>&1; then echo "prune after-rename fault did not interrupt" >&2; exit 1; fi
+test ! -e "$base/versions/0.1.2"
+if LOOMEX_PLUGIN_PRUNE_FAIL_PHASE=before-deletion "$repo/scripts/lifecycle.sh" resume --install-base "$base" >/dev/null 2>&1; then echo "prune before-deletion fault did not interrupt" >&2; exit 1; fi
+if LOOMEX_PLUGIN_PRUNE_FAIL_PHASE=after-deletion "$repo/scripts/lifecycle.sh" resume --install-base "$base" >/dev/null 2>&1; then echo "prune after-deletion fault did not interrupt" >&2; exit 1; fi
+if LOOMEX_PLUGIN_PRUNE_FAIL_PHASE=after-receipt-write "$repo/scripts/lifecycle.sh" resume --install-base "$base" >/dev/null 2>&1; then echo "prune after-receipt-write fault did not interrupt" >&2; exit 1; fi
+"$repo/scripts/lifecycle.sh" resume --install-base "$base"
+test ! -e "$base/lifecycle.json"
+python3 - "$base/install-receipt.json" <<'PY'
+import json,sys
+assert set(json.load(open(sys.argv[1]))['versions']) == {'0.1.0','0.1.1'}
+PY
+"$repo/scripts/lifecycle.sh" rollback --install-base "$base" --version 0.1.0
+"$repo/scripts/lifecycle.sh" rollback --install-base "$base" --version 0.1.1
+"$repo/scripts/lifecycle.sh" repair --install-base "$base"
 # Versions are retained so the lifecycle manager can offer a verified rollback.
 test -d "$root"
 printf preserve > "$base/.agents/plugins/unrelated-sentinel"

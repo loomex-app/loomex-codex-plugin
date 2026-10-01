@@ -3,6 +3,7 @@ import {committedPreparationRun} from "./run-presentation.js";
 import type {JsonObject,UiMode} from "./contracts.js";
 import type {UiData,RpcResult,RunFlow,RuntimeViewSessionProjection,ViewFault,ReopenedInteraction,HumanRequest} from "./page-models.js";
 import {ViewRestorationCoordinator} from "./persistence.js";
+import {UiTransportError} from "./result-decoder.js";
 import type {ViewPersistenceController,PersistenceStatus,ViewRestorationPhase,RestorationScopeFence} from "./persistence.js";
 import type {createRunSetupController} from "./run-setup.js";
 import type {createRunMonitorController} from "./run-monitor.js";
@@ -59,7 +60,8 @@ export interface SessionNavigationServices {
  renderCanonicalRestoration?():void;
  viewEntityMatches(value:RuntimeViewSessionProjection):boolean;
  draftRequest():HumanRequest|null|undefined;
- loadInteractionDraft(request:HumanRequest,epoch:number):Promise<boolean>;
+ loadInteractionDraft(request:HumanRequest,epoch:number,savedWins?:boolean):Promise<boolean>;
+ draftNavigationAuthoritative():boolean;
  restoreDelivery?(state:JsonObject|undefined):void;
  projectRetainedOperation?():void;
  restoreJournalOperation(projection:RuntimeViewSessionProjection,epoch:number):Promise<boolean>;
@@ -79,7 +81,7 @@ export function createSessionNavigationController(host:SessionNavigationServices
  const {initializeRunMonitor,renderIntegratedRunFlow,acceptRunSnapshot}=host.monitor;
  const {safeText,observePreparationReview}=host.presentation;
  const {showQuestionStep,beginAnswerReview}=host.forms;
- const {workflowIdValid,dataOf,humanRequest,humanRequestResolved,executionId,interactionId,builderSessionId,callTool,viewSessionProjection,taskWorkspaceArguments,restoreBrowserFromPersistence,restoreRunsFromPersistence,restoreDisclosures,restoreControls,restoreReadingPosition,fieldsetQuestionId,render,viewPersistenceFault,enterSafeViewReentry,syncRestorationVisibility,persistenceStatus,detachInteractionDraft,viewEntityMatches,draftRequest,loadInteractionDraft,restoreJournalOperation,ensureStartHandoff,setAction,syncChrome,desiredViewStatus,markCurrentViewStatus,setError,renderRestorationSnapshot}=host;
+ const {workflowIdValid,dataOf,humanRequest,humanRequestResolved,executionId,interactionId,builderSessionId,callTool,viewSessionProjection,taskWorkspaceArguments,restoreBrowserFromPersistence,restoreRunsFromPersistence,restoreDisclosures,restoreControls,restoreReadingPosition,fieldsetQuestionId,render,viewPersistenceFault,enterSafeViewReentry,syncRestorationVisibility,persistenceStatus,detachInteractionDraft,viewEntityMatches,draftRequest,loadInteractionDraft,draftNavigationAuthoritative,restoreJournalOperation,ensureStartHandoff,setAction,syncChrome,desiredViewStatus,markCurrentViewStatus,setError,renderRestorationSnapshot}=host;
  const VIEW_SESSION_TOOLS={get:"loomex_view_session_get"};
  const restorationCoordinator = host.lifecycle ?? new ViewRestorationCoordinator();
  const stateStore:NavigationState={
@@ -202,7 +204,7 @@ export function createSessionNavigationController(host:SessionNavigationServices
     return false;
   }
 
-  async function restoreViewState(value: unknown) {
+  async function restoreViewState(value: unknown, draftOwnsNavigation = false) {
     if(disposed)return;
     const restorationEpoch=stateStore.viewHydrationEpoch;
     const state = record(value);
@@ -276,15 +278,15 @@ export function createSessionNavigationController(host:SessionNavigationServices
       form.hidden = false;
       const fields = [...form.querySelectorAll<HTMLElement>("fieldset[data-question-id]")];
       const index = fields.findIndex((fieldset) => fieldsetQuestionId(fieldset) === state.currentQuestionId);
-      if (index >= 0) showQuestionStep(index, false);
-      if (state.phase === "review") {
+      if (!draftOwnsNavigation && index >= 0) showQuestionStep(index, false);
+      if (!draftOwnsNavigation && state.phase === "review") {
         try { beginAnswerReview(); } catch { /* Preserve the draft for correction. */ }
       }
       } else if (host.mode() === "interaction" && state.requestId === interactionId(host.latest() || {})) {
       form.hidden = false;
       const fields = [...form.querySelectorAll<HTMLElement>("fieldset[data-question-id]")];
       const index = fields.findIndex((fieldset) => fieldsetQuestionId(fieldset) === state.currentQuestionId);
-      if (index >= 0) showQuestionStep(index, false);
+      if (!draftOwnsNavigation && index >= 0) showQuestionStep(index, false);
       }
     }
     restoreDisclosures(state.disclosures);
@@ -487,11 +489,11 @@ export function createSessionNavigationController(host:SessionNavigationServices
       const draftFirst = request && ["authoring", "interaction"].includes(host.mode());
       if (draftFirst) {
         const draftFence = fence.request(`draft:${request.id || "current"}`);
-        if (!await loadInteractionDraft(request, epoch) || !fence.currentRequest(draftFence)) {
+        if (!await loadInteractionDraft(request, epoch, true) || !fence.currentRequest(draftFence)) {
           throw new Error("The saved answer draft could not be restored.");
         }
       }
-      if (await restoreViewState(projection.state)) return;
+      if (await restoreViewState(projection.state, draftFirst && draftNavigationAuthoritative())) return;
       if (request && !draftFirst) {
         const draftFence = fence.request(`draft:${request.id || "current"}`);
         if (!await loadInteractionDraft(request, epoch) || !fence.currentRequest(draftFence)) throw new Error("The saved answer draft could not be restored.");
@@ -534,7 +536,10 @@ export function createSessionNavigationController(host:SessionNavigationServices
       stateStore.viewReentry = null;
       stateStore.viewPersistenceUnavailable = true;
       syncRestorationVisibility();
-        persistenceStatus("save_failed");
+      persistenceStatus("load_failed", new UiTransportError(fault, {
+        format: "loomex/ui-result-diagnostic/v1", stage: "projection", channel: "meta",
+        code: fault.code, fields: ["loomex/viewPersistence:object"],
+      }));
       return Promise.resolve(false);
     }
     const supplied = viewSessionProjection(result);

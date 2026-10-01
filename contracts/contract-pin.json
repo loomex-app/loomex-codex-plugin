@@ -1,17 +1,17 @@
 {
   "protocol": "loomex.local-control/v2",
-  "version": "0.3.5",
+  "version": "0.3.8",
   "source": "../runner/contracts",
   "files": {
     "local-control.schema.json": "35c7da4063ade1416ebfa8cfa8913584a9bde9e999b7c7edbc95e85d92465b17",
-    "method-catalog.json": "de3eac0a472eeba167747e1f15a260a6814eb14ca34621513073a154d100978e",
-    "error-recovery.json": "9afa41e566d94c2507422613d55d74c3f6bdd4222c854d866fd4140d68e2932e",
+    "method-catalog.json": "218858f17bdc247f5c2f4b917212df584015f5119bbbbad588e58b1a4c2b6277",
+    "error-recovery.json": "bb00208b37ae636f30c19c9cbf99e15dfc8aaf90259a2c591b9651e1b163ff14",
     "mutation-recovery.json": "368b6d983543dac9e0c825aa6b2a5b9c5bcba4cf3d047dde6e2d9a6e65498197"
   },
   "runnerContractSha256": {
     "local-control.schema.json": "35c7da4063ade1416ebfa8cfa8913584a9bde9e999b7c7edbc95e85d92465b17",
-    "method-catalog.json": "de3eac0a472eeba167747e1f15a260a6814eb14ca34621513073a154d100978e",
-    "error-recovery.json": "9afa41e566d94c2507422613d55d74c3f6bdd4222c854d866fd4140d68e2932e",
+    "method-catalog.json": "218858f17bdc247f5c2f4b917212df584015f5119bbbbad588e58b1a4c2b6277",
+    "error-recovery.json": "bb00208b37ae636f30c19c9cbf99e15dfc8aaf90259a2c591b9651e1b163ff14",
     "mutation-recovery.json": "368b6d983543dac9e0c825aa6b2a5b9c5bcba4cf3d047dde6e2d9a6e65498197"
   }
 }

@@ -326,3 +326,70 @@ test("collects generic schema values with their declared scalar types", async (c
     answer: { reason: "Changed scope", retries: 3, confidence: 0.75, approved: false },
   });
 });
+
+test("full question copy survives body, preview and submitted review without changing typed identities", async (context) => {
+  if (!page) { if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Chromium is required"); context.skip("No Chromium"); return; }
+  await resetPage();
+  const question = "A complete plain question whose full wording must survive. ".repeat(110);
+  const result = await page.evaluate(({ question }) => {
+    const fixture = (window as unknown as { makeInteractionForm(): { controller: ReturnType<typeof import("../src/ui-app/interaction-form.js")["createInteractionFormController"]> } }).makeInteractionForm();
+    const request = { title: "Original title", inputSpec: { inputType: "boolean", question }, node: { id: "unchanged-node" } };
+    const snapshot = JSON.stringify(request);
+    fixture.controller.questionForm(request.inputSpec, { required: ["value"] }, { value: true }, request);
+    const body = document.querySelector(".ui-rich-text")?.textContent;
+    const label = document.querySelector("legend")?.textContent;
+    const id = fixture.controller.visibleQuestionId();
+    const answer = fixture.controller.collectAnswer();
+    fixture.controller.beginAnswerReview();
+    const preview = document.querySelector(".answer-review dt .ui-rich-text")?.textContent;
+    const submitted = fixture.controller.submittedAnswerReview(request, { value: true }).querySelector("dt .ui-rich-text")?.textContent;
+    return { body, label, id, answer, preview, submitted, unchanged: snapshot === JSON.stringify(request) };
+  }, { question });
+  assert.deepEqual(result, { body: question, label: "Question", id: "unchanged-node", answer: { value: true }, preview: question, submitted: question, unchanged: true });
+});
+
+test("safe report formatting keeps unsupported HTML and URLs visible and inert", async (context) => {
+  if (!page) { if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Chromium is required"); context.skip("No Chromium"); return; }
+  await resetPage();
+  const question = '## Review\n\n**Readable** and `literal code`.\n\n- First\n- Second\n\n[Unsafe](javascript:alert(1)) ![remote](https://example.test/image) <img src=x onerror=alert(1)>\n\n```text\n<script>alert(1)</script>\n```';
+  const result = await page.evaluate(({ question }) => {
+    const fixture = (window as unknown as { makeInteractionForm(): { controller: ReturnType<typeof import("../src/ui-app/interaction-form.js")["createInteractionFormController"]> } }).makeInteractionForm();
+    fixture.controller.questionForm({ inputType: "boolean", question }, { required: ["value"] }, {}, {});
+    const body = document.querySelector(".ui-rich-text")!;
+    return { markup: body.querySelectorAll("a, img, script, iframe").length, headings: body.querySelectorAll("h1, h2").length, sections: body.querySelectorAll("h3").length, items: body.querySelectorAll("li").length, source: document.querySelector(".ui-prompt-original")?.textContent, text: body.textContent };
+  }, { question });
+  assert.equal(result.markup, 0);
+  assert.equal(result.headings, 0);
+  assert.equal(result.sections, 1);
+  assert.equal(result.items, 2);
+  assert.equal(result.source, question);
+  assert.match(result.text ?? "", /javascript:alert\(1\)/);
+  assert.match(result.text ?? "", /https:\/\/example.test\/image/);
+  assert.match(result.text ?? "", /<script>alert\(1\)<\/script>/);
+});
+
+test("compact questions retain their exact heading and noncompact prompts describe their fieldset once", async (context) => {
+  if (!page) { if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Chromium is required"); context.skip("No Chromium"); return; }
+  await resetPage();
+  const result = await page.evaluate<{ heading: string; fields: { description: string; contentId: string; text: string; controlsRepeatContext: boolean }[] }>(`(() => {
+    const fixture = window.makeInteractionForm();
+    fixture.controller.questionForm({ inputType: "boolean", question: "Proceed with the agreed plan?" }, { required: ["value"] }, {}, {});
+    const heading = document.querySelector(".question-heading").firstChild.textContent;
+    const question = "Full context whose meaning belongs to this question. ".repeat(40);
+    fixture.controller.questionForm({ collectionMode: "batch", questions: [
+      { id: "decision", inputType: "boolean", question },
+      { id: "reason", inputType: "text", question: question + " Explain the choice." }
+    ] }, { required: ["answers"] }, {}, {});
+    const fields = [...document.querySelectorAll("fieldset[data-question-id]")];
+    return { heading, fields: fields.map(field => {
+      const content = field.querySelector(".ui-rich-text");
+      return { description: field.getAttribute("aria-describedby"), contentId: content.id, text: content.textContent, controlsRepeatContext: [...field.querySelectorAll("input")].some(control => (control.getAttribute("aria-describedby") || "").includes(content.id)) };
+    }) };
+  })()`);
+  assert.equal(result.heading, "Proceed with the agreed plan?");
+  for (const [index, field] of result.fields.entries()) {
+    assert.equal(field.description, `${field.contentId} question-${index}-error`);
+    assert.match(field.text, /Full context whose meaning belongs to this question/);
+    assert.equal(field.controlsRepeatContext, false, "context belongs to the group rather than every choice");
+  }
+});

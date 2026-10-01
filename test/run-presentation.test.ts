@@ -47,3 +47,13 @@ test('presentation helpers reject incomplete pages, malformed result metadata an
   assert.equal(view.formatDuration('2026-01-01T00:00:10Z','2026-01-01T00:00:00Z'),undefined);
   assert.equal(view.formatDuration('2026-01-01T00:00:00Z','2026-01-01T00:01:05Z'),'1m 5s');
 });
+
+test('report contents retain full strings while stage metadata keeps its existing bound', () => {
+  const view = controller();
+  const text = 'Complete report detail. '.repeat(300);
+  const presentation = {version:1, kind:'review' as const, summary:text, question:text, changedFiles:[text], verification:[text]};
+  assert.equal(view.humanPresentation({presentation}), presentation);
+  assert.equal(view.safeText(text), undefined, 'metadata helper limits remain unchanged');
+  assert.equal(view.humanPresentation({presentation:{...presentation, stageLabel:text}}),undefined);
+  assert.equal(view.humanPresentation({presentation:{...presentation, verification:[123 as unknown as string]}}),undefined);
+});

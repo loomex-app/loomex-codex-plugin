@@ -128,12 +128,14 @@ export function createPagination(controls: PaginationControls): HTMLElement {
 }
 
 /** Identical answer hierarchy for editable previews and submitted reviews. */
-export function createAnswerReviewItem(question: string, answer: string | Node): HTMLDivElement {
+export function createAnswerReviewItem(question: string | Node, answer: string | Node): HTMLDivElement {
   const item = createUiElement("div", { className: "answer-review-item" });
   const copy = createElement("div", { className: "answer-review-copy" });
   const detail = createElement("dd");
   detail.append(answer);
-  copy.append(createElement("dt", {}, question), detail);
+  const title = createElement("dt");
+  title.append(question);
+  copy.append(title, detail);
   item.append(copy);
   return item;
 }

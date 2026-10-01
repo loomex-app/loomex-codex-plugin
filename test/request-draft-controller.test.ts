@@ -96,6 +96,23 @@ test("draft identity fences a request by session and schema digest", () => {
   assert.equal(controller.requestSchemaDigest({ id: requestA, schemaDigest: "invalid" }), undefined);
 });
 
+test("saved-wins restoration skips requests without an inline draft", async () => {
+  const subject = fixture({ inputSupported: () => false });
+  const request = { id: requestA, type: "approval" } as HumanRequest;
+  assert.equal(await subject.controller.loadInteractionDraft(request, 1, true), true);
+  assert.deepEqual(subject.calls, []);
+  assert.equal(subject.controller.state.draft, null);
+});
+
+test("only the explicit journal boundary requests consequential presentation verification", async () => {
+  const contexts: (boolean | undefined)[] = [];
+  const subject = fixture({ draftRequest: () => null, flushView: async consequential => { contexts.push(consequential); return true; } });
+  assert.equal(await subject.controller.flushCurrentPersistence(), true);
+  assert.equal(await subject.controller.flushCurrentPersistence(true), true);
+  assert.deepEqual(contexts, [false, true]);
+  assert.deepEqual(subject.calls, []);
+});
+
 test("edits arriving during a save are drained by a second exact mutation", async () => {
   const subject = fixture();
   const first = deferred();
@@ -246,8 +263,24 @@ test("run-preparation persistence failures use the action label rather than clai
   });
   assert.equal(await subject.controller.flushCurrentPersistence(), false);
   assert.equal(subject.errors.length, 1);
-  assert.equal(subject.errors[0]!.message, "The run preparation could not be saved. Save it before starting.");
+  assert.equal(subject.errors[0]!.message, "This run view could not be saved. Retry saving the view before continuing.");
   assert.equal((subject.errors[0] as Error & { code?: string }).code, "PRESENTATION_SAVE_FAILED");
+});
+
+test("a preparation presentation conflict names the saved view and retains its diagnostic code", async () => {
+  const subject = fixture({
+    draftRequest: () => null,
+    flushView: async () => false,
+    viewFailure: () => Object.assign(new Error("view revision changed"), { code: "PRESENTATION_SESSION_CONFLICT" }),
+    persistenceActionLabel: () => "run preparation",
+  });
+  assert.equal(await subject.controller.flushCurrentPersistence(), false);
+  assert.deepEqual(subject.calls, [], "a preparation has no answer draft to save");
+  const failure = subject.errors[0];
+  assert.ok(failure instanceof PresentationPersistenceError);
+  assert.equal(failure.message, "The saved run view changed elsewhere. Load the saved version before continuing.");
+  assert.equal(failure.diagnostic.stage, "presentation_write");
+  assert.equal(failure.diagnostic.code, "PRESENTATION_SESSION_CONFLICT");
 });
 
 test("a presentation failure after a saved draft stays out of the draft failure lane", async () => {
@@ -295,6 +328,23 @@ test("a replacement request fences a delayed presentation failure", async () => 
   assert.equal(await saving, false);
   assert.deepEqual(subject.errors, []);
   assert.equal(subject.controller.lastFailure, null);
+});
+
+test("accepted request fences a delayed view failure even after its draft scope is detached", async () => {
+  let complete = false;
+  let resolveView: ((saved: boolean) => void) | undefined;
+  const view = new Promise<boolean>(resolve => { resolveView = resolve; });
+  const subject = fixture({ viewCompleted: () => complete, flushView: async () => view });
+  subject.controller.scheduleInteractionDraft();
+  const saving = subject.controller.flushCurrentPersistence();
+  await nextTurn();
+  complete = true;
+  subject.controller.detachInteractionDraft();
+  resolveView?.(false);
+  assert.equal(await saving, false);
+  assert.deepEqual(subject.errors, []);
+  assert.equal(await subject.controller.flushCurrentPersistence(), false);
+  assert.deepEqual(subject.errors, [], "a completed view is skipped, not reported as an unsaved answer");
 });
 
 test("dispose fences scheduled and in-flight persistence", async () => {
@@ -446,4 +496,63 @@ test("explicit draft reapplication retains local answers and uses a fresh confir
  subject.setResponder(async(name,args)=>name==="loomex_interaction_draft_get" ? saved({...first,answers:{response:"remote"}},4) : saved(args,5));
  assert.equal(await subject.controller.reapplyLocal(),true);
  const last=subject.calls.at(-1)!.args;assert.equal(last.expectedRevision,4);assert.deepEqual(last.answers,{response:"local"});assert.notEqual(last.idempotencyKey,first.idempotencyKey);subject.controller.dispose();
+});
+
+test("saved-answer recovery adopts a divergent verified draft without replaying local edits", async () => {
+  let restored: JsonObject | null = null;
+  const subject = fixture({ restoreAnswers: answers => { restored = answers; } });
+  subject.controller.synchronizeInteractionDraftScope();
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushInteractionDraft(), true);
+  subject.setAnswers({ response: "newer unsaved local" });
+  subject.controller.scheduleInteractionDraft();
+  subject.setResponder(async () => saved({ requestId: requestA, expectedSchemaDigest: digest,
+    answers: { response: "saved on server" }, currentQuestionId: null, phase: "answer" }, 2));
+  assert.equal(await subject.controller.loadInteractionDraft({ id: requestA, schemaDigest: digest }, 1, true), true);
+  assert.deepEqual(restored, { response: "saved on server" });
+  assert.equal(subject.controller.state.dirty, false);
+  assert.equal(subject.calls.filter(call => call.name === "loomex_interaction_draft_update").length, 1);
+  subject.controller.dispose();
+});
+
+test("failed saved-answer recovery preserves local data and its last verified revision", async () => {
+  let restored = 0;
+  const subject = fixture({ restoreAnswers: () => { restored += 1; } });
+  subject.controller.synchronizeInteractionDraftScope();
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushInteractionDraft(), true);
+  subject.setAnswers({ response: "unsaved local" });
+  subject.controller.scheduleInteractionDraft();
+  subject.setResponder(async () => { throw new Error("draft read unavailable"); });
+  assert.equal(await subject.controller.loadInteractionDraft({ id: requestA, schemaDigest: digest }, 1, true), false);
+  assert.equal(restored, 0);
+  assert.equal(subject.controller.state.dirty, true);
+  assert.equal(subject.controller.state.draft?.revision, 1);
+  subject.controller.dispose();
+});
+
+test("a busy draft controller cannot claim a completed authoritative load", async () => {
+  const subject = fixture();
+  subject.controller.synchronizeInteractionDraftScope();
+  subject.controller.state.busy = true;
+  assert.equal(await subject.controller.loadInteractionDraft({ id: requestA, schemaDigest: digest }), false);
+  subject.controller.dispose();
+});
+
+test("saved-answer recovery never discards an unverified ambiguous answer write", async () => {
+  let restored = 0;
+  const subject = fixture({ restoreAnswers: () => { restored += 1; } });
+  subject.setResponder(async (name) => {
+    if (name === "loomex_interaction_draft_update") throw Object.assign(new Error("lost acknowledgement"), { code: "NETWORK_AMBIGUOUS" });
+    return saved({ requestId: requestA, expectedSchemaDigest: digest,
+      answers: { response: "unrelated server answer" }, currentQuestionId: null, phase: "answer" }, 1);
+  });
+  subject.controller.synchronizeInteractionDraftScope();
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushInteractionDraft(), false);
+  assert.equal(await subject.controller.loadInteractionDraft({ id: requestA, schemaDigest: digest }, 1, true), false);
+  assert.equal(subject.controller.state.dirty, true);
+  assert.equal(restored, 0);
+  assert.equal(subject.calls.filter(call => call.name === "loomex_interaction_draft_update").length, 1);
+  subject.controller.dispose();
 });

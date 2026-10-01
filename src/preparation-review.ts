@@ -1,5 +1,6 @@
 import type { LocalControlCallOptions } from "./local-control.js";
 import type { JsonValue, ToolOutput } from "./protocol.js";
+import { isAbsolute } from "node:path";
 
 export const PREPARATION_REVIEW_SCHEMA_VERSION = "loomex/preparation-review/v1" as const;
 
@@ -18,6 +19,7 @@ export interface PreparationReview {
   readonly workflowId: string;
   readonly versionId: string;
   readonly organizationId: string;
+  readonly workspacePath: string;
   readonly workflowName: string;
   readonly workflowVersion: number;
   readonly organizationName: string | null;
@@ -38,6 +40,7 @@ export interface PreparationReviewBinding {
   readonly workflowId: string;
   readonly versionId: string;
   readonly organizationId: string;
+  readonly workspacePath: string;
   readonly providers: readonly PreparationReviewProvider[] | null;
   readonly closureWorkflowVersion: number | null;
 }
@@ -53,6 +56,24 @@ interface ParsedClosureEntry {
 interface ClosureProjection {
   readonly providers: readonly PreparationReviewProvider[];
   readonly rootVersion: number;
+}
+
+function closureReviewProjection(value: JsonValue | undefined): ClosureProjection | undefined {
+  const review = objectValue(value);
+  const rootVersion = positiveVersion(review?.rootVersion);
+  if (review === undefined || rootVersion === undefined ||
+      review.providersTruncated !== false ||
+      !Array.isArray(review.providers) ||
+      review.providerCount !== review.providers.length) return undefined;
+  const providers: PreparationReviewProvider[] = [];
+  for (const item of review.providers) {
+    const provider = objectValue(item);
+    const name = nonemptyString(provider?.name);
+    const model = nonemptyString(provider?.model);
+    if (name === undefined || model === undefined) return undefined;
+    providers.push({ name, model });
+  }
+  return { providers, rootVersion };
 }
 
 const AGENT_NODE_TYPES = new Set(["ai_agent", "ai_prompt", "person"]);
@@ -260,22 +281,28 @@ export function preparationReviewBinding(
   const workflowId = nonemptyString(binding?.workflowId);
   const versionId = nonemptyString(binding?.versionId);
   const organizationId = nonemptyString(binding?.organizationId);
+  const workspacePath = nonemptyString(binding?.workspacePath);
   if (
     preparationId === undefined ||
     bindingDigest === undefined ||
     workflowId === undefined ||
     versionId === undefined ||
-    organizationId === undefined
+    organizationId === undefined ||
+    workspacePath === undefined ||
+    !isAbsolute(workspacePath)
   ) {
     return undefined;
   }
-  const closure = closureProjection(binding?.workflowClosure, workflowId, versionId);
+  const closure = binding?.workflowClosure === undefined
+    ? closureReviewProjection(binding?.workflowClosureReview)
+    : closureProjection(binding.workflowClosure, workflowId, versionId);
   return {
     preparationId,
     bindingDigest,
     workflowId,
     versionId,
     organizationId,
+    workspacePath,
     providers: closure?.providers ?? null,
     closureWorkflowVersion: closure?.rootVersion ?? null,
   };
@@ -340,6 +367,7 @@ export async function buildPreparationReview(
     workflowId: binding.workflowId,
     versionId: binding.versionId,
     organizationId: binding.organizationId,
+    workspacePath: binding.workspacePath,
     workflowName,
     workflowVersion: number,
     organizationName:

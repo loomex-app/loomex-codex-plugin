@@ -6,6 +6,9 @@ type Identity = { readonly sessionId: string; readonly requestId: string; readon
 type Attempt = { readonly version: number; readonly payload: JsonObject };
 type Scope = { readonly identity: Identity };
 type DraftPhase = "answer" | "review";
+export type SavedDraftPreparation = Readonly<{
+  scopeKey: string; epoch: number; changeVersion: number; draft: InteractionDraft | null;
+}>;
 
 export interface AcceptedDraftCleanup {
   readonly requestId: string;
@@ -31,10 +34,13 @@ export interface RequestDraftServices {
   restoreAnswers(answers: JsonObject): void;
   showQuestion(questionId: string | null): void;
   beginReview(): void;
+  endReview?(): void;
   status(status: "dirty" | "saved" | "save_failed" | "load_failed", error?: Error): void;
   markViewDirty(): void;
-  flushView(): Promise<boolean>;
+  flushView(consequential?: boolean): Promise<boolean>;
   viewFailure?(): Error | null;
+  /** The exact request view has been accepted and is now read-only. */
+  viewCompleted?(): boolean;
   persistenceBlocked(): boolean;
   /** Names the action currently being saved for user-facing persistence errors. */
   persistenceActionLabel?(): string;
@@ -51,6 +57,8 @@ export class RequestDraftController {
   #changeVersion = 0;
   #disposed = false;
   #lastFailure: Error | null = null;
+  #attemptFailureCode: string | null = null;
+  #persistenceEpoch = 0;
 
   get lastFailure(): Error | null { return this.#lastFailure; }
 
@@ -81,9 +89,11 @@ export class RequestDraftController {
   }
 
   detachInteractionDraft(): void {
+    this.#persistenceEpoch += 1;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
     this.#lastFailure = null;
+    this.#attemptFailureCode = null;
     this.state.scope = null;
     this.state.draft = null;
     this.state.busy = false;
@@ -157,18 +167,95 @@ export class RequestDraftController {
       const draft=this.readDraft(result.draft,scope.identity);
       if(!draft)throw new Error("The saved answer draft could not be verified.");
       this.state.draft=draft;
-      this.#attempt=null;this.#lastFailure=null;this.state.dirty=true;
+      this.#attempt=null;this.#attemptFailureCode=null;this.#lastFailure=null;this.state.dirty=true;
       return this.flushInteractionDraft();
     }catch(error){this.reportFailure("save_failed",asError(error));return false;}
   }
 
-  async loadInteractionDraft(request: HumanRequest, epoch = this.host.hydrationEpoch()): Promise<boolean> {
+  /** Read the server-owned answer version without changing the displayed answers. */
+  async prepareSavedDraft(request: HumanRequest, epoch = this.host.hydrationEpoch()): Promise<SavedDraftPreparation | null> {
+    const identity = this.identity(request);
+    if (this.#disposed || !request.id || !this.host.inputSupported(request) || !identity || identity.key !== this.identity()?.key) return null;
+    const scope = this.state.scope && this.state.scope.identity.key === identity.key
+      ? this.state.scope : this.state.dirty ? null : this.ensureInteractionDraftScope(identity);
+    if (!scope) return null;
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = null;
+    if (this.#drainPromise) await this.#drainPromise;
+    if (!this.draftScopeCurrent(scope) || epoch !== this.host.hydrationEpoch() || this.state.busy) return null;
+    const changeVersion = this.#changeVersion;
+    this.state.busy = true;
+    try {
+      const data = await this.host.persistenceTool("loomex_interaction_draft_get", { requestId: request.id });
+      if (!this.draftScopeCurrent(scope) || epoch !== this.host.hydrationEpoch() || changeVersion !== this.#changeVersion) return null;
+      const draft = this.readDraft(data.draft, scope.identity);
+      if (data.draft !== undefined && data.draft !== null && !draft) throw new Error("The saved answer draft did not match this request.");
+      if (!draft && (this.state.dirty || this.state.draft)) throw new Error("No verified saved answers exist for this request.");
+      if (draft && this.state.draft) {
+        const last = this.state.draft;
+        if (!numeric(draft.revision) || !numeric(last.revision) || draft.revision < last.revision ||
+            (draft.revision === last.revision &&
+              (!this.host.exactEqual(draft.answers, last.answers) ||
+                draft.currentQuestionId !== last.currentQuestionId || draft.phase !== last.phase))) {
+          throw new Error("The saved answer read is older than the last verified draft.");
+        }
+      }
+      if (this.#attempt && (!draft || !this.receiptMatchesAttempt(draft, this.#attempt))) {
+        if (!["REVISION_CONFLICT", "INTERACTION_DRAFT_CONFLICT", "CONFLICT"].includes(this.#attemptFailureCode ?? "")) {
+          throw new Error("The pending answer save could not be reconciled with the saved draft.");
+        }
+      }
+      return { scopeKey: scope.identity.key, epoch, changeVersion, draft };
+    } catch (error) {
+      if (this.draftScopeCurrent(scope) && epoch === this.host.hydrationEpoch()) this.reportFailure("load_failed", asError(error));
+      return null;
+    } finally {
+      if (this.draftScopeCurrent(scope)) this.state.busy = false;
+    }
+  }
+
+  canAdoptSavedDraft(prepared: SavedDraftPreparation): boolean {
+    return !this.#disposed && this.state.scope?.identity.key === prepared.scopeKey
+      && this.identity()?.key === prepared.scopeKey && this.host.hydrationEpoch() === prepared.epoch
+      && this.#changeVersion === prepared.changeVersion && !this.state.busy && !this.#drainPromise;
+  }
+
+  adoptSavedDraft(prepared: SavedDraftPreparation): boolean {
+    if (!this.canAdoptSavedDraft(prepared)) return false;
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = null;
+    const draft = prepared.draft;
+    this.state.draft = draft;
+    this.#attempt = null;
+    this.#attemptFailureCode = null;
+    if (draft) {
+      if (draft.phase === "answer") this.host.endReview?.();
+      this.host.restoreAnswers(draft.answers ?? {});
+      this.host.showQuestion(draft.currentQuestionId ?? null);
+      if (draft.phase === "review") {
+        try { this.host.beginReview(); } catch { /* The current page may no longer support review. */ }
+      }
+    }
+    this.state.dirty = false;
+    this.#lastFailure = null;
+    this.host.status("saved");
+    return true;
+  }
+
+  async loadInteractionDraft(request: HumanRequest, epoch = this.host.hydrationEpoch(), savedWins = false): Promise<boolean> {
     if (this.#disposed) return false;
+    // Approvals, legacy schema-only forms, and unsupported question specs do
+    // not have a draft owned by this controller. Their view still needs to
+    // finish verification before the domain form can become actionable.
     if (!request.id || !this.host.inputSupported(request)) return true;
+    if (savedWins) {
+      const prepared = await this.prepareSavedDraft(request, epoch);
+      return prepared !== null && this.adoptSavedDraft(prepared);
+    }
     const identity = this.identity(request);
     if (!identity || identity.key !== this.identity()?.key) return false;
     const scope = this.ensureInteractionDraftScope(identity);
-    if (!scope || this.state.busy) return true;
+    if (!scope || this.state.busy) return false;
     this.state.busy = true;
     try {
       const data = await this.host.persistenceTool("loomex_interaction_draft_get", { requestId: request.id });
@@ -188,6 +275,7 @@ export class RequestDraftController {
           return false;
         }
         this.#attempt = null;
+        this.#attemptFailureCode = null;
       }
       this.state.draft = draft;
       if (draft) {
@@ -268,6 +356,7 @@ export class RequestDraftController {
       while (this.draftScopeCurrent(scope) && this.state.dirty) {
         const attempt = this.#attempt ?? this.createAttempt(scope);
         if (!attempt) return false;
+        if (this.#attempt === null) this.#attemptFailureCode = null;
         this.#attempt = attempt;
         let data: JsonObject;
         try {
@@ -275,6 +364,7 @@ export class RequestDraftController {
         } catch (error: unknown) {
           if (!this.draftScopeCurrent(scope) || this.#attempt !== attempt) return false;
           const failure = asError(error);
+          this.#attemptFailureCode = "code" in failure ? String(failure.code) : null;
           if ("code" in failure && ["NETWORK_AMBIGUOUS", "HOST_TIMEOUT"].includes(String(failure.code))) {
             try {
               data = await this.host.persistenceTool("loomex_interaction_draft_get", { requestId: scope.identity.requestId });
@@ -315,6 +405,7 @@ export class RequestDraftController {
         this.state.draft = draft;
         if (this.#changeVersion === attempt.version) this.state.dirty = false;
         this.#attempt = null;
+        this.#attemptFailureCode = null;
         this.#lastFailure = null;
         this.host.status("saved");
       }
@@ -396,8 +487,9 @@ export class RequestDraftController {
     this.scheduleInteractionDraft();
   }
 
-  async flushCurrentPersistence(): Promise<boolean> {
+  async flushCurrentPersistence(consequential = false): Promise<boolean> {
     if (this.#disposed) return false;
+    if (this.host.viewCompleted?.()) return false;
     if (this.host.persistenceBlocked()) {
       this.host.setError(new Error("This action needs saved view storage, but it is currently unavailable. Try again after the view reconnects."));
       return false;
@@ -407,16 +499,22 @@ export class RequestDraftController {
       return false;
     }
     const scope = this.state.scope;
+    const epoch = this.#persistenceEpoch;
+    const sessionId = this.host.sessionId();
+    const hydrationEpoch = this.host.hydrationEpoch();
+    const current = () => !this.#disposed && epoch === this.#persistenceEpoch &&
+      this.host.sessionId() === sessionId && this.host.hydrationEpoch() === hydrationEpoch &&
+      !this.host.viewCompleted?.() && (!scope || this.draftScopeCurrent(scope));
     const draftSaved = await this.flushInteractionDraft();
-    if (this.#disposed || (scope && !this.draftScopeCurrent(scope))) return false;
+    if (!current()) return false;
     if (!draftSaved) {
       const failure = this.#lastFailure ?? new Error("The answer draft could not be verified.");
       this.reportFailure("save_failed", failure);
       this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), failure));
       return false;
     }
-    const viewSaved = await this.host.flushView();
-    if (this.#disposed || (scope && !this.draftScopeCurrent(scope))) return false;
+    const viewSaved = await this.host.flushView(consequential);
+    if (!current()) return false;
     if (!viewSaved) {
       const failure = this.host.viewFailure?.() ?? new Error("The view state could not be verified.");
       this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), failure, "presentation_write"));
@@ -425,19 +523,25 @@ export class RequestDraftController {
   }
 
   saveReviewNavigation(): void {
-    if (this.#disposed) return;
+    if (this.#disposed || this.host.viewCompleted?.()) return;
     this.scheduleCurrentPersistence();
     const scope = this.state.scope;
+    const epoch = this.#persistenceEpoch;
+    const sessionId = this.host.sessionId();
+    const hydrationEpoch = this.host.hydrationEpoch();
+    const current = () => !this.#disposed && epoch === this.#persistenceEpoch &&
+      this.host.sessionId() === sessionId && this.host.hydrationEpoch() === hydrationEpoch &&
+      !this.host.viewCompleted?.() && (!scope || this.draftScopeCurrent(scope));
     void (async () => {
       const draftSaved = await this.flushInteractionDraft();
-      if (!draftSaved || this.#disposed || (scope && !this.draftScopeCurrent(scope))) return;
+      if (!draftSaved || !current()) return;
       try {
         const saved = await this.host.flushView();
-        if (!saved && !this.#disposed && (!scope || this.draftScopeCurrent(scope))) {
+        if (!saved && current()) {
           this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), this.host.viewFailure?.() ?? new Error("View save unavailable"), "presentation_write"));
         }
       } catch (error) {
-        if (!this.#disposed && (!scope || this.draftScopeCurrent(scope))) this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), asError(error), "presentation_write"));
+        if (current()) this.host.setError(persistenceSaveError(this.host.persistenceActionLabel?.(), asError(error), "presentation_write"));
       }
     })();
   }

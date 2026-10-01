@@ -44,6 +44,48 @@ test("simultaneous flushes share a failed write without an uncaught rejection", 
   for (const outcome of outcomes) if (outcome.status === "fulfilled") assert.equal(outcome.value, false);
 });
 
+test("accepted request quiesces an in-flight view save and adopts only its resolved projection", async () => {
+  let rejectWrite: (error: Error) => void = () => undefined;
+  const calls: WriteCall[] = [];
+  const statuses: string[] = [];
+  const store = controller({
+    read: async () => saved(3, { screen: "interaction" }, "resolved"),
+    write: (...args) => {
+      calls.push(args);
+      return new Promise<Projection>((_resolve, reject) => { rejectWrite = reject; });
+    },
+    onStatus: status => { statuses.push(status); },
+  });
+  const pending = store.flush({ screen: "interaction", phase: "review" });
+  assert.equal(calls.length, 1);
+  const epoch = store.quiesceAcceptedSession(sessionId);
+  assert.ok(epoch !== null);
+  assert.equal(store.acceptedSession(sessionId), true);
+  rejectWrite(Object.assign(new Error("late conflict"), { code: "REVISION_CONFLICT" }));
+  assert.equal(await pending, false);
+  assert.equal(statuses.includes("save_failed"), false, "a pre-acceptance failure cannot dirty the accepted card");
+  assert.equal(await store.flush({ screen: "interaction", phase: "review" }), false);
+  assert.equal(calls.length, 1, "acceptance never replays the stale presentation mutation");
+  assert.equal(store.adoptResolvedSession(saved(3, { screen: "interaction" }, "resolved"), epoch), true);
+  assert.equal(store.session?.revision, 3);
+  assert.equal(store.adoptResolvedSession(saved(2, { screen: "interaction" }, "resolved"), epoch), false);
+  store.configure(saved(4, { screen: "other" }));
+  assert.equal(store.acceptedSession(sessionId), true, "the exact accepted session remains read-only");
+});
+
+test("accepted request does not discard an editable conflict on another session", async () => {
+  const otherSessionId = "7364a198-b7d6-4d3f-8c03-0c7d4e292cfb";
+  const store = controller({
+    read: async () => null,
+    write: async () => { throw Object.assign(new Error("conflict"), { code: "REVISION_CONFLICT" }); },
+  });
+  assert.equal(await store.flush({ position: "local" }), false);
+  assert.equal(store.quiesceAcceptedSession(otherSessionId), null);
+  assert.equal(store.pendingState?.position, "local");
+  assert.ok(store.attempt);
+  assert.ok(store.conflict);
+});
+
 test("a lost save response retains the complete tuple including snapshotted status", async () => {
   let status = "active";
   const calls: WriteCall[] = [];
@@ -168,6 +210,32 @@ test("explicit saved-version recovery clears conflict only after the read succee
   assert.equal(store.session?.revision, 2);
 });
 
+test("staged saved-view recovery preserves local state until the verified snapshot is adopted", async () => {
+  const store = controller({
+    read: async () => saved(2, { answer: "server" }),
+    write: async () => { throw Object.assign(new Error("conflict"), { code: "REVISION_CONFLICT" }); },
+  });
+  assert.equal(await store.flush({ answer: "local" }), false);
+  const prepared = await store.prepareSavedVersion();
+  assert.ok(prepared);
+  assert.equal(store.pendingState?.answer, "local");
+  assert.ok(store.conflict);
+  assert.equal(store.adoptSavedVersion(prepared)?.state?.answer, "server");
+  assert.equal(store.pendingState, undefined);
+  assert.equal(store.conflict, null);
+});
+
+test("a mismatched ambiguous view write cannot be discarded by saved-version recovery", async () => {
+  const store = controller({
+    read: async () => saved(2, { answer: "unrelated remote" }),
+    write: async () => { throw Object.assign(new Error("unknown receipt"), { code: "NETWORK_AMBIGUOUS" }); },
+  });
+  assert.equal(await store.flush({ answer: "possibly written" }), false);
+  assert.equal(await store.prepareSavedVersion(), null);
+  assert.equal(store.pendingState?.answer, "possibly written");
+  assert.ok(store.attempt);
+});
+
 test("retiring an expired session ignores a delayed read and never writes a replacement", async () => {
   let release: (value: Projection) => void = () => undefined;
   let writes = 0;
@@ -268,4 +336,121 @@ test("explicit reapplication uses the newly read revision and retains local edit
  assert.equal(await store.flush(),false);assert.equal(store.pendingState?.answer,"local");reject=false;
  assert.equal(await store.reapplyLocal((saved,local)=>({...saved,answer:local.answer})),true);
  assert.equal(remote.state?.answer,"local");assert.equal(store.conflict,null);
+});
+
+test("a clean presentation verifies an identical newer snapshot before generating its write tuple", async () => {
+  const calls: WriteCall[] = [];
+  let remote = saved(2, { screen: "review", preparationId: "original" });
+  const store = createViewPersistence<State>({ read: async () => structuredClone(remote), write: async (...args) => {
+    calls.push(args); remote = saved(3, args[2]); return remote;
+  } });
+  store.configure(saved(1, { screen: "review", preparationId: "original" }));
+  assert.equal(await store.flush({ screen: "review", preparationId: "original", readingPosition: { top: 0 } }, true), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]![1], 2, "verification precedes creation of the exact revision/key tuple");
+  assert.equal(store.session?.revision, 3);
+  assert.equal(store.conflict, null);
+});
+
+test("a consequential clean no-op verifies the latest identical revision without manufacturing a view write", async () => {
+  const state = { screen: "review", preparationId: "original" };
+  let writes = 0;
+  let reads = 0;
+  const store = createViewPersistence<State>({ read: async () => { reads++; return saved(2, state); },
+    write: async () => { writes++; return saved(3, state); } });
+  store.configure(saved(1, state));
+  assert.equal(await store.flush(state, true), true);
+  assert.equal(reads, 1);
+  assert.equal(writes, 0);
+  assert.equal(store.session?.revision, 2);
+  assert.equal(store.attempt, null);
+  assert.equal(store.dirty(), false);
+});
+
+test("ordinary clean navigation saves retain their existing behavior around a pending operation", async () => {
+  const remote = { ...saved(1, { screen: "setup" }), operation: { operationId: "workspace-check", status: "pending" } };
+  let reads = 0;
+  const writes: WriteCall[] = [];
+  const store = createViewPersistence<State>({ read: async () => { reads++; return remote; }, write: async (...args) => {
+    writes.push(args); return { ...remote, revision: 2, state: args[2] };
+  } });
+  store.configure(remote);
+  assert.equal(await store.flush({ screen: "setup", position: 1 }), true);
+  assert.equal(reads, 0, "read-only navigation is not a consequential mutation boundary");
+  assert.equal(writes.length, 1);
+  assert.equal(remote.operation.operationId, "workspace-check");
+});
+
+test("clean snapshot verification rejects changed state, status, binding and unresolved operations", async () => {
+  for (const replacement of [
+    saved(2, { screen: "review", preparationId: "different" }),
+    saved(2, { screen: "review", preparationId: "original" }, "inactive"),
+    { ...saved(2, { screen: "review", preparationId: "original" }), entityId: "substituted" },
+    { ...saved(2, { screen: "review", preparationId: "original" }), operation: { operationId: "original-operation", status: "ambiguous" } },
+  ]) {
+    for (const noOp of [false, true]) {
+    const before = structuredClone(replacement);
+    let writes = 0;
+    const store = createViewPersistence<State>({ read: async () => replacement, write: async () => { writes++; return replacement; } });
+    store.configure(saved(1, { screen: "review", preparationId: "original" }));
+    assert.equal(await store.flush({ screen: "review", preparationId: "original", ...(noOp ? {} : { localDisplay: true }) }, true), false);
+    assert.equal(store.session?.revision, 1);
+    assert.ok(store.conflict);
+    assert.equal(writes, 0);
+    assert.equal(store.pendingState?.localDisplay, noOp ? undefined : true);
+    assert.deepEqual(replacement, before);
+    }
+  }
+});
+
+test("local edits retain the rejected exact save tuple instead of adopting another card's identical revision", async () => {
+  const remote = saved(2, { screen: "review", answer: "before" });
+  const calls: WriteCall[] = [];
+  let reads = 0;
+  const store = createViewPersistence<State>({ read: async () => { reads++; return remote; }, write: async (...args) => {
+    calls.push(args); throw Object.assign(new Error("conflict"), { code: "REVISION_CONFLICT" });
+  } });
+  store.configure(saved(1, { screen: "review", answer: "before" }));
+  store.markDirty({ screen: "review", answer: "local" });
+  assert.equal(await store.flush(undefined, true), false);
+  const attempt = store.attempt;
+  assert.equal(await store.flush(undefined, true), false);
+  assert.equal(reads, 0, "dirty edits need explicit saved-version recovery");
+  assert.equal(calls.length, 1);
+  assert.equal(store.attempt, attempt, "a rejected save retains the original attempt, including its diagnostic");
+  assert.equal(store.pendingState?.answer, "local");
+});
+
+test("an ambiguous save keeps its original revision and key after another revision becomes readable", async () => {
+  let remote = saved(1, { screen: "review" });
+  const calls: WriteCall[] = [];
+  let reads = 0;
+  const store = createViewPersistence<State>({ read: async () => { reads++; return remote; }, write: async (...args) => {
+    calls.push(args); throw Object.assign(new Error("unknown write outcome"), { code: "NETWORK_AMBIGUOUS" });
+  } });
+  store.configure(remote);
+  assert.equal(await store.flush({ screen: "review", position: 1 }, true), false);
+  remote = saved(2, { screen: "review" });
+  assert.equal(await store.flush(), false);
+  assert.equal(reads, 1);
+  assert.deepEqual(calls[1], calls[0], "no fresh revision or key can replace an unresolved exact tuple");
+});
+
+test("late clean snapshot reads cannot adopt a replacement card or overwrite edits made during verification", async () => {
+  for (const replaceCard of [true, false]) {
+    let release!: (value: Projection) => void;
+    let writes = 0;
+    const store = createViewPersistence<State>({ read: () => new Promise(resolve => { release = resolve; }),
+      write: async () => { writes++; return saved(3, {}); } });
+    store.configure(saved(1, { screen: "review" }));
+    const flushing = store.flush({ screen: "review", position: 0 }, true);
+    if (replaceCard) store.configure({ viewSessionId: "replacement-card", revision: 9, state: { screen: "other" } });
+    else store.markDirty({ screen: "review", position: 5 });
+    release(saved(2, { screen: "review" }));
+    assert.equal(await flushing, false);
+    assert.equal(writes, 0);
+    assert.equal(store.session?.revision, replaceCard ? 9 : 1);
+    if (!replaceCard) assert.equal(store.pendingState?.position, 5);
+    store.clear();
+  }
 });

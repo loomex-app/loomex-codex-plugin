@@ -264,6 +264,9 @@ const primarySchemas = {
   "workflows.update": z
     .object({ workflow: JsonObject, draft: ObjectOrNull.optional(), details: Details })
     .strict(),
+  "workflows.patch": z
+    .object({ workflow: JsonObject, draft: ObjectOrNull.optional(), details: Details })
+    .strict(),
   "workflow.operations.get": z
     .object({
       operation: z.enum(["workflows.create", "workflows.update", "workflows.publish"]),
@@ -371,6 +374,7 @@ const primarySchemas = {
   "runs.start_handoff.issue": z.object(StartHandoffStatus).extend({ lifecycle: z.literal("prepared"), approvalObserved: z.literal(false), nextAction: z.literal("approve"), preparationId: z.uuid(), result: JsonObject.optional() }).strict(),
   "runs.start_handoff.restore": z.object(StartHandoffStatus).extend({ preparationId: z.uuid(), result: JsonObject.optional() }).strict(),
   "runs.start_handoff.approve": z.object(StartHandoffStatus).extend({ lifecycle: z.literal("approved"), approvalObserved: z.literal(true), nextAction: z.literal("commit"), preparationId: z.uuid(), result: JsonObject.optional() }).strict(),
+  "runs.start_handoff.approve_headless": z.object(StartHandoffStatus).extend({ preparationId: z.uuid(), result: JsonObject.optional() }).strict(),
   "runs.start_handoff.get": z.object(StartHandoffStatus).extend({ preparationId: z.uuid(), result: JsonObject.optional() }).strict(),
   "runs.start_handoff.commit": z.object({ ...StartHandoffStatus, execution: JsonObject, executionPolicy: z.string(), result: JsonObject.optional() }).extend({ lifecycle: z.literal("committed"), nextAction: z.literal("none"), preparationId: z.uuid(), runId: z.uuid().optional() }).strict(),
   "runs.list": z
@@ -381,6 +385,9 @@ const primarySchemas = {
   "runs.events": z.object(RunProjection).strict(),
   "runs.result": z.object(RunProjection).strict(),
   "runs.cancel": z.object({ execution: JsonObject, jobs: Objects, details: Details }).strict(),
+  "runs.continuation.requeue": z.object({ executionId: z.uuid(), deliveryId: z.uuid(),
+    expectedContinuationDigest: z.string().length(64).regex(/^[a-f0-9]{64}$/), requeued: z.boolean(),
+    status: z.literal("pending"), details: Details.optional() }).strict(),
   "runs.delete": z
     .object({
       executionId: z.string(),

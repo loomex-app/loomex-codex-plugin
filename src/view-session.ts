@@ -90,7 +90,7 @@ export async function viewSessionMeta(client: PreparationReviewClient, definitio
     if (session.data.kind !== kind || session.data.entityType !== entityType || session.data.entityId !== entityId) {
       return viewPersistenceError(undefined, {
         code: "VIEW_SESSION_BINDING_MISMATCH",
-        message: "The saved view belongs to a different Loomex card.",
+        message: "The saved view belongs to a different Loomex card and cannot be used here.",
       });
     }
     return { "loomex/viewSession": session.data };

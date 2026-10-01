@@ -33,6 +33,7 @@ interface Harness {
   readonly locks: Array<{ operation: Readonly<MutationOperation>; reconciled: boolean; message?: string }>;
   readonly presentations: RpcResult[];
   readonly settlements: Readonly<JsonObject>[];
+  readonly accepted: Array<{ requestId: string; viewSessionId: string; settlementsAtBoundary: number }>;
   readonly session: MutationSessionProjection;
   setToolResult(result: RpcResult): void;
   loseNextJournalResponse(): void;
@@ -45,6 +46,7 @@ function harness(initialResult: RpcResult): Harness {
   const locks: Array<{ operation: Readonly<MutationOperation>; reconciled: boolean; message?: string }> = [];
   const presentations: RpcResult[] = [];
   const settlements: Readonly<JsonObject>[] = [];
+  const accepted: Array<{ requestId: string; viewSessionId: string; settlementsAtBoundary: number }> = [];
   let result = initialResult;
   let loseJournalResponse = false;
   let advanceOnFlush = false;
@@ -61,6 +63,9 @@ function harness(initialResult: RpcResult): Harness {
     },
     unlock: () => undefined,
     acceptTargetSession: () => undefined,
+    acceptInteraction: (acceptedRequestId, acceptedViewSessionId) => {
+      accepted.push({ requestId: acceptedRequestId, viewSessionId: acceptedViewSessionId, settlementsAtBoundary: settlements.length });
+    },
   };
   const services: MutationControllerServices = {
     createIdempotencyKey: keyFactory(),
@@ -131,6 +136,7 @@ function harness(initialResult: RpcResult): Harness {
     locks,
     presentations,
     settlements,
+    accepted,
     session,
     setToolResult: (next) => { result = next; },
     loseNextJournalResponse: () => { loseJournalResponse = true; },
@@ -199,6 +205,8 @@ test("a lost journal response is reconciled by the recorded exact operation befo
     ["loomex_view_session_update", "loomex_view_session_get", "loomex_view_operation_get", "loomex_view_operation_settle"],
   );
   assert.equal(controller.size, 0);
+  assert.deepEqual(state.accepted, [{ requestId, viewSessionId, settlementsAtBoundary: 0 }],
+    "the exact accepted request freezes view writes before operation settlement");
 });
 
 test("journaling snapshots the session revision after flushing pending view state", async () => {
@@ -346,6 +354,8 @@ test("an unverified receipt remains locked until authoritative reconciliation pr
   assert.equal(reconciled.resolution?.runId, runId);
   assert.equal(controller.size, 0);
   assert.equal(state.toolCalls.length, 1);
+  assert.deepEqual(state.accepted, [{ requestId, viewSessionId, settlementsAtBoundary: 1 }],
+    "a fresh resolved read reaches the same acceptance boundary before its final settlement");
 });
 
 test("an exact standalone interaction receipt is accepted without inventing run authority", async () => {

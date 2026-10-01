@@ -1,5 +1,5 @@
 import { errorRecovery } from "./protocol.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -22,7 +22,7 @@ import {
   type AuthoringIssue,
 } from "./protocol.js";
 import { parseMethodResult } from "./result-schemas.js";
-import { REQUIRED_RUNNER_CAPABILITIES } from "./tool-catalog.js";
+import { OPTIONAL_RUNNER_CAPABILITIES_BY_METHOD, OPTIONAL_RUNNER_METHODS, REQUIRED_RUNNER_CAPABILITIES } from "./tool-catalog.js";
 
 export interface LocalControlCallOptions {
   readonly mutating: boolean;
@@ -121,7 +121,7 @@ function transportError(options: {
     });
   }
   return new LocalControlError({
-    code: "RUNNER_UNAVAILABLE",
+    code: options.sent ? "RUNNER_RESPONSE_UNAVAILABLE" : "RUNNER_UNAVAILABLE",
     retryable: true,
     requestId: options.requestId,
     transportFailure: true,
@@ -130,6 +130,61 @@ function transportError(options: {
 
 export class LocalControlClient {
   async call(
+    method: string,
+    params: Record<string, JsonValue>,
+    options: LocalControlCallOptions,
+  ): Promise<ToolOutput> {
+    const output = await this.callWithTransportRetry(method, params, options);
+    // The originating read is complete once it returns an immutable reference.
+    // Hydrate outside its retry boundary so a failed page cannot replay it.
+    if (!output.ok || !["runs.get", "runs.wait", "runs.events", "runs.result"].includes(method) ||
+        typeof output.data?.responseRef !== "string") return output;
+    try {
+      const reference = output.data;
+      const { responseRef, sizeBytes, checksumSha256 } = reference;
+      if (typeof responseRef !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(responseRef) ||
+          typeof sizeBytes !== "number" || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0 ||
+          typeof checksumSha256 !== "string" || !/^[0-9a-f]{64}$/.test(checksumSha256) ||
+          reference.encoding !== "json" || reference.nextOffset !== 0) throw new Error("Invalid spool reference");
+      const chunks: Buffer[] = [];
+      const hash = createHash("sha256");
+      let offset = 0;
+      while (offset < sizeBytes) {
+        const pageOutput = await this.callWithTransportRetry("responses.read", { responseRef, offset, limit: 262144 },
+          { ...options, mutating: false });
+        const page = pageOutput.data;
+        if (!pageOutput.ok || !page || page.responseRef !== responseRef || page.offset !== offset ||
+            page.sizeBytes !== sizeBytes || page.checksumSha256 !== checksumSha256 ||
+            typeof page.dataBase64 !== "string") throw new Error("Invalid spool page");
+        const bytes = Buffer.from(page.dataBase64, "base64");
+        // Buffer's base64 decoder accepts malformed input, so require its
+        // canonical encoding as well as the runner's bounded page contract.
+        const next = offset + bytes.length;
+        if (bytes.toString("base64") !== page.dataBase64 || bytes.length === 0 || bytes.length > 262144 ||
+            next > sizeBytes || page.nextOffset !== (next === sizeBytes ? null : next)) throw new Error("Invalid spool coverage");
+        hash.update(bytes);
+        chunks.push(bytes);
+        offset = next;
+      }
+      if (hash.digest("hex") !== checksumSha256) throw new Error("Invalid spool checksum");
+      const decoded: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, sizeBytes)));
+      if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) throw new Error("Invalid spool result");
+      const data = parseMethodResult(method, decoded as Record<string, JsonValue>);
+      if (!data || "responseRef" in data) throw new Error("Invalid original method result");
+      return { ...output, data };
+    } catch (error) {
+      // A corrupt or unavailable immutable response is an observation failure,
+      // never permission to repeat the completed originating operation.
+      throw new LocalControlError({
+        code: error instanceof LocalControlError ? error.code : "INVALID_RESPONSE",
+        retryable: error instanceof LocalControlError && error.retryable,
+        requestId: output.requestId,
+      });
+    }
+  }
+
+  private async callWithTransportRetry(
     method: string,
     params: Record<string, JsonValue>,
     options: LocalControlCallOptions,
@@ -152,7 +207,15 @@ export class LocalControlClient {
       ) {
         throw error;
       }
-      return await attempt();
+      try {
+        return await attempt();
+      } catch (retryError) {
+        // A later connection failure cannot prove the earlier read was never
+        // sent. Retain its truthful observation outcome across the safe retry.
+        if (error.code === "RUNNER_RESPONSE_UNAVAILABLE" && retryError instanceof LocalControlError &&
+            retryError.transportFailure && retryError.code === "RUNNER_UNAVAILABLE") throw error;
+        throw retryError;
+      }
     }
   }
 
@@ -163,6 +226,9 @@ export class LocalControlClient {
   ): Promise<ToolOutput> {
     const negotiationId = randomUUID();
     const requestId = randomUUID();
+    const requiredCapabilities = OPTIONAL_RUNNER_METHODS.has(method)
+      ? [...REQUIRED_RUNNER_CAPABILITIES, `method:${method}`, ...(OPTIONAL_RUNNER_CAPABILITIES_BY_METHOD[method] ?? [])]
+      : [...REQUIRED_RUNNER_CAPABILITIES];
     const path = socketPath();
     await assertOwnerCheckedSocket(path);
 
@@ -172,7 +238,7 @@ export class LocalControlClient {
       method: "protocol.negotiate",
       params: NegotiationParamsSchema.parse({
         supportedProtocols: [LOCAL_PROTOCOL],
-        requiredCapabilities: [...REQUIRED_RUNNER_CAPABILITIES],
+        requiredCapabilities,
       }),
     });
     const request = RpcRequestSchema.parse({
@@ -324,7 +390,7 @@ export class LocalControlClient {
             const compatible =
               negotiated.success &&
               negotiated.data.maxFrameBytes === MAX_FRAME_BYTES &&
-              REQUIRED_RUNNER_CAPABILITIES.every((capability) =>
+              requiredCapabilities.every((capability) =>
                 capabilities?.has(capability),
               );
             if (!compatible) {

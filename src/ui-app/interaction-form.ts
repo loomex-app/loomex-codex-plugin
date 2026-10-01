@@ -2,6 +2,7 @@ import { createAnswerReviewItem, createUiElement, type ElementAttributes } from 
 import type { JsonObject, UiMode } from "./contracts.js";
 import type { HumanRequest, InputQuestion, InputSpec, JsonSchema } from "./page-models.js";
 import type { ActionId } from "./shell.js";
+import { compactQuestion, createPromptContent, createReadingPromptContent, createQuestionReviewCopy } from "./prompt-content.js";
 
 export type InteractionPresentation = Readonly<{
   kind: "review" | "clarification" | "progress";
@@ -158,7 +159,7 @@ export function questionCopyValues(spec: InputSpec | null | undefined): string[]
   if (!spec || typeof spec !== "object") return [];
   const questions = Array.isArray(spec.questions) ? spec.questions : [spec];
   return questions
-    .map((question) => typeof question?.question === "string" && question.question.trim().length <= 4096 ? question.question.trim() : "")
+    .map((question) => typeof question?.question === "string" ? question.question.trim() : "")
     .filter(Boolean);
 }
 
@@ -227,7 +228,9 @@ export function createInteractionFormController(host: InteractionFormServices): 
     form.replaceChildren();
     appendRequestCopy(request, request.inputSpec);
     const callout = element("section", { className: "ui-callout", role: "status" });
-    callout.append(element("h2", {}, host.safeText(contract.question?.question) || "Continue in chat"));
+    const question = contract.question?.question;
+    if (typeof question === "string" && question.trim()) callout.append(compactQuestion(question) ? element("h2", {}, question) : createReadingPromptContent(question));
+    else callout.append(element("h2", {}, "Continue in chat"));
     callout.append(element("p", {}, "Answer this long-form question in the conversation. Your response will stay in chat until you choose to send it."));
     form.append(callout);
     form.dataset.formKind = "chat-answer";
@@ -235,37 +238,32 @@ export function createInteractionFormController(host: InteractionFormServices): 
     form.hidden = false;
   }
 
-  function normalizedCopy(value: unknown): string {
-    return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
-  }
-
   function appendRequestCopy(request: HumanRequest, spec: InputSpec | null | undefined): void {
     const presentation = host.humanPresentation(request);
-    const questionCopies = new Set(questionCopyValues(spec).map(normalizedCopy));
+    const questionCopies = new Set(questionCopyValues(spec));
     const candidateHeading = typeof request.title === "string" ? request.title.trim() : "";
     const askingQuestion = inputSpecSupported(spec);
-    const heading = presentation || askingQuestion || questionCopies.has(normalizedCopy(candidateHeading))
+    const heading = presentation || askingQuestion || questionCopies.has(candidateHeading)
       ? ""
       : candidateHeading;
     const descriptions: string[] = [];
-    const seen = new Set([normalizedCopy(heading), ...questionCopies]);
+    const seen = new Set([heading, ...questionCopies]);
     if (presentation) {
-      seen.add(normalizedCopy(host.safeText(request.title)));
-      seen.add(normalizedCopy(presentation.question));
-      seen.add(normalizedCopy(presentation.summary));
+      seen.add(typeof request.title === "string" ? request.title.trim() : "");
+      seen.add(typeof presentation.question === "string" ? presentation.question.trim() : "");
+      seen.add(typeof presentation.summary === "string" ? presentation.summary.trim() : "");
     }
     for (const value of [request.description, request.prompt]) {
       if (typeof value !== "string" || !value.trim()) continue;
       const copy = value.trim();
-      const normalized = normalizedCopy(copy);
-      if (seen.has(normalized)) continue;
-      seen.add(normalized);
+      if (seen.has(copy)) continue;
+      seen.add(copy);
       descriptions.push(copy);
     }
     if (!heading && !descriptions.length) return;
     const copy = element("div", { className: "request-copy" });
-    if (heading) copy.append(element("h2", {}, heading));
-    for (const description of descriptions) copy.append(element("p", {}, description));
+    if (heading) copy.append(compactQuestion(heading) ? element("h2", {}, heading) : createReadingPromptContent(heading, "Request details"));
+    for (const description of descriptions) copy.append(compactQuestion(description) ? createPromptContent(description) : createReadingPromptContent(description, "Request details"));
     form.append(copy);
   }
 
@@ -348,10 +346,22 @@ export function createInteractionFormController(host: InteractionFormServices): 
       "aria-describedby": errorId,
     });
     const question = typeof spec.question === "string" ? spec.question : "";
-    const legend = element("legend", { id: legendId, className: "sr-only" }, question);
-    const heading = element("div", { className: "question-heading", role: "heading", "aria-level": "2" }, question);
-    if (required) heading.append(" ", element("span", { className: "required-mark", "aria-hidden": "true" }, "*"));
-    fieldset.append(legend, heading);
+    const compact = compactQuestion(question);
+    const legend = element("legend", { id: legendId, className: "sr-only" }, compact ? question : batch ? `Question ${questionIndex + 1}` : "Question");
+    fieldset.append(legend);
+    if (compact) {
+      const heading = element("div", { className: "question-heading", role: "heading", "aria-level": "2" }, question);
+      if (required) heading.append(" ", element("span", { className: "required-mark", "aria-hidden": "true" }, "*"));
+      fieldset.append(heading);
+    } else {
+      const body = createReadingPromptContent(question, batch ? `Question ${questionIndex + 1} details` : "Question details", { id: `question-${questionIndex}-body` });
+      const reading = body.querySelector<HTMLElement>(".ui-rich-text");
+      if (reading) {
+        reading.id = `question-${questionIndex}-content`;
+        fieldset.setAttribute("aria-describedby", `${reading.id} ${errorId}`);
+      }
+      fieldset.append(body);
+    }
     const stack = element("div", { className: "control-stack" });
 
     if (inputType === "text" || inputType === "long_text" || inputType === "date") {
@@ -423,8 +433,8 @@ export function createInteractionFormController(host: InteractionFormServices): 
       }
       appendOtherControl(stack, fieldset, inputType, questionIndex, spec, answer);
     }
-    const helper = host.safeText(helperText)
-      ? element("p", { id: `question-${questionIndex}-helper`, className: "hint" }, host.safeText(helperText))
+    const helper = typeof helperText === "string" && helperText.trim()
+      ? createPromptContent(helperText, { id: `question-${questionIndex}-helper` })
       : null;
     if (helper) {
       for (const control of stack.querySelectorAll<FormControl>("input, textarea, select")) {
@@ -453,7 +463,7 @@ export function createInteractionFormController(host: InteractionFormServices): 
     const acceptance = presentation?.kind === "review" && questions.length === 1 &&
       normalizeInputType(questions[0]?.inputType || spec.inputType) === "boolean";
     const clarificationHelper = questions.length === 1 && presentation?.kind === "clarification"
-      ? host.safeText(presentation.summary)
+      ? presentation.summary
       : undefined;
     const normalizedQuestions = questions.map((question) => {
       const id = batch ? question.id : (requestNodeId(request) || "answer");
@@ -730,7 +740,7 @@ export function createInteractionFormController(host: InteractionFormServices): 
       if (!question || typeof question !== "object") continue;
       const questionId = String(question.id || `question_${index + 1}`);
       const value = answers ? answers.find((item) => String(objectValue(item)?.questionId) === questionId) : answerInput;
-      const item = createAnswerReviewItem(host.safeText(question.question) || "Answer", formatAnswerText(question, value ?? {}, acceptanceReview));
+      const item = createAnswerReviewItem(typeof question.question === "string" && question.question.trim() ? createQuestionReviewCopy(question.question) : "Answer", formatAnswerText(question, value ?? {}, acceptanceReview));
       list.append(item);
     }
     if (!list.childElementCount && answerInput !== undefined) {
@@ -778,7 +788,7 @@ export function createInteractionFormController(host: InteractionFormServices): 
       fields.forEach((fieldset) => { fieldset.hidden = true; });
       form.querySelector<HTMLElement>(".question-stepper")?.setAttribute("hidden", "");
       questionMetadata.forEach((metadata, index) => {
-        const item = createAnswerReviewItem(host.safeText(metadata.question.question) || "Answer", formatAnswerText(metadata.question, answers[index] ?? {}, metadata.acceptanceLabels));
+        const item = createAnswerReviewItem(typeof metadata.question.question === "string" && metadata.question.question.trim() ? createQuestionReviewCopy(metadata.question.question) : "Answer", formatAnswerText(metadata.question, answers[index] ?? {}, metadata.acceptanceLabels));
         item.dataset.questionId = fieldsetQuestionId(fields[index]);
         const edit = element("button", { type: "button", className: "secondary" }, `Edit answer ${index + 1}`);
         host.setAction(edit, `Edit answer ${index + 1}`, "edit");

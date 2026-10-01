@@ -3,29 +3,32 @@
  * this bundle and the pinned runtime; all state transitions happen here.
  */
 import { createHash, randomUUID, verify as verifySignature } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, fsyncSync, openSync, closeSync, copyFileSync, chmodSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync, fsyncSync, openSync, closeSync, copyFileSync, chmodSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 const VERSION = /^\d+\.\d+\.\d+$/;
 const LIFECYCLE_SCHEMA = "app.loomex.plugin.lifecycle/v2";
+const PRUNE_SCHEMA = "app.loomex.plugin.lifecycle/v3";
 const RECEIPT_SCHEMA = "app.loomex.plugin.install-receipt/v2";
 const LOCK_STALE_MS = 15 * 60 * 1000;
 let lifecycleSaveCount = 0;
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Lifecycle = {
-  schema: string; operation: "install" | "rollback" | "repair" | "uninstall";
+  schema: string; operation: "install" | "rollback" | "repair" | "uninstall" | "prune";
   operationId: string; createdAt: string; updatedAt: string; phase: string;
   release?: string; version?: string; target?: string; targets?: string[];
   stage?: string; installRoot?: string; oldTarget?: string | null;
   recoveryHelper?: string;
   current: string; versions: string; marketplace: string; receipt: string;
   releaseManifestSha256?: string; payloadSha256?: string; payloadInventorySha256?: string; inventory?: Json[];
+  pruneRemove?: string[]; pruneRetain?: string[]; pruneRecords?: Record<string, Json>;
+  pruneReceiptBefore?: string; pruneReceiptAfter?: string; prunePlanSha256?: string; pruneIndex?: number;
 };
-type Arguments = { action: string; release?: string; installBase?: string; publicKey?: string; allowDevelopment: boolean; version?: string };
+type Arguments = { action: string; release?: string; installBase?: string; publicKey?: string; allowDevelopment: boolean; version?: string; remove: string[]; retain: string[] };
 
 function fail(message: string): never { throw new Error(message); }
 function text(value: unknown): string { return typeof value === "string" ? value : fail("expected text"); }
@@ -214,7 +217,7 @@ function renderMcp(root: string, stableCurrent: string): void {
 }
 function loadLifecycle(path: string): Lifecycle {
   const value = json(path) as Lifecycle;
-  if (value.schema !== LIFECYCLE_SCHEMA || !["install", "rollback", "repair", "uninstall"].includes(value.operation) || typeof value.operationId !== "string" || typeof value.phase !== "string") fail("unsupported plugin lifecycle journal");
+  if ((value.operation === "prune" ? value.schema !== PRUNE_SCHEMA : value.schema !== LIFECYCLE_SCHEMA || !["install", "rollback", "repair", "uninstall"].includes(value.operation)) || typeof value.operationId !== "string" || typeof value.phase !== "string") fail("unsupported plugin lifecycle journal");
   return value;
 }
 function saveLifecycle(path: string, state: Lifecycle): void {
@@ -226,8 +229,18 @@ function failPhase(operation: string, phase: string): void { if (process.env[`LO
 function samePaths(state: Lifecycle, p: ReturnType<typeof paths>): boolean {
   return state.current === p.current && state.versions === p.versions && state.marketplace === p.marketplace && state.receipt === p.receipt;
 }
+function prunePlanDigest(state: Lifecycle): string {
+  return createHash("sha256").update(canonical({ target: state.target as string, remove: state.pruneRemove as string[], retain: state.pruneRetain as string[], records: state.pruneRecords as Record<string, Json>, receiptBefore: state.pruneReceiptBefore as string, receiptAfter: state.pruneReceiptAfter as string })).digest("hex");
+}
 function validateLifecycleBinding(state: Lifecycle, p: ReturnType<typeof paths>): void {
   if (!samePaths(state, p)) fail("plugin lifecycle journal belongs to a different installation");
+  if (state.operation === "prune") {
+    const remove = state.pruneRemove; const retain = state.pruneRetain;
+    if (!/^[a-f0-9-]{36}$/.test(state.operationId) || !Array.isArray(remove) || remove.length === 0 || !Array.isArray(retain) || retain.length === 0 || !Number.isInteger(state.pruneIndex) || (state.pruneIndex as number) < 0 || (state.pruneIndex as number) > remove.length || !state.pruneRecords || typeof state.pruneReceiptBefore !== "string" || typeof state.pruneReceiptAfter !== "string" || typeof state.target !== "string" || dirname(state.target) !== p.versions || !VERSION.test(basename(state.target))) fail("invalid prune lifecycle plan");
+    for (const names of [remove, retain]) if (names.some(name => typeof name !== "string" || !VERSION.test(name)) || new Set(names).size !== names.length) fail("invalid prune lifecycle versions");
+    if (remove.some(name => retain.includes(name)) || Object.keys(state.pruneRecords).sort().join("\0") !== [...remove].sort().join("\0") || typeof state.prunePlanSha256 !== "string" || state.prunePlanSha256 !== prunePlanDigest(state)) fail("invalid prune lifecycle ownership snapshot");
+    return;
+  }
   if (state.operation === "install") {
     const version = validateVersion(text(state.version)); const stage = text(state.stage); const installRoot = text(state.installRoot);
     if (!state.release || !isAbsolute(state.release) || dirname(installRoot) !== p.versions || !inside(dirname(p.current), stage) || dirname(stage) !== dirname(p.current) || basename(installRoot) !== version) fail("install lifecycle target mismatch");
@@ -347,6 +360,150 @@ function verifyOwnership(p: ReturnType<typeof paths>): string {
   const target = currentTarget(p.current, p.versions); const version = basename(target); const market = marketplaceData(join(target, ".agents", "plugins", "marketplace.json"), version);
   if (!equalJson(json(p.marketplace) as Json, market)) fail("unexpected installed marketplace metadata"); verifyRecordedVersion(p, target); return target;
 }
+function pruneQuarantine(p: ReturnType<typeof paths>, state: Lifecycle, version: string): string {
+  return join(p.versions, `.prune-${state.operationId}-${version}`);
+}
+function assertUnused(root: string): void {
+  // +D checks executable, cwd, and open-file references beneath this exact
+  // version. A failed observation is never evidence that the version is idle.
+  const observed = spawnSync("/usr/sbin/lsof", ["-nP", "-F", "p", "+D", root], { encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024 });
+  if (observed.error || observed.signal || observed.stderr || ![0, 1].includes(observed.status ?? -1)) fail("unable to establish whether plugin version is in use");
+  if (observed.stdout) fail("plugin version is in use by a live process");
+}
+function pruneTree(root: string, recordValue: Json, p: ReturnType<typeof paths>, complete: boolean): { files: Map<string, { sha256: string; size: number; mode: number }>; directories: string[] } {
+  const record = object(recordValue); const inventory = record.inventory;
+  if (!Array.isArray(inventory) || typeof record.releaseManifestSha256 !== "string" || typeof record.payloadSha256 !== "string" || typeof record.payloadInventorySha256 !== "string" || createHash("sha256").update(canonical(inventory as Json)).digest("hex") !== record.payloadInventorySha256) fail("prune ownership snapshot is invalid");
+  const files = new Map<string, { sha256: string; size: number; mode: number }>();
+  for (const value of inventory) {
+    const entry = object(value); const name = text(entry.path);
+    if (name.startsWith("/") || name.split("/").some(part => !part || part === "." || part === "..") || name === "plugin/.mcp.json" || typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(entry.sha256) || !Number.isSafeInteger(entry.size) || (entry.size as number) < 0 || !Number.isSafeInteger(entry.mode) || (entry.mode as number) < 0 || files.has(name)) fail("prune inventory contains an unsafe entry");
+    files.set(name, { sha256: entry.sha256, size: entry.size as number, mode: entry.mode as number });
+  }
+  const launcher = canonical({ mcpServers: { loomex: { command: join(p.current, "plugin", "runtime", "bin", "node"), args: [join(p.current, "plugin", "dist", "server.js")] } } });
+  files.set("plugin/.mcp.json", { sha256: createHash("sha256").update(launcher).digest("hex"), size: launcher.length, mode: 0o600 });
+  const directories = new Set<string>();
+  for (const name of files.keys()) { const parts = name.split("/"); for (let index = 1; index < parts.length; index += 1) directories.add(parts.slice(0, index).join("/")); }
+  directory(root, "prune target is not an owned directory");
+  const seen = new Set<string>();
+  const walk = (parent: string): void => {
+    for (const name of readdirSync(parent)) {
+      const path = join(parent, name); const item = relative(root, path).split(sep).join("/"); const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) fail("prune target contains a symlink");
+      if (stat.isDirectory()) { if (!directories.has(item)) fail("prune target contains an unowned directory"); seen.add(item); walk(path); }
+      else if (stat.isFile()) {
+        const expected = files.get(item); if (!expected || stat.size !== expected.size || (stat.mode & 0o7777) !== expected.mode || sha(path) !== expected.sha256) fail("prune target contains changed or unowned bytes");
+        seen.add(item);
+      } else fail("prune target contains an unsupported entry");
+    }
+  };
+  walk(root);
+  if (complete && [...files.keys(), ...directories].some(name => !seen.has(name))) fail("prune target is missing recorded bytes");
+  return { files, directories: [...directories].sort((a, b) => b.split("/").length - a.split("/").length) };
+}
+function pruneNamespace(p: ReturnType<typeof paths>, expected: Set<string>): void {
+  directory(p.versions, "versions directory is missing");
+  for (const name of readdirSync(p.versions)) {
+    const path = join(p.versions, name);
+    if (!expected.has(name) || lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory()) fail("versions directory contains an unowned or invalid entry");
+  }
+  for (const name of expected) if (!present(join(p.versions, name))) fail("receipt-owned version is missing");
+}
+function removePruneTree(root: string, record: Json, p: ReturnType<typeof paths>): void {
+  const owned = pruneTree(root, record, p, false);
+  for (const [name, expected] of owned.files) {
+    const file = join(root, name);
+    if (present(file)) {
+      const stat = lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== expected.size || (stat.mode & 0o7777) !== expected.mode || sha(file) !== expected.sha256) fail("prune target changed during deletion");
+      unlinkSync(file);
+    }
+  }
+  for (const name of owned.directories) { const path = join(root, name); if (present(path)) rmdirSync(path); }
+  rmdirSync(root); fsyncDirectory(p.versions);
+}
+function resumePrune(p: ReturnType<typeof paths>, state: Lifecycle): void {
+  validateLifecycleBinding(state, p);
+  const remove = state.pruneRemove as string[]; const retain = state.pruneRetain as string[];
+  const records = state.pruneRecords as Record<string, Json>; const current = verifyOwnership(p);
+  if (current !== state.target) fail("current plugin version changed during prune");
+  for (const version of retain) { const target = join(p.versions, version); directory(target, "retained rollback version is missing"); verifyRecordedVersion(p, target); }
+  const before = sha(p.receipt) === state.pruneReceiptBefore;
+  const after = sha(p.receipt) === state.pruneReceiptAfter;
+  if (!before && !after) fail("plugin ownership receipt changed during prune");
+  if (before) {
+    const receipt = receiptVersions(p);
+    for (const version of remove) if (!equalJson(receipt[version] as Json, records[version] as Json)) fail("prune ownership snapshot differs from receipt");
+  }
+  if (!["prepared", "quarantined", "receipt", "complete"].includes(state.phase)) fail("unsupported prune lifecycle phase");
+  if (after && !["receipt", "complete"].includes(state.phase)) fail("prune receipt advanced before payload deletion");
+  while ((state.pruneIndex as number) < remove.length) {
+    if (!before || !["prepared", "quarantined"].includes(state.phase)) fail("invalid prune lifecycle checkpoint");
+    const version = remove[state.pruneIndex as number] as string; const target = join(p.versions, version); const quarantine = pruneQuarantine(p, state, version);
+    const expected = new Set(Object.keys(receiptVersions(p)));
+    for (let index = 0; index < (state.pruneIndex as number); index += 1) expected.delete(remove[index] as string);
+    if (present(quarantine)) { expected.delete(version); expected.add(basename(quarantine)); }
+    else if (state.phase === "quarantined" && !present(target)) expected.delete(version);
+    pruneNamespace(p, expected);
+    if (state.phase === "prepared") {
+      if (present(target) && present(quarantine)) fail("prune target and quarantine both exist");
+      if (present(target)) { pruneTree(target, records[version] as Json, p, true); assertUnused(target); failPhase("prune", "before-rename"); renameSync(target, quarantine); fsyncDirectory(p.versions); failPhase("prune", "after-rename"); }
+      if (!present(quarantine)) fail("prune target disappeared before quarantine checkpoint");
+      pruneTree(quarantine, records[version] as Json, p, true); assertUnused(quarantine);
+      state.phase = "quarantined"; saveLifecycle(p.lifecycle, state);
+    }
+    if (state.phase === "quarantined") {
+      failPhase("prune", "before-deletion");
+      if (present(quarantine)) { assertUnused(quarantine); removePruneTree(quarantine, records[version] as Json, p); }
+      failPhase("prune", "after-deletion");
+      state.pruneIndex = (state.pruneIndex as number) + 1;
+      state.phase = state.pruneIndex === remove.length ? "receipt" : "prepared";
+      saveLifecycle(p.lifecycle, state);
+    }
+  }
+  if (!["receipt", "complete"].includes(state.phase)) fail("prune lifecycle checkpoint skipped payload deletion");
+  const remaining = receiptVersions(p);
+  if (state.phase === "receipt") {
+    failPhase("prune", "before-receipt");
+    // A forged or stale progress checkpoint must not drop ownership of bytes
+    // that remain at either the original name or a quarantine name.
+    const expected = new Set(Object.keys(remaining).filter(version => !remove.includes(version)));
+    pruneNamespace(p, expected);
+    if (before) {
+      for (const version of remove) { if (!equalJson(remaining[version] as Json, records[version] as Json)) fail("prune ownership snapshot changed"); delete remaining[version]; }
+      const updated = receiptData(p, remaining);
+      if (createHash("sha256").update(canonical(updated)).digest("hex") !== state.pruneReceiptAfter) fail("prune receipt plan changed");
+      atomicJson(p.receipt, updated);
+      failPhase("prune", "after-receipt-write");
+    }
+    if (sha(p.receipt) !== state.pruneReceiptAfter) fail("prune receipt update failed");
+    pruneNamespace(p, new Set(Object.keys(receiptVersions(p))));
+    state.phase = "complete"; saveLifecycle(p.lifecycle, state);
+  }
+  if (state.phase === "complete") {
+    if (sha(p.receipt) !== state.pruneReceiptAfter) fail("prune receipt changed after completion");
+    pruneNamespace(p, new Set(Object.keys(receiptVersions(p))));
+    completeLifecycle(p, state);
+  }
+}
+function prune(args: Arguments): void {
+  const p = paths(safeBase(args.installBase)); const remove = args.remove.map(validateVersion); const retain = args.retain.map(validateVersion);
+  if (remove.length === 0 || retain.length === 0 || new Set(remove).size !== remove.length || new Set(retain).size !== retain.length || remove.some(version => retain.includes(version))) fail("usage: prune --remove VERSION [--remove VERSION ...] --retain VERSION [--retain VERSION ...]");
+  if (present(p.lifecycle)) {
+    const state = loadLifecycle(p.lifecycle); validateLifecycleBinding(state, p);
+    if (state.operation !== "prune" || !equalJson(state.pruneRemove as Json, remove) || !equalJson(state.pruneRetain as Json, retain)) fail("unfinished plugin lifecycle is not this prune plan");
+    resumePrune(p, state); return;
+  }
+  const current = verifyOwnership(p); const currentVersion = basename(current); const records = receiptVersions(p);
+  pruneNamespace(p, new Set(Object.keys(records)));
+  if (remove.includes(currentVersion) || retain.includes(currentVersion) || !records[currentVersion] || retain.some(version => !records[version]) || remove.some(version => !records[version])) fail("prune must preserve current and a verified noncurrent rollback version");
+  for (const version of Object.keys(records)) { validateVersion(version); const target = join(p.versions, version); pruneTree(target, records[version] as Json, p, true); }
+  for (const version of remove) assertUnused(join(p.versions, version));
+  const after = { ...records }; for (const version of remove) delete after[version];
+  const snapshot = Object.fromEntries(remove.map(version => [version, records[version] as Json]));
+  const now = new Date().toISOString(); const state: Lifecycle = { schema: PRUNE_SCHEMA, operation: "prune", operationId: randomUUID(), createdAt: now, updatedAt: now, phase: "prepared", target: current, current: p.current, versions: p.versions, marketplace: p.marketplace, receipt: p.receipt, pruneRemove: remove, pruneRetain: retain, pruneRecords: snapshot, pruneReceiptBefore: sha(p.receipt), pruneReceiptAfter: createHash("sha256").update(canonical(receiptData(p, after))).digest("hex"), pruneIndex: 0 };
+  state.prunePlanSha256 = prunePlanDigest(state);
+  saveLifecycle(p.lifecycle, state); resumePrune(p, state);
+}
 function ensureHelper(p: ReturnType<typeof paths>, payload: string): void {
   noLink(p.helper, "lifecycle helper path may not be a symlink"); if (!existsSync(p.helper)) mkdirSync(p.helper, { mode: 0o700 }); directory(p.helper, "lifecycle helper path is invalid");
   atomicCopy(join(payload, "plugin", "runtime", "bin", "node"), join(p.helper, "node"), 0o755);
@@ -417,12 +574,13 @@ function resume(args: Arguments, supplied?: ReturnType<typeof paths>): void {
   }
   if (state.operation === "install") {
     if (!state.release) fail("install lifecycle release is missing");
-    const resumed: Arguments = { action: "install", release: state.release, allowDevelopment: args.allowDevelopment };
+    const resumed: Arguments = { action: "install", release: state.release, allowDevelopment: args.allowDevelopment, remove: [], retain: [] };
     if (args.installBase) resumed.installBase = args.installBase;
     if (args.publicKey) resumed.publicKey = args.publicKey;
     install(resumed);
     return;
   }
+  if (state.operation === "prune") { resumePrune(p, state); return; }
   const target = text(state.target); const version = basename(target);
   if (state.operation === "rollback" || state.operation === "repair") {
     if (!["prepared", "current", "marketplace", "receipt", "complete"].includes(state.phase)) fail("unsupported lifecycle phase");
@@ -475,7 +633,7 @@ function status(args: Arguments): void {
   console.log(JSON.stringify({ schema: "app.loomex.plugin.lifecycle-status/v1", installBase: dirname(p.current), current, versions, operation }, null, 2));
 }
 function parse(argv: string[]): Arguments {
-  const [action, ...rest] = argv; if (!action) fail("usage: lifecycle ACTION [options]"); const result: Arguments = { action, allowDevelopment: false }; for (let index = 0; index < rest.length; index += 1) { const value = rest[index]; if (value === "--release") result.release = rest[++index] ?? fail("--release requires a value"); else if (value === "--install-base") result.installBase = rest[++index] ?? fail("--install-base requires a value"); else if (value === "--public-key") result.publicKey = rest[++index] ?? fail("--public-key requires a value"); else if (value === "--allow-unsigned-development") result.allowDevelopment = true; else if (value === "--version") result.version = rest[++index] ?? fail("--version requires a value"); else fail(`unknown argument: ${value}`); } return result;
+  const [action, ...rest] = argv; if (!action) fail("usage: lifecycle ACTION [options]"); const result: Arguments = { action, allowDevelopment: false, remove: [], retain: [] }; for (let index = 0; index < rest.length; index += 1) { const value = rest[index]; if (value === "--release") result.release = rest[++index] ?? fail("--release requires a value"); else if (value === "--install-base") result.installBase = rest[++index] ?? fail("--install-base requires a value"); else if (value === "--public-key") result.publicKey = rest[++index] ?? fail("--public-key requires a value"); else if (value === "--allow-unsigned-development") result.allowDevelopment = true; else if (value === "--version") result.version = rest[++index] ?? fail("--version requires a value"); else if (value === "--remove" && action === "prune") result.remove.push(rest[++index] ?? fail("--remove requires a value")); else if (value === "--retain" && action === "prune") result.retain.push(rest[++index] ?? fail("--retain requires a value")); else fail(`unknown argument: ${value}`); } return result;
 }
 function main(): void {
   const args = parse(process.argv.slice(2)); const p = paths(safeBase(args.installBase)); if (args.action === "status") return status(args);
@@ -495,8 +653,8 @@ function main(): void {
   const lock = new Lock(installBase);
   try { lock.acquire(); } finally { if (bootstrap) bootstrap.release(); }
   try {
-    if (args.action === "install") install(args); else if (args.action === "resume") resume(args); else if (args.action === "rollback") rollback(args); else if (args.action === "repair") repair(args); else if (args.action === "uninstall") uninstall(args); else fail(`unknown lifecycle action: ${args.action}`);
-    if (["resume", "rollback", "repair"].includes(args.action)) lifecycleResult(p, args.action, "completed");
+    if (args.action === "install") install(args); else if (args.action === "resume") resume(args); else if (args.action === "rollback") rollback(args); else if (args.action === "repair") repair(args); else if (args.action === "prune") prune(args); else if (args.action === "uninstall") uninstall(args); else fail(`unknown lifecycle action: ${args.action}`);
+    if (["resume", "rollback", "repair", "prune"].includes(args.action)) lifecycleResult(p, args.action, "completed");
   } finally { lock.release(); }
 }
 try { main(); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }

@@ -10,7 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 
 import { resultSchemaFor } from "../src/result-schemas.js";
-import { LocalControlClient, LocalControlError } from "../src/local-control.js";
+import { LocalControlClient, LocalControlError, toolErrorOutput } from "../src/local-control.js";
 import {
   APP_CALLABLE_TOOLS,
   REQUIRED_RUNNER_CAPABILITIES,
@@ -156,9 +156,20 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...REQUIRED_RUNNER_CAPABILITIES, "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1"].sort(),
+    [...REQUIRED_RUNNER_CAPABILITIES, "method:runs.continuation.requeue", "method:workflows.patch", "workflows.patch.notes-preserve/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1"].sort(),
   );
   assert.equal(catalog.capabilities.includes("method:protocol.negotiate"), false);
+  const recovery = catalog.methods.find(method => method.name === "runs.continuation.requeue") as typeof catalog.methods[number] & {
+    mutating: boolean; idempotent: boolean; transportRetry: string; appOnly: boolean; authorizationPolicy: string;
+  };
+  assert.ok(recovery);
+  assert.equal(recovery.mutating, true);
+  assert.equal(recovery.idempotent, true);
+  assert.equal(recovery.appOnly, false);
+  assert.equal(recovery.transportRetry, "never_after_send");
+  assert.equal(recovery.authorizationPolicy, "explicit_failed_continuation_recovery/v1");
+  assert.deepEqual(Object.keys(recovery.inputSchema.properties).sort(),
+    ["runId", "deliveryId", "expectedContinuationDigest", "idempotencyKey"].sort());
 
   const negotiation = catalog.methods.find((method) => method.name === "protocol.negotiate");
   assert.ok(negotiation);
@@ -349,6 +360,10 @@ test("SDK stdio discovery exposes only the focused tool catalog", async () => {
       | undefined;
     if ((tool._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri || [
       "loomex_workflows_list",
+      "loomex_preparation_get",
+      "loomex_run_start_handoff_approve_headless",
+      "loomex_run_continuation_requeue",
+      "loomex_workflow_patch",
       "loomex_runs_list",
       "loomex_run_get",
       "loomex_run_wait",
@@ -407,6 +422,11 @@ test("run setup collects schema through a read-only entry point without opening 
   const approve = tools.find((tool) => tool.name === "loomex_run_start_handoff_approve");
   assert.deepEqual(approve?._meta?.ui, { visibility: ["app"] });
   assert.equal(approve?.annotations?.idempotentHint, false);
+  const headless = tools.find((tool) => tool.name === "loomex_run_start_handoff_approve_headless");
+  assert.deepEqual(headless?._meta?.ui, { visibility: ["model"] });
+  assert.equal(headless?.annotations?.idempotentHint, true);
+  assert.deepEqual(Object.keys(headless!.inputSchema.properties!).sort(), ["bindingDigest", "idempotencyKey", "preparationId"]);
+  assert.equal(headless!.inputSchema.additionalProperties, false);
   assert.equal(tools.some((tool) => tool.name === "loomex_run_start_handoff_resume"), false);
   const result = await client.callTool({ name: "loomex_run_setup", arguments: {
     workflowId,
@@ -424,6 +444,47 @@ test("run setup collects schema through a read-only entry point without opening 
     taskContext: { cwd: "/Users/example/current-task" },
     workspacePath: "/Users/example/chosen-workspace",
   });
+});
+
+test("workflow tools describe accepted version selectors and forward them unchanged", async () => {
+  const workflowId = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const versionId = "4a1e93ec-0b64-4423-89a4-8dbb8bcb189f";
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    workflow: { id: workflowId, name: "Version selector" },
+    selectedVersion: { id: versionId, versionNumber: 5, definition: { settings: { inputSchema: { type: "object", properties: {} } } } },
+    inputSchema: { type: "object", properties: {} },
+  }));
+  const client = await connect(runner);
+  const { tools } = await client.listTools();
+  for (const name of ["loomex_workflow_get", "loomex_workflow_view", "loomex_run_setup"]) {
+    const tool = tools.find((item) => item.name === name);
+    assert.ok(tool, name);
+    const version = (tool.inputSchema.properties as Record<string, { type?: string; description?: string }>).version;
+    assert.ok(version);
+    assert.equal(version.type, "string");
+    assert.equal("format" in version, false, `${name}: version must not be UUID-only`);
+    assert.equal((tool.inputSchema.required ?? []).includes("version"), false);
+    for (const selector of ["UUID", "N or vN", "active/published/latest", "draft/0/v0"]) {
+      assert.match(version.description ?? "", new RegExp(selector.replaceAll("/", "\\/")), `${name}: ${selector}`);
+    }
+    assert.match(tool.description ?? "", /version selector/i);
+  }
+  const taskContext = { cwd: "/Users/example/current-task" };
+  for (const [name, version] of [
+    ["loomex_workflow_get", versionId],
+    ["loomex_workflow_view", "v5"],
+    ["loomex_run_setup", "5"],
+    ["loomex_workflow_get", "draft"],
+    ["loomex_workflow_view", "latest"],
+  ] as const) {
+    const args = name === "loomex_workflow_get" ? { workflowId, version } : { workflowId, version, taskContext };
+    await client.callTool({ name, arguments: args });
+  }
+  assert.deepEqual(
+    runner.requests.filter((request) => request.method === "workflows.get").map((request) => request.params.version),
+    [versionId, "v5", "5", "draft", "latest"],
+  );
 });
 
 test("readiness makes one owner-checked RPC call and returns structured IDs", async () => {
@@ -643,6 +704,180 @@ test("strict input validation rejects unknown fields and unsupported secret inpu
   assert.match(String(secretContent[0]?.text ?? ""), /secret input/i);
   assert.doesNotMatch(String(secretContent[0]?.text ?? ""), /Loomex 0\.1\.0/);
   assert.equal(runner.requests.length, 0);
+});
+
+test("scoped workflow patch rejects malformed operations before transport", () => {
+  const definition = TOOL_DEFINITIONS.find((tool) => tool.name === "loomex_workflow_patch");
+  assert.ok(definition);
+  const base = {
+    workflowId: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e",
+    expectedVersion: 5,
+    expectedDefinitionChecksum: "a".repeat(64),
+    idempotencyKey: "126d1d1f-82f2-437e-a7cd-5eae87bf987a",
+  };
+  const replace = { op: "replace", nodeKey: "revision_designer", path: "/config/prompt", value: "New prompt" };
+  assert.equal(definition.inputSchema.safeParse({ ...base, operations: [replace] }).success, true);
+  assert.equal(definition.inputSchema.safeParse({ ...base, notes: "", operations: [replace] }).success, true);
+  assert.equal(definition.inputSchema.safeParse({ ...base, notes: null, operations: [replace] }).success, false);
+  assert.equal(definition.inputSchema.safeParse({ ...base, notes: "n".repeat(4097), operations: [replace] }).success, false);
+  for (const operations of [
+    [],
+    Array.from({ length: 33 }, () => replace),
+    [{ op: "replace", nodeKey: "revision_designer", path: "/config/prompt" }],
+    [{ op: "remove", nodeKey: "revision_designer", path: "/config/prompt", value: "ignored" }],
+    [{ ...replace, path: "config/prompt" }],
+    [{ ...replace, nodeKey: "" }],
+  ]) {
+    assert.equal(definition.inputSchema.safeParse({ ...base, operations }).success, false);
+  }
+  assert.equal(definition.inputSchema.safeParse({ ...base, expectedVersion: -1, operations: [replace] }).success, false);
+  assert.equal(definition.inputSchema.safeParse({ ...base, expectedDefinitionChecksum: "wrong", operations: [replace] }).success, false);
+});
+
+test("scoped workflow patch negotiates only its method, forwards exact arguments, and parses revision", async () => {
+  let runner!: FakeRunner;
+  const workflowId = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  const args = {
+    workflowId,
+    expectedVersion: 5,
+    expectedDefinitionChecksum: "a".repeat(64),
+    operations: [{ op: "replace", nodeKey: "revision_designer", path: "/config/prompt", value: "New prompt" }],
+    idempotencyKey: "126d1d1f-82f2-437e-a7cd-5eae87bf987a",
+  };
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    workflow: { id: workflowId },
+    draft: { revision: 6, definitionChecksum: "b".repeat(64), definition: { privatePrompt: "must-not-be-projected" } },
+  }));
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_workflow_patch", arguments: args });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(runner.requests.map((request) => request.method), ["workflows.patch"]);
+  assert.deepEqual(runner.requests[0]?.params, args);
+  assert.equal(Object.hasOwn(runner.requests[0]?.params ?? {}, "notes"), false,
+    "omitted notes must stay omitted so the runner preserves the current draft notes");
+  assert.deepEqual(runner.negotiations[0]?.params.requiredCapabilities,
+    [...REQUIRED_RUNNER_CAPABILITIES, "method:workflows.patch", "workflows.patch.notes-preserve/v1"]);
+  assert.deepEqual((result.structuredContent as any).data,
+    { workflowId, draftRevision: 6, definitionChecksum: "b".repeat(64), validated: true });
+  assert.doesNotMatch(JSON.stringify(result.structuredContent), /must-not-be-projected/);
+  assert.doesNotMatch(JSON.stringify(result.content), /must-not-be-projected/);
+});
+
+test("scoped workflow patch forwards explicitly replaced and cleared notes", async () => {
+  let runner!: FakeRunner;
+  const workflowId = "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e";
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    workflow: { id: workflowId }, draft: { revision: 6, definitionChecksum: "b".repeat(64) },
+  }));
+  const client = await connect(runner);
+  const base = {
+    workflowId, expectedVersion: 5, expectedDefinitionChecksum: "a".repeat(64),
+    operations: [{ op: "replace", nodeKey: "revision_designer", path: "/config/prompt", value: "New prompt" }],
+  };
+  for (const [notes, idempotencyKey] of [
+    ["Reviewed design notes", "1837f845-50d9-45aa-84c8-267e95105ed9"],
+    ["", "ab398504-fcd1-4717-bd8c-ac808620231a"],
+  ] as const) {
+    const result = await client.callTool({ name: "loomex_workflow_patch", arguments: { ...base, notes, idempotencyKey } });
+    assert.equal(result.isError, undefined);
+  }
+  assert.deepEqual(runner.requests.map((request) => request.params.notes), ["Reviewed design notes", ""]);
+});
+
+test("older runner denies scoped patch without disabling existing methods", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    version: "0.3.55", protocol: LOCAL_PROTOCOL, activeJobs: 0, draining: false, updateDeferred: false,
+  }), { capabilities: REQUIRED_RUNNER_CAPABILITIES });
+  const client = await connect(runner);
+  const args = {
+    workflowId: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e",
+    expectedVersion: 5,
+    expectedDefinitionChecksum: "a".repeat(64),
+    operations: [{ op: "remove", nodeKey: "revision_designer", path: "/config/prompt" }],
+    idempotencyKey: "126d1d1f-82f2-437e-a7cd-5eae87bf987a",
+  };
+  const unsupported = await client.callTool({ name: "loomex_workflow_patch", arguments: args });
+  assert.equal(unsupported.isError, true);
+  assert.equal(((unsupported.structuredContent as any).error).code, "COMPATIBILITY_ERROR");
+  assert.equal(runner.requests.length, 0);
+  const readiness = await client.callTool({ name: "loomex_readiness", arguments: {} });
+  assert.equal(readiness.isError, undefined);
+  assert.deepEqual(runner.requests.map((request) => request.method), ["status.get"]);
+});
+
+test("runner with patch method but without notes preservation rejects patch before dispatch", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    version: "0.3.56", protocol: LOCAL_PROTOCOL, activeJobs: 0, draining: false, updateDeferred: false,
+  }), { capabilities: [...REQUIRED_RUNNER_CAPABILITIES, "method:workflows.patch"] });
+  const client = await connect(runner);
+  const result = await client.callTool({
+    name: "loomex_workflow_patch",
+    arguments: {
+      workflowId: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e",
+      expectedVersion: 5,
+      expectedDefinitionChecksum: "a".repeat(64),
+      operations: [{ op: "remove", nodeKey: "revision_designer", path: "/config/prompt" }],
+      idempotencyKey: "126d1d1f-82f2-437e-a7cd-5eae87bf987a",
+    },
+  });
+  assert.equal(result.isError, true);
+  assert.equal(((result.structuredContent as any).error).code, "COMPATIBILITY_ERROR");
+  assert.equal(runner.requests.length, 0);
+  const readiness = await client.callTool({ name: "loomex_readiness", arguments: {} });
+  assert.equal(readiness.isError, undefined);
+  assert.deepEqual(runner.requests.map((request) => request.method), ["status.get"]);
+});
+
+test("ambiguous scoped patch keeps its original key for workflows.update reconciliation", async () => {
+  const runner = new FakeRunner((_request, socket) => { socket.destroy(); });
+  const client = await connect(runner);
+  const idempotencyKey = "126d1d1f-82f2-437e-a7cd-5eae87bf987a";
+  const result = await client.callTool({
+    name: "loomex_workflow_patch",
+    arguments: {
+      workflowId: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e",
+      expectedVersion: 5,
+      expectedDefinitionChecksum: "a".repeat(64),
+      operations: [{ op: "remove", nodeKey: "revision_designer", path: "/config/prompt" }],
+      idempotencyKey,
+    },
+  });
+  assert.equal(result.isError, true);
+  assert.equal((result.structuredContent as any).error.code, "NETWORK_AMBIGUOUS");
+  assert.equal((result.structuredContent as any).idempotencyKey, idempotencyKey);
+  assert.equal(runner.requests.length, 1);
+});
+
+test("scoped patch validation errors retain safe issue paths without provider text", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.error(socket, request,
+    "WORKFLOW_PATCH_VALIDATION_FAILED", "unsafe internal definition payload", false,
+    { authoringIssueVersion: "v1", authoringIssues: [
+      { code: "WORKFLOW_INVALID", path: "nodes[revision_designer].outputSchema", message: "Workflow definition field is invalid." },
+    ] },
+  ));
+  const client = await connect(runner);
+  const result = await client.callTool({
+    name: "loomex_workflow_patch",
+    arguments: {
+      workflowId: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e",
+      expectedVersion: 5,
+      expectedDefinitionChecksum: "a".repeat(64),
+      operations: [{ op: "remove", nodeKey: "revision_designer", path: "/config/prompt" }],
+      idempotencyKey: "126d1d1f-82f2-437e-a7cd-5eae87bf987a",
+    },
+  });
+  assert.equal(result.isError, true);
+  const error = (result.structuredContent as any).error;
+  assert.equal(error.code, "WORKFLOW_PATCH_VALIDATION_FAILED");
+  assert.equal(error.outcome, "rejected");
+  assert.equal(error.recovery, "correct_input");
+  assert.deepEqual(error.authoringIssues, [
+    { code: "WORKFLOW_INVALID", path: "nodes[revision_designer].outputSchema", message: "Workflow definition field is invalid." },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /unsafe internal definition payload/);
 });
 
 test("preparation entry points reject inline provider credentials while allowing provider settings", async () => {
@@ -1070,6 +1305,85 @@ test("run projections bound question previews while visual hydration preserves c
   assert.equal((view.structuredContent as Record<string, any>).data.humanRequest.responseSchema, undefined);
 });
 
+test("headless interaction read carries exact choice IDs through MCP content and structured data", async () => {
+  const runId = "a5140a70-bbbd-48f6-8390-3347882aff2d";
+  const requestId = "5da0df3e-3c8b-4385-a9df-7eec811c6bb7";
+  const organizationId = "dd6244ea-2f21-48bd-a9da-4d2ac161882a";
+  const questions = Array.from({ length: 9 }, (_, index) => ({
+    id: `q${index + 1}`, inputType: "radio", question: `Choose ${index + 1}`,
+    options: Array.from({ length: 4 }, (_, option) => ({ id: `q${index + 1}_o${option + 1}`, label: `Option ${option + 1}` })),
+    allowOther: true, otherLabel: "Another choice",
+  }));
+  const runner = new FakeRunner((request, socket) => {
+    assert.equal(request.method, "interactions.get");
+    assert.equal((request.params as Record<string, unknown>).requestId, requestId);
+    runner.respond(socket, request, {
+      execution: { id: runId, organizationId, status: "waiting", history: "hidden-run-history" },
+      humanRequest: { id: requestId, status: "pending", type: "manual_input", answerChannel: "ui",
+        schemaDigest: "b".repeat(64), organizationId, execution: { id: runId },
+        inputSpec: { schemaVersion: "loomex.human-input/v2", collectionMode: "batch", inputType: "radio",
+          question: "Choose", questions },
+        responseSchema: { type: "object", properties: { answers: { type: "array" } }, required: ["answers"] },
+        answer: { values: ["hidden-previous-answer"] }, providerOutput: "hidden-provider-output" },
+    });
+  });
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_interaction_get", arguments: { requestId } });
+  assert.notEqual(result.isError, true);
+  const structured = (result.structuredContent as Record<string, any>).data;
+  const content = JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
+  for (const projection of [structured, content]) {
+    assert.equal(projection.humanRequest.schemaDigest, "b".repeat(64));
+    assert.equal(projection.humanRequest.answerChannel, "ui");
+    assert.equal(projection.humanRequest.inputSpec.questions.length, 9);
+    assert.deepEqual(projection.humanRequest.inputSpec.questions[8].options, questions[8]!.options);
+    assert.deepEqual(projection.responseSchema.required, ["answers"]);
+    assert.equal(projection.awaitingUserAnswer, true);
+    assert.doesNotMatch(JSON.stringify(projection), /hidden-run-history|hidden-previous-answer|hidden-provider-output/);
+  }
+  assert.deepEqual(runner.requests.map((request) => request.method), ["interactions.get"]);
+});
+
+test("headless interaction read rejects a response for another request", async () => {
+  const requested = "5da0df3e-3c8b-4385-a9df-7eec811c6bb7";
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    humanRequest: { id: "e4bf9fa2-6f68-48b3-a06c-b00b576cd939", status: "pending",
+      inputSpec: { inputType: "radio", question: "private unrelated request",
+        options: [{ id: "private-option", label: "private-choice" }] } },
+  }));
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_interaction_get", arguments: { requestId: requested } });
+  assert.equal(result.isError, true);
+  assert.equal((result.structuredContent as Record<string, any>).error.code, "INVALID_RESPONSE");
+  assert.doesNotMatch(JSON.stringify(result), /private unrelated request|private-option|private-choice/);
+});
+
+test("oversized headless interaction returns an explicit bounded issue in both MCP channels", async () => {
+  const requestId = "5da0df3e-3c8b-4385-a9df-7eec811c6bb7";
+  const runId = "a5140a70-bbbd-48f6-8390-3347882aff2d";
+  const organizationId = "dd6244ea-2f21-48bd-a9da-4d2ac161882a";
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    humanRequest: { id: requestId, status: "pending", type: "manual_input", answerChannel: "ui",
+      schemaDigest: "f".repeat(64), organizationId, execution: { id: runId },
+      inputSpec: { schemaVersion: "loomex.human-input/v2", collectionMode: "batch", inputType: "text",
+        question: "Large batch", questions: Array.from({ length: 50 }, (_, index) => ({ id: `q${index}`,
+          inputType: "text", question: `private oversized choice ${"x".repeat(5500)}`, options: [] })) } },
+  }));
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_interaction_get", arguments: { requestId } });
+  for (const projection of [(result.structuredContent as Record<string, any>).data,
+    JSON.parse((result.content as Array<{ text: string }>)[0]!.text)]) {
+    assert.equal(projection.answerIssue.code, "INTERACTION_SCHEMA_TOO_LARGE");
+    assert.equal(projection.headlessSchemaComplete, false);
+    assert.equal(projection.humanRequest.id, requestId);
+    assert.equal(projection.humanRequest.inputSpec, undefined);
+    assert.ok(Buffer.byteLength(JSON.stringify(projection), "utf8") < 2048);
+    assert.doesNotMatch(JSON.stringify(projection), /private oversized choice/);
+  }
+});
+
 test("run reads exclude node history, previous outputs, event payloads, and AI trace from both model channels", async () => {
   const runId = "5e06cb51-c39e-485b-83ca-c2f2d12b1eb8";
   const privateMarker = "previous-node-output-must-remain-component-only";
@@ -1118,7 +1432,7 @@ test("run reads exclude node history, previous outputs, event payloads, and AI t
   assert.match(JSON.stringify(view._meta?.["loomex/uiData"]), new RegExp(privateMarker));
 });
 
-test("compact run result projections preserve response spool continuation", async () => {
+test("run result spool hydration refuses an incomplete page without replaying the origin", async () => {
   const runId = "5e06cb51-c39e-485b-83ca-c2f2d12b1eb8";
   const responseRef = "8081f734-5175-492b-b412-b1d88d8e3a7d";
   const spool = {
@@ -1132,17 +1446,44 @@ test("compact run result projections preserve response spool continuation", asyn
   runner = new FakeRunner((request, socket) => runner.respond(socket, request, spool));
   const client = await connect(runner);
   const result = await client.callTool({ name: "loomex_run_result", arguments: { runId } });
-  const data = (result.structuredContent as Record<string, any>).data;
-  assert.deepEqual(data, {
-    ...spool,
-    originatingOperationComplete: true,
-    doNotReplayOriginatingOperation: true,
-    nextAction: { tool: "loomex_response_read", arguments: { responseRef, offset: 0 } },
-  });
+  const structured = result.structuredContent as Record<string, any>;
+  assert.equal(result.isError, true);
+  assert.equal(structured.error.code, "INVALID_RESPONSE");
+  assert.equal(structured.data, undefined);
+  assert.equal(structured.requestId, runner.requests.find(request => request.method === "runs.result")!.id);
   const text = JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
-  assert.equal(text.responseRef, responseRef);
-  assert.deepEqual(text.nextAction, { tool: "loomex_response_read", arguments: { responseRef, offset: 0 } });
+  assert.equal(text.error.code, "INVALID_RESPONSE");
+  assert.equal(text.requestId, structured.requestId);
+  assert.equal(text.responseRef, undefined);
+  assert.equal(runner.requests.filter(request => request.method === "runs.result").length, 1);
+  assert.equal(runner.requests.filter(request => request.method === "responses.read").length, 1);
   assert.equal(result._meta?.["loomex/uiData"], undefined);
+});
+
+test("generated v2 End completion result reaches both model channels without private siblings", async () => {
+  const runId = "5e06cb51-c39e-485b-83ca-c2f2d12b1eb8";
+  const publicResult = { version: 1, summary: "Implemented the requested workflow.",
+    changedFiles: ["backend/apps/workflow_runtime/application/engine.py"],
+    limitations: ["External integration was not exercised."] };
+  const privateSiblings = {
+    requirements: { internalBrief: "private requirement details" },
+    unresolvedRisks: ["private risk details"],
+    validation: [{ path: "$.nodes[0]", status: "passed", details: "private validation details" }],
+  };
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    execution: { id: runId, status: "completed", result: { ...publicResult, ...privateSiblings },
+      input: { confirmationKey: "private-confirmation" } },
+    latestSequence: 7, hasMoreEvents: false, timedOut: false, events: [], details: {},
+  }));
+  const client = await connect(runner);
+  const response = await client.callTool({ name: "loomex_run_result", arguments: { runId } });
+  assert.equal(response.isError, undefined, JSON.stringify(response));
+  for (const projection of [(response.structuredContent as Record<string, any>).data,
+    JSON.parse((response.content as Array<{ text: string }>)[0]!.text)]) {
+    assert.deepEqual(projection.result, publicResult);
+    assert.doesNotMatch(JSON.stringify(projection), /private requirement details|private risk details|private validation details|private-confirmation/);
+  }
 });
 
 test("interaction routing categories are explicit and never accepted on answer submission", async () => {
@@ -1206,7 +1547,7 @@ test("canonical nonnegative paging and wait values are forwarded without hidden 
   });
   const artifact = await client.callTool({
     name: "loomex_artifact_read",
-    arguments: { artifactId, offset: 0, limit: 500_000 },
+    arguments: { artifactId, executionId: runId, offset: 0, limit: 500_000 },
   });
   assert.equal(run.isError, undefined);
   assert.equal(artifact.isError, undefined);
@@ -1331,6 +1672,41 @@ test("MCP Apps resources use the portable bridge and no external network", async
   }
 });
 
+test("artifact read and download require and forward the selected execution identity", async () => {
+  const artifactId = "95ea94d7-a402-4da2-8d3b-088a43a1905e";
+  const executionId = "088c7ed5-2a2f-42c4-af9c-92f2d3243db9";
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => {
+    if (request.params.executionId !== executionId) {
+      runner.error(socket, request, "ARTIFACT_NOT_FOUND", "Artifact not found");
+      return;
+    }
+    runner.respond(socket, request, request.method === "artifacts.read"
+      ? { artifactId, offset: 0, dataBase64: "", nextOffset: null, sizeBytes: 0, checksumSha256: "0".repeat(64) }
+      : { artifactId, path: "/tmp/fixture-artifact", sizeBytes: 0, checksumSha256: "0".repeat(64) });
+  });
+  const client = await connect(runner);
+  for (const name of ["loomex_artifact_read", "loomex_artifact_download"]) {
+    const extra = name.endsWith("download")
+      ? { destinationPath: "/tmp/fixture-artifact", idempotencyKey: "c159321d-a4f0-400e-8934-7599e58e9ff4" } : {};
+    const count = runner.requests.length;
+    const missing = await client.callTool({ name, arguments: { artifactId, ...extra } });
+    assert.equal(missing.isError, true);
+    assert.equal(runner.requests.length, count);
+    const invalid = await client.callTool({ name, arguments: { artifactId, executionId: "invalid", ...extra } });
+    assert.equal(invalid.isError, true);
+    assert.equal(runner.requests.length, count);
+    const valid = await client.callTool({ name, arguments: { artifactId, executionId, ...extra } });
+    assert.equal(valid.isError, undefined);
+    assert.equal(runner.requests.at(-1)?.params.executionId, executionId);
+    const substituted = "ad2901f3-dd06-4cfa-843f-f95dd23b676f";
+    const denied = await client.callTool({ name, arguments: { artifactId, executionId: substituted, ...extra } });
+    assert.equal(denied.isError, true);
+    assert.equal(runner.requests.at(-1)?.params.executionId, substituted);
+    assert.equal((denied.structuredContent as Record<string, any>).error.code, "ARTIFACT_NOT_FOUND");
+  }
+});
+
 test("artifact download advertises its possible overwrite as destructive", async () => {
   let runner!: FakeRunner;
   runner = new FakeRunner((request, socket) => runner.respond(socket, request, {}));
@@ -1353,6 +1729,7 @@ test("state replacement and execution-resuming tools advertise destructive effec
   for (const name of [
     "loomex_organization_select",
     "loomex_workflow_update",
+    "loomex_workflow_patch",
     "loomex_workflow_activate",
     "loomex_builder_commit",
     "loomex_builder_respond",
@@ -1789,4 +2166,243 @@ test("authoring observations and compatibility preparations do not automatically
   }
   assert.ok(TOOL_DEFINITIONS.find(tool => tool.name === "loomex_workflow_view")?.uiUri);
   assert.ok(REQUIRED_RUNNER_CAPABILITIES.includes("workflows.atomic-draft-create/v1"));
+});
+
+
+test("headless Start approval forwards only exact review identifiers and returns the safe handoff", async () => {
+  const args = { preparationId: "558efdf2-88fa-4f18-b9e6-f01c4c8330fc", bindingDigest: "a".repeat(64), idempotencyKey: "013446a2-194b-432b-8caf-a1b59cceec63" };
+  const handoffRef = "404cc12a-c3fb-48bb-aa37-20bb5a1c2fbd";
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request,socket) => runner.respond(socket,request, {
+    schemaVersion: "loomex.run-start-handoff/v2", handoffRef, preparationId: args.preparationId,
+    lifecycle: "approved", approvalObserved: true, nextAction: "commit",
+    result: { privateNestedData: "must-not-enter-model-projection" },
+  }));
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_run_start_handoff_approve_headless", arguments: args });
+  assert.notEqual(result.isError,true);
+  assert.equal((result.structuredContent as any).data.handoffRef,handoffRef);
+  assert.equal((result.structuredContent as any).data.lifecycle,"approved");
+  assert.equal(JSON.parse((result.content as Array<{text: string}>)[0]!.text).handoffRef,handoffRef);
+  assert.deepEqual(runner.requests.map(request => ({ method: request.method, params: request.params })), [{method:"runs.start_handoff.approve_headless",params:args}]);
+  assert.doesNotMatch(JSON.stringify({content:result.content,structuredContent:result.structuredContent}),/confirmationKey|headlessRequest|commitEnvelope|must-not-enter-model-projection/);
+  for (const invalid of [{...args, confirmationKey: args.preparationId}, {...args,bindingDigest:"changed"}, {...args, approved:true}]) {
+    const rejected = await client.callTool({name:"loomex_run_start_handoff_approve_headless",arguments:invalid});
+    assert.equal(rejected.isError,true);
+  }
+  assert.equal(runner.requests.length,1);
+});
+
+
+test("stdio continuation observation drains pages before blocking and later reads the terminal result", async () => {
+  const runId="adc7b3ba-1979-47d2-ac14-638ed91c5f82";
+  const organizationId="dd6244ea-2f21-48bd-a9da-4d2ac161882a";
+  const automation={phase:"observation_lost",retryable:false,code:"WORKFLOW_CONTINUATION_OBSERVATION_LOST",
+    message:"private worker exception",checkpoint:"private checkpoint",deliveryId:"private delivery"};
+  let reads=0;
+  let runner!:FakeRunner;
+  runner=new FakeRunner((request,socket)=> {
+    const base={execution:{id:runId,status:"running",organizationId},waitState:"observation_lost",automation,
+      latestSequence:11,hasMoreEvents:false,events:[],timedOut:false,details:{}};
+    if (request.method==="runs.get" && ++reads===1) {
+      runner.respond(socket,request,{...base,hasMoreEvents:true,events:[{sequence:9}]});
+    } else if (request.method==="runs.events") {
+      runner.respond(socket,request,{...base,events:[{sequence:10},{sequence:11}]});
+    } else runner.respond(socket,request,{...base,execution:{...base.execution,status:"completed"}});
+  });
+  const client=await connect(runner);
+  const page=await client.callTool({name:"loomex_run_get",arguments:{runId}});
+  assert.deepEqual((page.structuredContent as any).data.nextAction,{tool:"loomex_run_events",arguments:{runId,afterSequence:9}});
+  assert.equal((page.structuredContent as any).data.observationIssue,undefined);
+  const drained=await client.callTool({name:"loomex_run_events",arguments:{runId,afterSequence:9}});
+  const summary=(drained.structuredContent as any).data;
+  assert.equal(summary.monitoring.liveFollow.disposition,"observation_blocked");
+  assert.deepEqual(summary.observationIssue,{code:automation.code,
+    message:"This step stopped before its result could be confirmed. Review the run before taking another action."});
+  assert.doesNotMatch(JSON.stringify({content:drained.content,structuredContent:drained.structuredContent}),/private worker|private checkpoint|private delivery|runner stopped/);
+  const terminal=await client.callTool({name:"loomex_run_get",arguments:{runId}});
+  assert.deepEqual((terminal.structuredContent as any).data.nextAction,{tool:"loomex_run_result",arguments:{runId}});
+  const result=await client.callTool({name:"loomex_run_result",arguments:{runId}});
+  assert.equal((result.structuredContent as any).data.monitoring.liveFollow.disposition,"finished");
+  assert.equal((result.structuredContent as any).data.observationIssue,undefined);
+  assert.deepEqual(runner.requests.map(request=>request.method),["runs.get","runs.events","runs.get","runs.result"]);
+});
+
+test("explicit continuation recovery uses a strict public mutation and safe receipt", async () => {
+  const args = { runId: "adc7b3ba-1979-47d2-ac14-638ed91c5f82", deliveryId: "dd6244ea-2f21-48bd-a9da-4d2ac161882a",
+    expectedContinuationDigest: "a".repeat(64), idempotencyKey: "126d1d1f-82f2-437e-a7cd-5eae87bf987a" };
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    executionId: args.runId, deliveryId: args.deliveryId, expectedContinuationDigest: args.expectedContinuationDigest,
+    requeued: true, status: "pending", details: { private: "private checkpoint" },
+  }), { capabilities: [...REQUIRED_RUNNER_CAPABILITIES, "method:runs.continuation.requeue"] });
+  const client = await connect(runner);
+  const tool = (await client.listTools()).tools.find(tool => tool.name === "loomex_run_continuation_requeue")!;
+  assert.equal(tool.annotations?.readOnlyHint, false);
+  assert.equal(tool.annotations?.destructiveHint, false);
+  assert.equal(tool.annotations?.idempotentHint, true);
+  assert.equal(APP_CALLABLE_TOOLS.has(tool.name), false);
+  assert.match(tool.description!, /user explicitly authorizes recovery/);
+  assert.match(tool.description!, /Never invoke automatically/);
+  const receipt = { executionId: args.runId, deliveryId: args.deliveryId,
+    expectedContinuationDigest: args.expectedContinuationDigest, requeued: true, status: "pending" };
+  for (const invalid of [{ ...receipt, executionId: "invalid" }, { ...receipt, deliveryId: "invalid" },
+    { ...receipt, expectedContinuationDigest: "A".repeat(64) }, { ...receipt, requeued: "true" },
+    { ...receipt, status: "completed" }, { ...receipt, checkpoint: "private checkpoint" }]) {
+    assert.equal(resultSchemaFor("runs.continuation.requeue")!.safeParse(invalid).success, false);
+  }
+  for (const invalid of [{ ...args, runId: "invalid" }, { ...args, deliveryId: "invalid" },
+    { ...args, expectedContinuationDigest: "A".repeat(64) }, { ...args, idempotencyKey: "invalid" }, { ...args, checkpoint: "private" }]) {
+    assert.equal((await client.callTool({ name: tool.name, arguments: invalid })).isError, true);
+  }
+  assert.equal(runner.requests.length, 0);
+  const result = await client.callTool({ name: tool.name, arguments: args });
+  const output = (result.structuredContent as any).data;
+  assert.equal(output.status, "pending");
+  assert.deepEqual(output.nextAction, { tool: "loomex_run_get", arguments: { runId: args.runId } });
+  assert.doesNotMatch(JSON.stringify({ content: result.content, data: output }), /private checkpoint/);
+  assert.deepEqual(runner.requests.map(request => ({ method: request.method, params: request.params })),
+    [{ method: "runs.continuation.requeue", params: args }]);
+});
+
+test("continuation recovery retains one exact intent on ambiguity and never automatically retries", async () => {
+  const args = { runId: "adc7b3ba-1979-47d2-ac14-638ed91c5f82", deliveryId: "dd6244ea-2f21-48bd-a9da-4d2ac161882a",
+    expectedContinuationDigest: "a".repeat(64), idempotencyKey: "126d1d1f-82f2-437e-a7cd-5eae87bf987a" };
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => {
+    if (runner.requests.length === 1) socket.destroy();
+    else runner.respond(socket, request, { executionId: args.runId, deliveryId: args.deliveryId,
+      expectedContinuationDigest: args.expectedContinuationDigest, requeued: true, status: "pending" });
+  }, { capabilities: [...REQUIRED_RUNNER_CAPABILITIES, "method:runs.continuation.requeue"] });
+  const client = await connect(runner);
+  const ambiguous = await client.callTool({ name: "loomex_run_continuation_requeue", arguments: args });
+  assert.equal((ambiguous.structuredContent as any).error.code, "NETWORK_AMBIGUOUS");
+  assert.equal((ambiguous.structuredContent as any).idempotencyKey, args.idempotencyKey);
+  assert.equal(runner.requests.length, 1);
+  const reconciled = await client.callTool({ name: "loomex_run_continuation_requeue", arguments: args });
+  assert.equal(reconciled.isError, undefined);
+  assert.equal(runner.requests.length, 2);
+  assert.deepEqual(runner.requests[0]!.params, runner.requests[1]!.params);
+});
+
+test("continuation recovery preserves owner and stale-binding rejection without private details", async () => {
+  const args = { runId: "adc7b3ba-1979-47d2-ac14-638ed91c5f82", deliveryId: "dd6244ea-2f21-48bd-a9da-4d2ac161882a",
+    expectedContinuationDigest: "a".repeat(64), idempotencyKey: "126d1d1f-82f2-437e-a7cd-5eae87bf987a" };
+  for (const code of ["HUMAN_RESUME_RECOVERY_INVALID", "HUMAN_RESUME_RECOVERY_CONFLICT", "IDEMPOTENCY_KEY_CONFLICT", "AUTH_REQUIRED"]) {
+    let runner!: FakeRunner;
+    runner = new FakeRunner((request, socket) => runner.error(socket, request, code, "private backend checkpoint"),
+      { capabilities: [...REQUIRED_RUNNER_CAPABILITIES, "method:runs.continuation.requeue"] });
+    const client = await connect(runner);
+    const result = await client.callTool({ name: "loomex_run_continuation_requeue", arguments: args });
+    assert.equal(result.isError, true);
+    assert.equal((result.structuredContent as any).error.code, code);
+    if (code !== "AUTH_REQUIRED") {
+      assert.equal((result.structuredContent as any).error.outcome, "rejected");
+      assert.equal((result.structuredContent as any).error.recovery,
+        code === "HUMAN_RESUME_RECOVERY_CONFLICT" ? "refresh_authority" : "correct_input");
+    }
+    assert.doesNotMatch(JSON.stringify(result), /private backend checkpoint/);
+    assert.equal(runner.requests.length, 1);
+  }
+});
+
+test("older runner keeps ordinary tools while explicit continuation recovery is unavailable", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {
+    version: "0.3.59", protocol: LOCAL_PROTOCOL, activeJobs: 0, draining: false, updateDeferred: false,
+  }), { capabilities: [...REQUIRED_RUNNER_CAPABILITIES] });
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_run_continuation_requeue", arguments: {
+    runId: "adc7b3ba-1979-47d2-ac14-638ed91c5f82", deliveryId: "dd6244ea-2f21-48bd-a9da-4d2ac161882a",
+    expectedContinuationDigest: "a".repeat(64), idempotencyKey: "126d1d1f-82f2-437e-a7cd-5eae87bf987a",
+  } });
+  assert.equal((result.structuredContent as any).error.code, "COMPATIBILITY_ERROR");
+  assert.equal(runner.requests.length, 0);
+  assert.equal((await client.callTool({ name: "loomex_readiness", arguments: {} })).isError, undefined);
+  assert.deepEqual(runner.requests.map(request => request.method), ["status.get"]);
+});
+
+test("read transport diagnostics distinguish a deadline before action send from a sent unanswered action", async () => {
+  for (const sent of [false, true]) {
+    const runner = new FakeRunner(() => {}, { holdNegotiation: !sent });
+    await withDirectRunner(runner, async () => {
+      try {
+        await new LocalControlClient().call("status.get", {}, { mutating: false, timeoutMs: 25 });
+        assert.fail("expected deadline");
+      } catch (error) {
+        assert.ok(error instanceof LocalControlError);
+        const output = toolErrorOutput("status.get", error);
+        assert.equal(output.error?.code, sent ? "RUNNER_RESPONSE_UNAVAILABLE" : "RUNNER_UNAVAILABLE");
+        assert.equal(output.error?.outcome, sent ? "unknown" : "not_dispatched");
+        assert.equal(output.error?.recovery, sent ? "reconcile_outcome" : "unavailable");
+        assert.equal(error.transportFailure, true);
+      }
+    });
+    assert.equal(runner.requests.length, sent ? 1 : 0);
+    assert.equal(runner.negotiations.length, 1);
+  }
+});
+
+test("a definitive missing workflow read is rejected rather than outcome-uncertain", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) =>
+    runner.error(socket, request, "WORKFLOW_NOT_FOUND", "private backend detail", false));
+  const client = await connect(runner);
+  const result = await client.callTool({
+    name: "loomex_workflow_get",
+    arguments: { workflowId: "ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e" },
+  });
+  assert.equal(result.isError, true);
+  const error = (result.structuredContent as any).error;
+  assert.equal(error.code, "WORKFLOW_NOT_FOUND");
+  assert.equal(error.outcome, "rejected");
+  assert.equal(error.recovery, "refresh_authority");
+  assert.equal(error.retryable, false);
+  assert.equal(runner.requests.length, 1);
+  assert.doesNotMatch(JSON.stringify(result), /private backend detail/);
+});
+
+test("a read's earlier sent observation survives a safe retry that cannot send its action", async () => {
+  const options = { holdNegotiation: false };
+  const runner = new FakeRunner((_request, socket) => { options.holdNegotiation = true; socket.destroy(); }, options);
+  await withDirectRunner(runner, async () => {
+    try {
+      await new LocalControlClient().call("status.get", {}, { mutating: false, timeoutMs: 100 });
+      assert.fail("expected retry deadline");
+    } catch (error) {
+      assert.ok(error instanceof LocalControlError);
+      const output = toolErrorOutput("status.get", error);
+      assert.equal(output.error?.code, "RUNNER_RESPONSE_UNAVAILABLE");
+      assert.equal(output.error?.outcome, "unknown");
+      assert.equal(output.requestId, runner.requests[0]?.id);
+    }
+  });
+  assert.equal(runner.requests.length, 1);
+  assert.equal(runner.negotiations.length, 2);
+});
+
+test("credential-store error envelopes remain categorical and preserve exact mutation intent", async () => {
+  for (const mutating of [false, true]) for (const code of ["STORE_ACCESS_REQUIRED", "STORE_ACCESS_DENIED", "STORE_UNAVAILABLE", "STORE_OPERATION_PENDING"]) {
+    let runner!: FakeRunner;
+    runner = new FakeRunner((request, socket) => runner.error(socket, request, code,
+      "Bearer private-token /private/keychain item ACL errSec private error", false));
+    await withDirectRunner(runner, async () => {
+      const key = "126d1d1f-82f2-437e-a7cd-5eae87bf987a";
+      try {
+        await new LocalControlClient().call(mutating ? "auth.recover" : "status.get", mutating ? { idempotencyKey: key } : {},
+          { mutating, timeoutMs: 500 });
+        assert.fail("expected credential-store error");
+      } catch (error) {
+        assert.ok(error instanceof LocalControlError);
+        const output = toolErrorOutput(mutating ? "auth.recover" : "status.get", error);
+        assert.equal(output.error?.code, code);
+        assert.equal(output.error?.outcome, code === "STORE_OPERATION_PENDING" ? "unknown" : "not_dispatched");
+        assert.equal(output.error?.recovery, code === "STORE_OPERATION_PENDING" ? "reconcile_outcome" : "unavailable");
+        assert.equal(output.idempotencyKey, mutating ? key : undefined);
+        assert.doesNotMatch(JSON.stringify(output), /private-token|private\/keychain|ACL|errSec|private error/);
+      }
+    });
+    assert.equal(runner.requests.length, 1);
+    assert.equal(runner.negotiations.length, 1);
+  }
 });

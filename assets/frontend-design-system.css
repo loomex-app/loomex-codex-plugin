@@ -13,6 +13,7 @@
     --color-gray-300: oklch(87.2% 0.01 258.338);
     --color-gray-400: oklch(70.7% 0.022 261.325);
     --color-gray-500: oklch(55.1% 0.027 264.364);
+    --color-gray-600: oklch(44.6% 0.03 256.802);
     --color-black: #000;
     --color-white: #fff;
     --spacing: 0.25rem;
@@ -1119,6 +1120,117 @@ html[data-locale-font='Vazirmatn'] body {
         background-color: color-mix(in oklab, var(--color-white) 20%, transparent);
       }
     }
+  }
+}
+@layer components {
+  .ui-prompt-content {
+    min-width: 0;
+    display: grid;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+  .ui-rich-text {
+    min-width: 0;
+    color: var(--color-gray-300);
+    font-size: 0.875rem;
+    line-height: 1.65;
+    font-weight: 400;
+    letter-spacing: normal;
+    overflow-wrap: anywhere;
+  }
+  .ui-rich-text > * {
+    margin: 0;
+  }
+  .ui-rich-text > * + * {
+    margin-top: 0.75rem;
+  }
+  .ui-rich-text p, .ui-rich-text li {
+    white-space: pre-wrap;
+  }
+  .ui-rich-text h3 {
+    color: var(--color-white);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    font-weight: 650;
+    letter-spacing: normal;
+  }
+  .ui-rich-text ul, .ui-rich-text ol {
+    padding-inline-start: 1.25rem;
+  }
+  .ui-rich-text ul {
+    list-style-type: disc;
+  }
+  .ui-rich-text ol {
+    list-style-type: decimal;
+  }
+  .ui-rich-text li + li {
+    margin-top: 0.375rem;
+  }
+  .ui-rich-text code, .ui-prompt-original {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+  }
+  .ui-rich-text :not(pre) > code {
+    border-radius: 0.25rem;
+    background: var(--color-sidebar-bg);
+    padding: 0.125rem 0.25rem;
+  }
+  .ui-rich-text pre, .ui-prompt-original {
+    min-width: 0;
+    max-width: 100%;
+    overflow: auto;
+    padding: 0.75rem;
+    border: 1px solid var(--color-line);
+    border-radius: 0.5rem;
+    background: var(--color-sidebar-bg);
+    white-space: pre;
+    overflow-wrap: normal;
+  }
+  .ui-prompt-reading, .ui-prompt-original {
+    max-height: 24rem;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+  .ui-prompt-reading {
+    padding-inline-end: 0.5rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-gray-600) var(--color-card-bg);
+  }
+  .ui-prompt-reading::-webkit-scrollbar {
+    width: 0.5rem;
+    height: 0.5rem;
+  }
+  .ui-prompt-reading::-webkit-scrollbar-thumb {
+    border-radius: 0.25rem;
+    background: var(--color-gray-600);
+  }
+  .ui-prompt-scroll-hint {
+    margin: 0;
+    color: var(--color-gray-400);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    font-weight: 400;
+  }
+  .ui-prompt-source {
+    min-width: 0;
+    font-size: 0.75rem;
+    color: var(--color-gray-400);
+    font-weight: 400;
+  }
+  .ui-prompt-source summary {
+    cursor: pointer;
+    width: fit-content;
+  }
+  .ui-prompt-original {
+    margin: 0.5rem 0 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--color-gray-300);
+    line-height: 1.65;
+  }
+  .ui-prompt-reading:focus-visible, .ui-report-context:focus-visible, .ui-prompt-source summary:focus-visible, .ui-prompt-original:focus-visible {
+    outline: 2px solid var(--color-brand-teal);
+    outline-offset: 2px;
   }
 }
 @property --tw-ordinal {

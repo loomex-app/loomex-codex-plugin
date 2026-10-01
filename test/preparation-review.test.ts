@@ -22,6 +22,7 @@ const CURRENT_VERSION_ID = "a53a026a-dd2f-455b-af4d-18187d15775f";
 const ORGANIZATION_ID = "b138fcf2-58e9-47ae-a1ba-1bc5bf76f763";
 const CHILD_WORKFLOW_ID = "4cd5cc77-c880-48b7-b201-bcc27c3b9038";
 const CHILD_VERSION_ID = "9998863a-c9b5-4709-bce8-de81d95575c9";
+const VIEW_SESSION_ID = "a3d6d5bd-b7dc-4b54-9713-b2d89dd397db";
 const DIGEST = "d".repeat(64);
 
 const binding: PreparationReviewBinding = {
@@ -30,6 +31,7 @@ const binding: PreparationReviewBinding = {
   workflowId: WORKFLOW_ID,
   versionId: VERSION_ID,
   organizationId: ORGANIZATION_ID,
+  workspacePath: "/tmp/workspace",
   providers: [],
   closureWorkflowVersion: 3,
 };
@@ -40,6 +42,7 @@ const displayBinding = {
   workflowId: binding.workflowId,
   versionId: binding.versionId,
   organizationId: binding.organizationId,
+  workspacePath: binding.workspacePath,
 };
 
 function output(method: string, data: Record<string, JsonValue>): ToolOutput {
@@ -205,6 +208,7 @@ test("preparation review resolves exact older-version providers from the bound r
       workflowId: binding.workflowId,
       versionId: binding.versionId,
       organizationId: binding.organizationId,
+      workspacePath: binding.workspacePath,
       workflowClosure,
       inputs: { privateValue: "binding-stays-authoritative" },
       providerConfiguration: { installed: { codex: { checksumSha256: "do-not-display" } } },
@@ -324,6 +328,7 @@ test("closure projection distinguishes verified no-agent graphs from unavailable
         workflowId: WORKFLOW_ID,
         versionId: VERSION_ID,
         organizationId: ORGANIZATION_ID,
+        workspacePath: binding.workspacePath,
         ...(workflowClosure === undefined ? {} : { workflowClosure }),
       },
     });
@@ -392,6 +397,7 @@ test("workflow read failures leave the successful prepare binding unchanged", as
       workflowId: WORKFLOW_ID,
       versionId: VERSION_ID,
       organizationId: ORGANIZATION_ID,
+      workspacePath: binding.workspacePath,
       workflowClosure: completeClosure(),
       retained: { nested: true },
     },
@@ -415,6 +421,7 @@ test("normal, failed, and incomplete calls are not eligible for preparation enri
       workflowId: WORKFLOW_ID,
       versionId: VERSION_ID,
       organizationId: ORGANIZATION_ID,
+      workspacePath: binding.workspacePath,
     },
   });
   assert.equal(preparationReviewBinding("workflows.get", complete), undefined);
@@ -482,6 +489,12 @@ test("MCP attaches review metadata only to a successful preparation result", asy
         updateDeferred: false,
       });
     }
+    if (method === "presentation.sessions.create") {
+      return output(method, {
+        viewSessionId: VIEW_SESSION_ID, kind: "prepare", entityType: "preparation",
+        entityId: binding.preparationId, revision: 0, state: {}, status: "active",
+      });
+    }
     throw new Error(`Unexpected method ${method}`);
   });
   const server = createServer(client);
@@ -519,6 +532,14 @@ test("MCP attaches review metadata only to a successful preparation result", asy
     organizationName: "Acme",
     providers: [{ name: "codex", model: "gpt-5.6-sol" }],
   });
+  const compact = (result.structuredContent as {data: Record<string, unknown>}).data;
+  assert.equal(compact.confirmationKey, undefined);
+  assert.equal(JSON.stringify(result.structuredContent).includes("d09cb0b2-91fd-4289-ae8c-380c2fcb5541"), false);
+  assert.equal(JSON.stringify(result.content).includes("d09cb0b2-91fd-4289-ae8c-380c2fcb5541"), false);
+  assert.equal(compact.bindingDigest, binding.bindingDigest);
+  assert.equal(compact.viewSessionId, VIEW_SESSION_ID);
+  assert.equal((compact.binding as Record<string, unknown>).versionId, VERSION_ID);
+  assert.equal(JSON.stringify(compact).includes("workflowClosure"), false);
 
   client.calls.length = 0;
   const readiness = await mcpClient.callTool({ name: "loomex_readiness", arguments: {} });
@@ -528,7 +549,107 @@ test("MCP attaches review metadata only to a successful preparation result", asy
 
 
 test("valid restored preparations rebuild review metadata without preparing again", () => {
-  const preparation = {preparationId:binding.preparationId,bindingDigest:binding.bindingDigest,binding:{workflowId:WORKFLOW_ID,versionId:VERSION_ID,organizationId:ORGANIZATION_ID}};
-  assert.equal(preparationReviewBinding("preparations.get",output("preparations.get",{status:"valid",operation:"runs.prepare",preparation}))?.preparationId,binding.preparationId);
+  const preparation = {preparationId:binding.preparationId,bindingDigest:binding.bindingDigest,binding:{workflowId:WORKFLOW_ID,versionId:VERSION_ID,organizationId:ORGANIZATION_ID,workspacePath:binding.workspacePath}};
+  assert.equal(preparationReviewBinding("preparations.get",output("preparations.get",{status:"valid",operation:"runs.prepare",preparation}))?.workspacePath,binding.workspacePath);
   assert.equal(preparationReviewBinding("preparations.get",output("preparations.get",{status:"stale",operation:"runs.prepare",preparation})),undefined);
+  for (const workspacePath of [undefined, null, 4, "relative/workspace", " "]) {
+    assert.equal(preparationReviewBinding("preparations.get", output("preparations.get", {
+      status: "valid", operation: "runs.prepare", workspacePath: "/decoy",
+      preparation: { ...preparation, binding: {
+        workflowId: WORKFLOW_ID, versionId: VERSION_ID, organizationId: ORGANIZATION_ID,
+        ...(workspacePath === undefined ? {} : {workspacePath}),
+      } },
+    })), undefined);
+  }
+});
+
+test("bounded runner closure reviews retain version and provider detail for presentation", () => {
+  const projected = preparationReviewBinding("preparations.get", output("preparations.get", {
+    status: "valid", operation: "runs.prepare", preparation: {
+      preparationId: binding.preparationId, bindingDigest: binding.bindingDigest,
+      binding: {
+        workflowId: WORKFLOW_ID, versionId: VERSION_ID, organizationId: ORGANIZATION_ID,
+        workspacePath: binding.workspacePath,
+        workflowClosureReview: {
+          rootVersion: 3, providers: [{ name: "codex", model: "gpt-5.6-sol" }],
+          providerCount: 1, providersTruncated: false,
+        },
+      },
+    },
+  }));
+  assert.equal(projected?.closureWorkflowVersion, 3);
+  assert.deepEqual(projected?.providers, [{ name: "codex", model: "gpt-5.6-sol" }]);
+});
+
+test("stale preparation keeps its exact recovery action in bounded model output", async (t) => {
+  const client = new StubClient((method) => {
+    assert.equal(method, "preparations.get");
+    return output(method, {
+      status: "stale", operation: "runs.prepare", preparationId: binding.preparationId,
+      reason: "commit_started", nextAction: "reconcile_operation", executionId: WORKFLOW_ID,
+    });
+  });
+  const server = createServer(client);
+  const mcpClient = new Client({ name: "preparation-review-test", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await mcpClient.connect(clientTransport);
+  t.after(async () => { await mcpClient.close(); await server.close(); });
+  const result = await mcpClient.callTool({ name: "loomex_preparation_get", arguments: { preparationId: binding.preparationId } });
+  const projected = (result.structuredContent as {data: Record<string, unknown>}).data;
+  assert.equal(projected.reason, "commit_started");
+  assert.equal(projected.nextAction, "reconcile_operation");
+  assert.equal(projected.executionId, WORKFLOW_ID);
+  assert.equal(client.calls.length, 1);
+});
+
+test("restored preparation text and review metadata use only the exact bound workspace", async (t) => {
+  const prepared = {
+    preparationId: binding.preparationId,
+    bindingDigest: binding.bindingDigest,
+    confirmationKey: "d09cb0b2-91fd-4289-ae8c-380c2fcb5541",
+    limits: {},
+    expiresAt: null,
+    binding: {
+      workflowId: WORKFLOW_ID,
+      versionId: VERSION_ID,
+      organizationId: ORGANIZATION_ID,
+      workspacePath: binding.workspacePath,
+      executionPolicy: "host_user/v1",
+      inputs: { secretNote: "private-input", workspacePath: "/decoy" },
+      providerConfiguration: {},
+      workflowClosureReview: { rootVersion: 3, providers: [], providerCount: 0, providersTruncated: false },
+    },
+  };
+  const client = new StubClient((method) => {
+    if (method === "preparations.get") return output(method, {status:"valid",operation:"runs.prepare",preparation:prepared});
+    if (method === "workflows.get") return output(method, workflowData({selectedVersionId:VERSION_ID,selectedVersionNumber:3,selectedDefinition:{nodes:[]}}));
+    if (method === "organizations.list") return output(method, {organizations:[{id:ORGANIZATION_ID,name:"Acme"}]});
+    throw new Error(`Unexpected method ${method}`);
+  });
+  const server = createServer(client);
+  const mcpClient = new Client({name:"preparation-review-test",version:"1.0.0"});
+  const [clientTransport,serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await mcpClient.connect(clientTransport);
+  t.after(async () => {await mcpClient.close();await server.close();});
+
+  const result = await mcpClient.callTool({name:"loomex_preparation_get",arguments:{preparationId:binding.preparationId}});
+  assert.ok(result._meta?.["loomex/preparationReview"], JSON.stringify(result));
+  assert.equal((result._meta?.["loomex/preparationReview"] as {workspacePath:string}).workspacePath,binding.workspacePath);
+  const text = JSON.parse(((result.content as Array<{text:string}>)[0]!).text);
+  assert.equal(text.preparationReview.workspacePath,binding.workspacePath);
+  assert.equal(text.preparationReview.workflowId,WORKFLOW_ID);
+  assert.equal(text.confirmationKey,undefined);
+  assert.equal(JSON.stringify(result.structuredContent).includes(prepared.confirmationKey),false);
+  assert.equal(JSON.stringify(result.content).includes(prepared.confirmationKey),false);
+  assert.equal((result._meta?.["loomex/uiData"] as ToolOutput).data?.preparation &&
+    ((result._meta?.["loomex/uiData"] as ToolOutput).data?.preparation as Record<string, JsonValue>).confirmationKey,
+    prepared.confirmationKey);
+  assert.equal(text.bindingDigest,binding.bindingDigest);
+  assert.deepEqual(text.binding.inputs,{count:2,names:["secretNote","workspacePath"],valuesOmitted:true});
+  assert.equal(JSON.stringify(text).includes("/decoy"),false);
+  assert.equal(JSON.stringify(text).includes("private-input"),false);
+  assert.equal(JSON.stringify(text).includes("workflowClosureReview"),false);
+  assert.equal(client.calls.every((call)=>call.options.mutating===false),true);
 });

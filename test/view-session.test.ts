@@ -24,8 +24,23 @@ test("wrong-bound view stores preserve a machine-readable recovery error",async(
  const definition=TOOL_DEFINITIONS.find(item=>item.name === "loomex_workflow_view")!;
  const client={async call(){return ok({viewSessionId:id,kind:"authoring",entityType:"workflow",entityId:id})}};
  assert.deepEqual(await viewSessionMeta(client,definition,{workflowId:workflow,viewSessionId:id},ok({workflow:{id:workflow}})),{"loomex/viewPersistence":{
-   status:"unavailable", code:"VIEW_SESSION_BINDING_MISMATCH", message:"The saved view belongs to a different Loomex card.", retryable:false,
+   status:"unavailable", code:"VIEW_SESSION_BINDING_MISMATCH", message:"The saved view belongs to a different Loomex card and cannot be used here.", retryable:false,
  }});
+});
+
+test("reopening setup with a preparation view rejects its binding and preserves its unresolved operation",async()=>{
+ const definition=TOOL_DEFINITIONS.find(item=>item.name === "loomex_run_setup")!;
+ const operation={operationId:workflow,status:"ambiguous",method:"runs.commit",params:{preparationId:id},idempotencyKey:workflow};
+ const session={viewSessionId:id,kind:"prepare",entityType:"preparation",entityId:id,revision:3,state:{preparationId:id},operation};
+ const before=structuredClone(session);
+ const calls:any[]=[];
+ const client={async call(method:any,params:any){calls.push({method,params});return ok(session)}};
+ const result=await viewSessionMeta(client,definition,{workflowId:workflow,viewSessionId:id},ok({workflow:{id:workflow}}));
+ assert.deepEqual(result,{"loomex/viewPersistence":{
+   status:"unavailable",code:"VIEW_SESSION_BINDING_MISMATCH",message:"The saved view belongs to a different Loomex card and cannot be used here.",retryable:false,
+ }});
+ assert.deepEqual(calls,[{method:"presentation.sessions.restore",params:{viewSessionId:id}}]);
+ assert.deepEqual(session,before,"a mismatched reopen cannot replace or settle the saved card or its exact pending operation");
 });
 
 test("missing sessions become a safe re-entry without creating a replacement",async()=>{

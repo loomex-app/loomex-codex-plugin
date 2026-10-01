@@ -326,7 +326,7 @@ export function createRunMonitorController(host:RunMonitorServices) {
     primary.hidden = true;
     secondary.hidden = true;
     context.className = "ui-stack";
-    context.replaceChildren();
+    if (!renderHumanPresentation(request, request.inputSpec)) context.replaceChildren();
     if (humanRequestResolved(request)) context.append(submittedAnswerReview(request));
     context.hidden = false;
     summary.classList.remove("error");

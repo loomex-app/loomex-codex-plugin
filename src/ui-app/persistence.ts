@@ -373,6 +373,11 @@ export class PresentationConflictError extends Error implements PersistenceError
   }
 }
 
+export type SavedViewPreparation<State extends JsonObject> = Readonly<{
+  viewSessionId: string; changeVersion: number; hydrationToken: number;
+  projection: ViewSessionProjection<State>;
+}>;
+
 /**
  * Serializes a view session's local presentation state. The server projection
  * remains authoritative; an ambiguous save keeps its exact idempotency tuple.
@@ -388,10 +393,12 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
   #writePromise: Promise<boolean> | undefined;
   #hydrationToken = 0;
   #sessionEpoch = 0;
+  #acceptedSessionId: string | undefined;
   /** Last server-acknowledged presentation projection. Kept only to avoid
    * re-writing an unchanged card immediately before an authoritative action. */
   #savedState: State | undefined;
   #savedStatus: string | undefined;
+  #savedBinding: ReturnType<typeof projectionBinding> | undefined;
 
   session: ViewSessionIdentity | null = null;
   pendingState: State | undefined;
@@ -412,6 +419,38 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
 
   dirty(): boolean {
     return this.changeVersion > this.savedVersion || this.attempt !== null || this.#writePromise !== undefined;
+  }
+
+  /** Stop this accepted request's presentation writes without dropping its
+   * identity, operation journal, or independently persisted chat delivery. */
+  quiesceAcceptedSession(viewSessionId: string): number | null {
+    if (this.session?.viewSessionId !== viewSessionId) return null;
+    if (this.#acceptedSessionId === viewSessionId) return this.#sessionEpoch;
+    this.#acceptedSessionId = viewSessionId;
+    this.#clearTimer();
+    this.#sessionEpoch += 1;
+    this.#hydrationToken += 1;
+    this.#writePromise = undefined;
+    this.pendingState = undefined;
+    this.pendingOptions = undefined;
+    this.attempt = null;
+    this.conflict = null;
+    this.changeVersion = this.savedVersion;
+    return this.#sessionEpoch;
+  }
+
+  acceptedSession(viewSessionId: string): boolean {
+    return this.session?.viewSessionId === viewSessionId && this.#acceptedSessionId === viewSessionId;
+  }
+
+  /** Only a fresh owner-checked request projection may advance the frozen view. */
+  adoptResolvedSession(projection: ViewSessionProjection<State>, epoch: number): boolean {
+    if (this.#acceptedSessionId !== projection.viewSessionId || this.#sessionEpoch !== epoch ||
+        this.session?.viewSessionId !== projection.viewSessionId || !validProjection(projection, projection.viewSessionId) ||
+        projection.status !== "resolved" || projection.revision < this.session.revision) return false;
+    this.#setRevision(projection.revision);
+    this.#rememberProjection(projection);
+    return true;
   }
 
   configure(session: ViewSessionIdentity | ViewSessionProjection<State>): boolean {
@@ -445,6 +484,8 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
     this.conflict = null;
     this.#savedState = undefined;
     this.#savedStatus = undefined;
+    this.#savedBinding = undefined;
+    this.#acceptedSessionId = undefined;
   }
 
   async hydrate(): Promise<ViewSessionProjection<State> | null> {
@@ -508,7 +549,7 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
   }
 
   markDirty(state: State): void {
-    if (this.session === null) return;
+    if (this.session === null || this.#acceptedSessionId === this.session.viewSessionId) return;
     // Input/change handlers can report the same DOM state more than once.
     // Treat an already acknowledged value as a no-op instead of manufacturing
     // a revision race with an upcoming response mutation.
@@ -527,8 +568,8 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
     this.#timer = setTimeout(() => { void this.flush(); }, this.#debounceMs);
   }
 
-  async flush(state?: State): Promise<boolean> {
-    return this.#flush(state);
+  async flush(state?: State, consequential = false): Promise<boolean> {
+    return this.#flush(state, undefined, false, consequential);
   }
 
   /** Queues one durable status transition behind any pending presentation write. */
@@ -537,8 +578,12 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
     return this.#flush(state, { status }, true);
   }
 
-  async #flush(state?: State, options?: PersistenceWriteOptions, coalesce = false): Promise<boolean> {
+  async #flush(state?: State, options?: PersistenceWriteOptions, coalesce = false, consequential = false): Promise<boolean> {
     if (this.session === null) return true;
+    if (this.#acceptedSessionId === this.session.viewSessionId) return false;
+    const cleanSnapshot = consequential && !this.dirty() && this.#savedState !== undefined
+      ? { state: clone(this.#savedState), status: this.#savedStatus, binding: clone(this.#savedBinding) }
+      : undefined;
     if (state !== undefined) {
       const copiedState = clone(state);
       const copiedOptions = clone(options);
@@ -555,7 +600,7 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
       return false;
     }
     if (this.#writePromise !== undefined) return this.#writePromise;
-    if (this.savedVersion === this.changeVersion) {
+    if (this.savedVersion === this.changeVersion && !cleanSnapshot) {
       this.#onStatus("saved");
       return true;
     }
@@ -563,7 +608,34 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
     const epoch = this.#sessionEpoch;
     const current = (): boolean => this.session?.viewSessionId === id && this.#sessionEpoch === epoch;
     this.#onStatus("saving");
-    const task = this.#drain(id, current);
+    const version = this.changeVersion;
+    const task = (async () => {
+      // A clean card may have been superseded by an identical presentation
+      // save from another mount. Re-read before generating a write tuple; a
+      // changed snapshot or operation still requires explicit reconciliation.
+      if (cleanSnapshot) {
+        try {
+          const projection = await this.#read(id);
+          if (!current()) return false;
+          if (this.changeVersion !== version) { this.#onStatus("dirty"); return false; }
+          if (!validProjection(projection, id) || projection.revision < this.session!.revision) {
+            throw new Error("The saved view could not be verified before saving.");
+          }
+          if (!equal(projection.state, cleanSnapshot.state) || projection.status !== cleanSnapshot.status ||
+              !equal(projectionBinding(projection), cleanSnapshot.binding) ||
+              (projection.operation && projection.operation.status !== "completed")) {
+            this.#reportConflict();
+            return false;
+          }
+          this.#setRevision(projection.revision);
+        } catch (error) {
+          if (current()) this.#onStatus("load_failed", persistenceError(error));
+          return false;
+        }
+      }
+      if (this.savedVersion === this.changeVersion) { this.#onStatus("saved"); return true; }
+      return this.#drain(id, current);
+    })();
     this.#writePromise = task;
     try {
       return await task;
@@ -578,7 +650,7 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
     return true;
   }
 
-  async useSavedVersion(): Promise<ViewSessionProjection<State> | null> {
+  async prepareSavedVersion(): Promise<SavedViewPreparation<State> | null> {
     if (this.session === null) return null;
     this.#clearTimer();
     if (this.#writePromise !== undefined) await this.#writePromise;
@@ -588,21 +660,45 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
     try {
       const projection = await this.#read(id);
       if (token !== this.#hydrationToken || this.session?.viewSessionId !== id || this.changeVersion !== generation) return null;
-      if (!validProjection(projection, id)) throw new Error("The saved view state could not be verified.");
-      this.#setRevision(projection.revision);
-      this.attempt = null;
-      this.conflict = null;
-      this.pendingState = undefined;
-      this.pendingOptions = undefined;
-      this.changeVersion = 0;
-      this.savedVersion = 0;
-      this.#rememberProjection(projection);
-      this.#onStatus("saved");
-      return clone(projection);
+      if (!validProjection(projection, id) || projection.revision < this.session.revision) {
+        throw new Error("The saved view state could not be verified.");
+      }
+      const attempt = this.attempt;
+      if (attempt && !CONFLICT_CODES.has(attempt.error?.code ?? "") &&
+          !(projection.revision > attempt.expectedRevision && equal(projection.state, attempt.state) &&
+            (!attempt.options?.status || projection.status === attempt.options.status))) {
+        throw new Error("The pending view save could not be reconciled with the saved version.");
+      }
+      return { viewSessionId: id, changeVersion: generation, hydrationToken: token, projection: clone(projection) };
     } catch (error: unknown) {
       this.#onStatus("load_failed", persistenceError(error));
       return null;
     }
+  }
+
+  canAdoptSavedVersion(prepared: SavedViewPreparation<State>): boolean {
+    return this.session?.viewSessionId === prepared.viewSessionId && this.changeVersion === prepared.changeVersion
+      && this.#hydrationToken === prepared.hydrationToken && this.#writePromise === undefined;
+  }
+
+  adoptSavedVersion(prepared: SavedViewPreparation<State>): ViewSessionProjection<State> | null {
+    if (!this.canAdoptSavedVersion(prepared)) return null;
+    const projection = prepared.projection;
+    this.#setRevision(projection.revision);
+    this.attempt = null;
+    this.conflict = null;
+    this.pendingState = undefined;
+    this.pendingOptions = undefined;
+    this.changeVersion = 0;
+    this.savedVersion = 0;
+    this.#rememberProjection(projection);
+    this.#onStatus("saved");
+    return clone(projection);
+  }
+
+  async useSavedVersion(): Promise<ViewSessionProjection<State> | null> {
+    const prepared = await this.prepareSavedVersion();
+    return prepared ? this.adoptSavedVersion(prepared) : null;
   }
 
   /** Explicit conflict resolution; never drops or replaces an ambiguous attempt. */
@@ -681,6 +777,8 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
     this.conflict = null;
     this.#savedState = undefined;
     this.#savedStatus = undefined;
+    this.#savedBinding = undefined;
+    this.#acceptedSessionId = undefined;
   }
 
   #clearTimer(): void {
@@ -713,6 +811,7 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
     if (!isProjection(projection)) return;
     this.#savedState = clone(projection.state);
     this.#savedStatus = typeof projection.status === "string" ? projection.status : undefined;
+    this.#savedBinding = projectionBinding(projection);
   }
 }
 
@@ -727,6 +826,11 @@ function validIdentity(value: ViewSessionIdentity): boolean {
 
 function validProjection<State extends JsonObject>(value: ViewSessionProjection<State> | null | undefined, id: string): value is ViewSessionProjection<State> {
   return value !== null && value !== undefined && value.viewSessionId === id && validIdentity(value);
+}
+
+function projectionBinding(value: ViewSessionProjection) {
+  const source = value as ViewSessionProjection & Partial<Record<"kind" | "entityType" | "entityId", unknown>>;
+  return { kind: source.kind, entityType: source.entityType, entityId: source.entityId };
 }
 
 function isProjection<State extends JsonObject>(value: ViewSessionIdentity | ViewSessionProjection<State>): value is ViewSessionProjection<State> & { state: State } {

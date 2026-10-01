@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 
 import {
   REQUIRED_RUNNER_CAPABILITIES,
+  OPTIONAL_RUNNER_METHODS,
   TOOL_DEFINITIONS,
   type ToolDefinition,
 } from "./tool-catalog.js";
@@ -247,13 +248,15 @@ export function validateToolMappings(methods: readonly RunnerCatalogMethod[]): v
     }
   }
   const methodCapabilities = new Set(REQUIRED_RUNNER_CAPABILITIES.filter((capability) => capability.startsWith("method:")));
-  const expectedMethodCapabilities = new Set(TOOL_DEFINITIONS.map((definition) => `method:${definition.rpcMethod}`));
+  const expectedMethodCapabilities = new Set(TOOL_DEFINITIONS.filter((definition) => definition.optionalRunnerMethod !== true).map((definition) => `method:${definition.rpcMethod}`));
   if (methodCapabilities.size !== expectedMethodCapabilities.size ||
       [...methodCapabilities].some((capability) => !expectedMethodCapabilities.has(capability))) {
     fail("runner method capabilities differ from the public tool mapping");
   }
   for (const definition of TOOL_DEFINITIONS) {
-    if (!methodCapabilities.has(`method:${definition.rpcMethod}`)) fail(`${definition.name} lacks a required runner method capability`);
+    if (!methodCapabilities.has(`method:${definition.rpcMethod}`) && !OPTIONAL_RUNNER_METHODS.has(definition.rpcMethod)) {
+      fail(`${definition.name} lacks a negotiated runner method capability`);
+    }
   }
 }
 

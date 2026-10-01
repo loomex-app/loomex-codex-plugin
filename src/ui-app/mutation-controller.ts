@@ -166,6 +166,8 @@ export interface MutationPresentation {
    * mutation is safe to journal, so callers must await the returned promise.
    */
   acceptTargetSession(target: MutationSessionProjection): void | Promise<void>;
+  /** An exact accepted request retires its presentation revision at the runner. */
+  acceptInteraction?(requestId: string, viewSessionId: string): void;
 }
 
 export interface MutationControllerServices {
@@ -716,6 +718,7 @@ export class MutationController {
         "The runner did not confirm the exact request as accepted. The reviewed response remains locked. Refresh to reconcile, or retry that exact response and operation ID.");
       return { result, accepted: false, operation, ambiguous: true };
     }
+    if (operation.viewSessionId) this.#services.presentation.acceptInteraction?.(resolution.acceptedInteraction.requestId, operation.viewSessionId);
     await this.settle(operation, "completed", result);
     await this.transitionAfterSuccess(operation);
     this.clearOperation(operation);
@@ -761,6 +764,7 @@ export class MutationController {
     const incoming = this.#services.dataOf(result);
     const resolution = this.#reconciledInteraction(owned, incoming, authoritativeData);
     if (resolution !== undefined || this.operationReconciled(owned, incoming, authoritativeData)) {
+      if (resolution !== undefined && owned.viewSessionId) this.#services.presentation.acceptInteraction?.(resolution.acceptedInteraction.requestId, owned.viewSessionId);
       await this.settle(owned, "completed", result);
       await this.transitionAfterSuccess(owned);
       this.clearOperation(owned);
