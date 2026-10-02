@@ -1,5 +1,6 @@
 import { PERSONA_RESULTS, PERSONA_CONTEXT_REFERENCE } from "./persona-contracts.js";
 import { z } from "zod";
+import { FingerprintDiagnosticsSchema } from "./runner-diagnostics.js";
 
 import { JsonValueSchema, type JsonValue } from "./protocol.js";
 
@@ -190,6 +191,7 @@ const primarySchemas = {
       activeJobs: NonNegativeInteger,
       draining: z.boolean(),
       updateDeferred: z.boolean(),
+      fingerprint: FingerprintDiagnosticsSchema.optional(),
       details: Details,
     })
     .strict(),

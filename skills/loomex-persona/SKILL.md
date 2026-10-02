@@ -6,6 +6,7 @@ description: Choose and use an active Loomex AI Persona in the current native ch
 # Use a Loomex AI Persona
 
 Read [tool availability and authority guidance](references/common.md) before using tools.
+Read [the shared visual delivery contract](references/visual-delivery.md) when requesting the Persona picker.
 
 Keep the current host model and chat. Open `loomex_personas_view` once for the user's selection, preserving their search or exact role UUID. Reopen its returned `viewSessionId` when requested. Do not duplicate the card's list in chat. Headless discovery uses `loomex_persona_roles_list`, `loomex_persona_role_get`, `loomex_personas_list` and `loomex_persona_get`; resolve ambiguity with the user and select by UUID, never by a guessed name or key. Only active Persons with an active role are selectable. Search and pagination are reads and create no contexts.
 

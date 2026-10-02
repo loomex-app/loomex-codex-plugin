@@ -22,6 +22,7 @@ const VISUAL_TOOL_PAIRS = [
   ["loomex_runs_view", "loomex_runs_list"],
   ["loomex_run_view", "loomex_run_get"],
   ["loomex_interaction_view", "loomex_interaction_get"],
+  ["loomex_personas_view", "loomex_personas_list"],
 ] as const;
 
 interface PackagedFile {
@@ -314,7 +315,8 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     const common = await readFile(join(skillsRoot, "loomex-browse/references/common.md"), "utf8");
     assert.match(common, /visual-delivery\.md/);
 
-    for (const skillName of VISUAL_SKILL_NAMES) {
+    for (const skillName of [...VISUAL_SKILL_NAMES, "loomex-persona"]) {
+      assert.equal(await readFile(join(skillsRoot, skillName, "references/visual-delivery.md"), "utf8"), contract, `${skillName}: shared visual guidance drifted`);
       const sourcePath = join(skillsRoot, skillName, "SKILL.md");
       const source = await readFile(sourcePath, "utf8");
       assert.ok(
@@ -345,5 +347,15 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(contract, /must not\s+replay a mutation/i);
     assert.match(contract, /one exact card|single card/i);
     assert.match(contract, /do not establish that a real Codex host rendered/i);
+    assert.match(contract, /successful call means the card was requested/);
+    assert.match(contract, /Missing render\s+acknowledgements do not establish incompatibility/);
+    assert.doesNotMatch(contract, /state that native rendering was not observed/);
+    assert.match(contract, /collect exact user answers and review/);
+    assert.match(contract, /preserving all\s+other namespace entries and enabled settings/);
+    const typed = await readFile(join(skillsRoot, "loomex-runs/references/interactions.md"), "utf8");
+    assert.match(typed, /user explicitly chooses headless answers/);
+    assert.match(typed, /Read every typed question, exact choice IDs\/labels and complete response schema/);
+    assert.match(typed, /fresh `loomex_interaction_get` for chat or explicitly headless UI answers/);
+    assert.match(typed, /Never replay an accepted answer/);
   });
 });

@@ -11,6 +11,7 @@ mkdir -p "$payload/plugin/.codex-plugin" "$payload/plugin/dist" "$payload/plugin
 cp "$repo/.codex-plugin/plugin.json" "$payload/plugin/.codex-plugin/plugin.json"
 cp "$repo/package.json" "$payload/plugin/package.json"
 cp -R "$repo/contracts" "$payload/plugin/contracts"
+cp -R "$repo/licenses" "$payload/plugin/licenses"
 rm -rf "$payload/plugin/skills"
 cp -R "$repo/skills" "$payload/plugin/skills"
 # The upgrade fixture uses two fixed synthetic versions, independent of the release under test.

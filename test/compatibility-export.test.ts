@@ -82,6 +82,24 @@ test("component export rejects stale skill tools and hook entrypoints", async ()
   assert.throws(() => validateSkillAndHookReferences({ ...layout, hooks: invalidHooks }), /lifecycle adapter/);
 });
 
+test("runner wire digest orders mixed-case schema keys exactly like the canonical runner export", async () => {
+  const catalog = JSON.parse(await readFile("contracts/method-catalog.json", "utf8"));
+  const status = catalog.methods.find((method: { name: string }) => method.name === "status.get");
+  assert.equal(runnerOutputSchemaDigest(status.outputSchema), "d6f3e03db2aa71d2bbeb3811989d39751ddfc72c7e6b4d9810710078a1d6f351");
+});
+
+test("runner wire digest matches actual Python canonical ordering for Unicode and numeric property keys", async (t) => {
+  const fixtures = [
+    { name: "Unicode code points", schema: { type: "object", properties: { "\uE000": { type: "string" }, "\u{10000}": { type: "null" } } } },
+    { name: "numeric property names", schema: { type: "object", properties: { "2": { type: "null" }, "10": { type: "string" } } } },
+  ];
+  const python = "import importlib.util,json,sys; spec=importlib.util.spec_from_file_location('runner_contract',sys.argv[1]); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); print(module.digest(json.loads(sys.argv[2])))";
+  for (const fixture of fixtures) await t.test(fixture.name, async () => {
+    const { stdout } = await execFile("python3", ["-c", python, "../runner/scripts/export-compatibility.py", JSON.stringify(fixture.schema)]);
+    assert.equal(runnerOutputSchemaDigest(fixture.schema), stdout.trim().replace(/^sha256:/, ""));
+  });
+});
+
 test("tool mapping validation fences mapped field schema drift", async () => {
   const runnerCatalog = JSON.parse(await readFile("contracts/method-catalog.json", "utf8")) as {
     methods: Array<{ name: string; mutating: boolean; appOnly: boolean; inputSchema: { properties: Record<string, unknown> }; outputSchema: unknown }>;

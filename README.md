@@ -65,3 +65,5 @@ an authorized host observation.
 
 
 Custom views consume the frontend design system through a pinned, compiled CSS artifact. The shared renderer inlines it offline for every MCP resource. See [design-system.md](docs/design-system.md) for canonical sources, sync/check commands, dark-mode behavior and accessibility adaptations.
+
+Read-only installed checks are available through `scripts/lifecycle.sh diagnostics`; see [diagnostics and host routing](docs/diagnostics.md).

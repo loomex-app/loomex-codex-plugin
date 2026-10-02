@@ -66,7 +66,7 @@ export class LocalControlError extends Error {
   }
 }
 
-function socketPath(): string {
+export function socketPath(): string {
   const configuredStateDir = process.env.LOOMEX_STATE_DIR;
   const stateDir =
     configuredStateDir ?? join(homedir(), ".local", "share", "loomex", "runner");
@@ -76,7 +76,7 @@ function socketPath(): string {
   return join(stateDir, "control.sock");
 }
 
-async function assertOwnerCheckedSocket(path: string): Promise<void> {
+export async function assertOwnerCheckedSocket(path: string): Promise<void> {
   const effectiveUid = process.geteuid?.();
   if (effectiveUid === undefined) {
     throw new LocalControlError({ code: "RUNNER_UNAVAILABLE" });
@@ -248,7 +248,7 @@ export class LocalControlClient {
       params,
     });
     const negotiationFrame = `${JSON.stringify(negotiation)}\n`;
-    const requestFrame = `${JSON.stringify(request)}\n`;
+    let requestFrame = `${JSON.stringify(request)}\n`;
     if (
       Buffer.byteLength(negotiationFrame) > MAX_FRAME_BYTES ||
       Buffer.byteLength(requestFrame) > MAX_FRAME_BYTES
@@ -407,6 +407,14 @@ export class LocalControlClient {
             if (received.byteLength > 0) {
               failNonDefinitiveResponse("INVALID_RESPONSE");
               return;
+            }
+            // Internal operator diagnostics is additive. Ordinary readiness stays
+            // {}, and an older daemon never receives an unsupported opt-in field.
+            if (method === "status.get" && params.includeFingerprintDiagnostics === true &&
+                !capabilities?.has("diagnostics.fingerprint/v1")) {
+              const legacyParams = { ...params };
+              delete legacyParams.includeFingerprintDiagnostics;
+              requestFrame = `${JSON.stringify({ ...request, params: legacyParams })}\n`;
             }
             phase = "action";
             actionSent = true;

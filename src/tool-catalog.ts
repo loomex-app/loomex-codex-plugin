@@ -315,6 +315,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     name: "loomex_readiness",
     rpcMethod: "status.get",
+    omittedRunnerInputKeys: ["includeFingerprintDiagnostics"],
     title: "Check Loomex readiness",
     description:
       "Check local runner liveness, protocol version, drain state, and active-job count without returning credentials. Use the focused auth, organization, workspace, and builder catalog tools for their separate readiness checks.",
@@ -998,7 +999,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_interaction_get",
     rpcMethod: "interactions.get",
     title: "Get Loomex interaction",
-    description: "Read this interaction and its authoritative run identity and complete typed answer schema without opening a UI. A pending batch read includes every question, exact choice IDs and labels, and the submission response schema. Complete headless contracts have a 256 KiB UTF-8 model-response budget; an oversized or deeply nested schema returns an explicit issue with no partial answer contract. Follow authoritative answerChannel for presentation: chat asks the singular long-answer question directly; ui normally uses loomex_interaction_view, while an explicitly headless flow may use this read and submit a direct user answer. A clear direct user answer may submit after a fresh read; research is not an answer and synthesized answers require review. Do not poll or invent answers while a human response is pending.",
+    description: "Read this interaction and its authoritative run identity and complete typed answer schema without opening a UI. A pending batch read includes every question, exact choice IDs and labels, and the submission response schema. Complete headless contracts have a 256 KiB UTF-8 model-response budget; an oversized or deeply nested schema returns an explicit issue with no partial answer contract. Follow authoritative answerChannel for presentation: chat asks the singular long-answer question directly; ui normally uses loomex_interaction_view, while an explicitly headless flow may use this read to collect exact typed user answers, review the proposed response and submit after a fresh schema read. A clear direct user answer may submit after a fresh read; research is not an answer and synthesized answers require review. Do not poll or invent answers while a human response is pending.",
     inputSchema: z.object({ requestId: Uuid }).strict(),
     mutating: false,
     destructive: false,

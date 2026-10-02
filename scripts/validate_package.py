@@ -69,6 +69,9 @@ marketplace=json.loads((root/".agents/plugins/marketplace.json").read_text())
 entries=marketplace.get("plugins",[])
 if len(entries)!=1 or entries[0].get("name")!="loomex" or entries[0].get("version")!=args.expected_version or entries[0].get("source",{}).get("path")!="./plugin":
     raise SystemExit("private marketplace descriptor mismatch")
+license_path=plugin / "licenses" / "smol-toml-LICENSE"
+if not license_path.is_file() or "Copyright (c) Squirrel Chat" not in license_path.read_text():
+    raise SystemExit("bundled TOML parser license is missing")
 for component in ("lifecycle.mjs", "compatibility-export.mjs", "compatibility-check.mjs"):
     if not (root / "plugin" / "dist" / component).is_file():
         raise SystemExit(f"plugin compatibility bundle is missing: dist/{component}")

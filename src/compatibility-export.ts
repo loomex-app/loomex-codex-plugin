@@ -204,8 +204,27 @@ export function runnerOutputSchemaDigest(outputSchema: unknown): string {
   if (outputSchema === undefined) fail("runner method has no output schema");
   // Match the runner's digest() wire algorithm exactly: recursively sorted
   // compact JSON, UTF-8, and one terminal newline.
-  const encoded = `${JSON.stringify(canonical(outputSchema))}\n`;
-  if (encoded === "undefined\n") fail("runner method output schema is not JSON-serializable");
+  function compareCodePoints(left: string, right: string): number {
+    const a = Array.from(left, character => character.codePointAt(0)!);
+    const b = Array.from(right, character => character.codePointAt(0)!);
+    for (let index = 0; index < Math.min(a.length, b.length); index++) {
+      if (a[index] !== b[index]) return a[index]! - b[index]!;
+    }
+    return a.length - b.length;
+  }
+  function wireJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(wireJson).join(",")}]`;
+    if (value !== null && typeof value === "object") {
+      return `{${Object.keys(value).sort(compareCodePoints).map(key =>
+        `${JSON.stringify(key)}:${wireJson((value as JsonRecord)[key])}`).join(",")}}`;
+    }
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) fail("runner method output schema is not JSON-serializable");
+    return serialized;
+  }
+  // Serialize keys directly: constructing an object would re-order numeric
+  // property names, and JavaScript's default sort orders UTF-16 code units.
+  const encoded = `${wireJson(outputSchema)}\n`;
   return createHash("sha256").update(encoded, "utf8").digest("hex");
 }
 

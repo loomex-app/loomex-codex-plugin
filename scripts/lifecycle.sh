@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-usage() { echo "usage: $0 {status|resume|rollback|repair|prune} [--install-base DIR] [--version X.Y.Z] [--remove X.Y.Z --retain X.Y.Z] [--public-key FILE | --allow-unsigned-development]" >&2; exit 2; }
+usage() { echo "usage: $0 {status|diagnostics|resume|rollback|repair|prune} [--install-base DIR] [--version X.Y.Z] [--remove X.Y.Z --retain X.Y.Z] [--public-key FILE | --allow-unsigned-development]" >&2; exit 2; }
 [[ $# -ge 1 ]] || usage
 action="$1"; shift
-case "$action" in status|resume|rollback|repair|prune) ;; *) usage ;; esac
+case "$action" in status|diagnostics|resume|rollback|repair|prune) ;; *) usage ;; esac
 base="${HOME:?}/Library/Application Support/Loomex/plugin"
 arguments=()
 while (($#)); do

@@ -158,8 +158,12 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1"])].sort(),
+    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1"])].sort(),
   );
+  const status = catalog.methods.find(method => method.name === "status.get");
+  assert.ok(status);
+  assert.deepEqual(status.inputSchema.properties, { includeFingerprintDiagnostics: { type: "boolean" } });
+  assert.deepEqual(status.inputSchema.required ?? [], []);
   assert.equal(catalog.capabilities.includes("method:protocol.negotiate"), false);
   const recovery = catalog.methods.find(method => method.name === "runs.continuation.requeue") as typeof catalog.methods[number] & {
     mutating: boolean; idempotent: boolean; transportRetry: string; appOnly: boolean; authorizationPolicy: string;
@@ -2407,4 +2411,47 @@ test("credential-store error envelopes remain categorical and preserve exact mut
     assert.equal(runner.requests.length, 1);
     assert.equal(runner.negotiations.length, 1);
   }
+});
+
+test("explicit headless typed answer reconciles a lost accepted receipt by reading the original request without another submission", async () => {
+  const requestId = "a0d8d8a2-56ee-4c0a-9113-b3d7d5a4bc57";
+  const runId = "19b0e61e-a51b-41cd-a3b7-8156128fcb4e";
+  const organizationId = "3fc948d2-dd0e-4f52-8f58-9b3d195bbd91";
+  const digest = "a".repeat(64);
+  const reviewedAnswer = { answers: [{ questionId: "choice", value: "stable-option" }] };
+  const sealed = { requestId, answer: reviewedAnswer, expectedSchemaDigest: digest, idempotencyKey: "66f82bd6-e318-4558-b81b-493e8760f98d" };
+  let accepted = false;
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => {
+    if (request.method === "interactions.respond") {
+      assert.equal(accepted, false, "accepted submission was replayed");
+      assert.deepEqual(request.params, sealed);
+      accepted = true;
+      socket.end(); // Synthetic accepted mutation with lost response, never a live domain action.
+      return;
+    }
+    assert.equal(request.method, "interactions.get");
+    runner.respond(socket, request, {
+      execution: { id: runId, organizationId },
+      humanRequest: {
+        id: requestId, status: accepted ? "resolved" : "pending", type: "manual_input",
+        organizationId, execution: { id: runId }, answerChannel: "ui", schemaDigest: digest,
+        inputSpec: { schemaVersion: "loomex.human-input/v2", collectionMode: "batch", inputType: "radio",
+          question: "Choose", questions: [{ id: "choice", inputType: "radio", question: "Choose one",
+            options: [{ id: "stable-option", label: "Label is not the answer ID" }], allowOther: false }] },
+        responseSchema: { type: "object", properties: { answers: { type: "array" } }, required: ["answers"] },
+      },
+    });
+  });
+  const client = await connect(runner);
+  const fresh = await client.callTool({ name: "loomex_interaction_get", arguments: { requestId } });
+  assert.deepEqual((fresh.structuredContent as Record<string, any>).data.humanRequest.inputSpec.questions[0].options,
+    [{ id: "stable-option", label: "Label is not the answer ID" }]);
+  assert.equal(fresh._meta?.["loomex/viewSession"], undefined);
+  const lost = await client.callTool({ name: "loomex_interaction_respond", arguments: sealed });
+  assert.equal((lost.structuredContent as Record<string, any>).error.code, "NETWORK_AMBIGUOUS");
+  const reconciled = await client.callTool({ name: "loomex_interaction_get", arguments: { requestId } });
+  assert.equal((reconciled.structuredContent as Record<string, any>).data.humanRequest.status, "resolved");
+  assert.equal(reconciled._meta?.["loomex/viewSession"], undefined);
+  assert.deepEqual(runner.requests.map(request => request.method), ["interactions.get", "interactions.respond", "interactions.get"]);
 });

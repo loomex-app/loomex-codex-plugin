@@ -3,6 +3,7 @@
  * this bundle and the pinned runtime; all state transitions happen here.
  */
 import { createHash, randomUUID, verify as verifySignature } from "node:crypto";
+import { collectInstalledDiagnostics } from "./diagnostics.js";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync, fsyncSync, openSync, closeSync, copyFileSync, chmodSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { homedir, hostname } from "node:os";
@@ -635,8 +636,19 @@ function status(args: Arguments): void {
 function parse(argv: string[]): Arguments {
   const [action, ...rest] = argv; if (!action) fail("usage: lifecycle ACTION [options]"); const result: Arguments = { action, allowDevelopment: false, remove: [], retain: [] }; for (let index = 0; index < rest.length; index += 1) { const value = rest[index]; if (value === "--release") result.release = rest[++index] ?? fail("--release requires a value"); else if (value === "--install-base") result.installBase = rest[++index] ?? fail("--install-base requires a value"); else if (value === "--public-key") result.publicKey = rest[++index] ?? fail("--public-key requires a value"); else if (value === "--allow-unsigned-development") result.allowDevelopment = true; else if (value === "--version") result.version = rest[++index] ?? fail("--version requires a value"); else if (value === "--remove" && action === "prune") result.remove.push(rest[++index] ?? fail("--remove requires a value")); else if (value === "--retain" && action === "prune") result.retain.push(rest[++index] ?? fail("--retain requires a value")); else fail(`unknown argument: ${value}`); } return result;
 }
-function main(): void {
+async function main(): Promise<void> {
   const args = parse(process.argv.slice(2)); const p = paths(safeBase(args.installBase)); if (args.action === "status") return status(args);
+  if (args.action === "diagnostics") {
+    const report = await collectInstalledDiagnostics({
+      installBase: dirname(p.current), currentTarget: () => currentTarget(p.current, p.versions),
+      verifyReceipt: () => { regular(p.receipt, "ownership receipt missing"); receiptVersions(p); },
+      verifyInventory: () => {
+        const target = currentTarget(p.current, p.versions);
+        validatePayload(target, basename(target)); verifyRecordedVersion(p, target);
+      },
+    });
+    console.log(JSON.stringify(report,null,2));return;
+  }
   const installBase = dirname(p.current);
   if (present(p.terminal) && !["uninstall", "resume"].includes(args.action)) fail("terminal plugin lifecycle cleanup must be resumed first");
   let bootstrap: Lock | null = null;
@@ -657,4 +669,4 @@ function main(): void {
     if (["resume", "rollback", "repair", "prune"].includes(args.action)) lifecycleResult(p, args.action, "completed");
   } finally { lock.release(); }
 }
-try { main(); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
+void main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

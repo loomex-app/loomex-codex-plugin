@@ -2,9 +2,10 @@
 
 Loomex has two delivery paths for a read: a native MCP Apps view and a
 headless data read. Keep those paths explicit. A visual skill may request a
-native card when the current host supports direct MCP UI invocation; otherwise
-it must read the same target with the paired data tool and describe the
-available data.
+native card by directly calling its exposed visual MCP tool. Use headless
+reads only when the user explicitly chooses them, direct visual invocation is
+unavailable, or the host has an established UI incompatibility. Missing render
+acknowledgements do not establish incompatibility.
 
 ## Native MCP UI invocation
 
@@ -22,8 +23,9 @@ unavailable. The current visual entry points are:
 | Set up a run | `loomex_run_setup` | `loomex_workflow_get` for the schema and setup facts |
 | Browse runs | `loomex_runs_view` | `loomex_runs_list` |
 | Show run status | `loomex_run_view` | `loomex_run_get` |
-| Show a UI-channel pending interaction | `loomex_interaction_view` | unavailable: `answerChannel: "ui"` requires its focused view |
+| Show a UI-channel pending interaction | `loomex_interaction_view` | `loomex_interaction_get` only in the explicitly selected headless typed-answer flow |
 | Read a chat-channel pending interaction | no visual card | `loomex_interaction_get` |
+| Choose an active Persona | `loomex_personas_view` | `loomex_personas_list` and exact role/Person reads |
 
 The visual tool is the UI bridge. Wrapping a tool result in generic execution
 text such as `text(result)` only serializes a value into the conversation; it
@@ -44,8 +46,11 @@ opened.
 A returned result or a descriptor containing a resource URI proves that the
 tool was called and that a view may be available. It does not by itself prove
 that the host rendered the view. Say that a view opened or was rendered only
-when the host supplies direct evidence of that event. Otherwise report the
-tool result and state that native rendering was not observed.
+when the host supplies direct evidence of that event. A successful call means the card was requested. Do not routinely report
+missing rendering evidence as a failure, fall back because an acknowledgement
+is absent, or request another card. Report an actual resource, initialization
+or tool error using its verified code. Configured direct routing and resource
+readability do not prove the host rendered a card.
 
 ## One exact card per visual operation
 
@@ -73,7 +78,8 @@ explicit request.
 
 ## Headless fallback and payload truth
 
-If direct native invocation is unavailable, use the paired headless tool above
+For an explicit headless request, unavailable direct native invocation, or an
+established host UI incompatibility, use the paired headless tool above
 against the same resolved workflow/version, run ID or request ID. Preserve the
 same query, cursor, workspace choice and preparation/interaction identity.
 Headless fallback is a read or a focused question for the user; it must not
@@ -82,7 +88,14 @@ behalf, or manufacture a replacement card. A chat-channel long-text request is
 the deliberate exception to visual delivery: its `interaction_get` data is
 presented in chat and answered there, with no textarea card. For run setup, `loomex_workflow_get`
 can expose the input schema and workflow facts, but setup and preparation
-authorization still follow [execution guidance](execution.md).
+authorization still follow [execution guidance](../../loomex-runs/references/execution.md).
+
+For an explicitly headless UI-channel question, read the complete fresh typed
+schema with `loomex_interaction_get`, collect exact user answers and review the
+proposed answer before submission. Follow [typed response guidance](../../loomex-runs/references/interactions.md).
+Do not answer from research alone, reinterpret an unsupported answer channel,
+or replay a UI-owned or accepted submission. Headless mode does not relax
+request, run, organization, schema digest or idempotency checks.
 
 Treat authoritative payload shape as evidence. An explicitly returned empty
 array means empty. A missing array, missing object, missing schema,
@@ -99,7 +112,21 @@ namespace. For those hosts, diagnostics should verify the supported host
 setting `features.code_mode.direct_only_tool_namespaces` includes
 `mcp__loomex`, alongside the installed tool descriptors and visual resource
 metadata. This is host configuration: the plugin can advertise its visual
-tools but cannot enable or enforce the host setting.
+tools but cannot enable or enforce the host setting. Parsed configuration is
+inspection evidence, not proof of the effective running host configuration.
+The packaged read-only `lifecycle.sh diagnostics` action reports these checks
+independently as verified, failed or unknown. If direct routing is absent,
+merge `mcp__loomex` into the existing namespace array manually, preserving all
+other namespace entries and enabled settings:
+
+```toml
+[features.code_mode]
+direct_only_tool_namespaces = ["mcp__loomex"]
+```
+
+Never rewrite configuration automatically. Do not copy an installed cache from
+another machine: the supported installer regenerates absolute launcher paths.
+A loopback backend or website requires that service on the current machine.
 
 Installed transport checks can verify that the packaged skill links resolve,
 the MCP server advertises the intended visual resource metadata, visual tools
