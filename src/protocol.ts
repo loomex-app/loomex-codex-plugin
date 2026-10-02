@@ -135,7 +135,11 @@ export const RpcRequestSchema = z
   })
   .strict();
 
-export const RecoverySchema = z.enum(["correct_input", "retry_exact_operation", "reconcile_outcome", "refresh_authority", "unavailable"]);
+// Fixed runner-owned recovery vocabulary. These are guidance, never approval.
+export const RecoverySchema = z.enum([
+  "correct_input", "retry_exact_operation", "reconcile_outcome", "refresh_authority", "unavailable",
+  "refresh_context", "explicit_scope_upgrade", "select_supported_provider", "read_run_status", "prepare_again",
+]);
 export const OutcomeSchema = z.enum(["not_dispatched", "rejected", "unknown", "completed"]);
 export function errorRecovery(code: string): {recovery: z.infer<typeof RecoverySchema>; outcome: z.infer<typeof OutcomeSchema>} {
  const rules: Record<string, unknown> = recoveryContract.codes;
@@ -236,6 +240,12 @@ export const ToolOutputSchema = z
 export type ToolOutput = z.infer<typeof ToolOutputSchema>;
 
 const SAFE_MESSAGES: Readonly<Record<string, string>> = {
+  AUTHORIZATION_FAILED: "The current Loomex grant does not authorize this operation. Review the required scopes before continuing.",
+  AUTH_SCOPE_VERIFICATION_REQUIRED: "Persona scope verification is required for the selected organization. Review the exact scopes and obtain explicit approval before upgrading the existing grant.",
+  PERSONA_CONFIG_CHANGED: "The Persona configuration changed. Read the exact context again before continuing.",
+  PERSONA_MEMORY_PROVIDER_UNSUPPORTED: "The selected provider does not support the required Persona memory contract. Choose a supported provider and prepare again.",
+  PERSONA_MEMORY_NOT_ACTIVE: "Persona memory is not active for this run. Read the exact run status before continuing.",
+  PERSONA_MEMORY_CONTRACT_INVALID: "The required Persona memory contract could not be verified. Prepare again with supported capabilities.",
   VIEW_SESSION_NOT_FOUND: "This saved view is no longer available. Open a new view to continue.",
   REVISION_CONFLICT: "This view changed in another window. Reload its saved state before editing.",
   INTERACTION_DRAFT_CONFLICT: "This answer draft changed in another view. Reload it before saving.",
