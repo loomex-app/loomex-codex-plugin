@@ -1,0 +1,43 @@
+{
+  "provenance": {
+    "generator": "runner/scripts/export-compatibility.py::canonical,digest",
+    "generatorSha256": "0fadd2d3ab5afca96240224213e627147fbeb22cc78375134e3ff8dbe69ebbaf",
+    "runnerBaseRevision": "d8784eed3ca5c11767d996d9ab2046703f14be59",
+    "algorithm": "Python sorted keys, compact JSON, ensure_ascii=False, UTF-8, terminal newline",
+    "generatedFromActualRunnerHelper": true
+  },
+  "fixtures": [
+    {
+      "name": "Unicode code points",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "": {
+            "type": "string"
+          },
+          "𐀀": {
+            "type": "null"
+          }
+        }
+      },
+      "canonicalJsonUtf8": "{\"properties\":{\"\":{\"type\":\"string\"},\"𐀀\":{\"type\":\"null\"}},\"type\":\"object\"}\n",
+      "sha256": "36d7ae1d9a5122d454ed75f780aef5e1b2ed9ec4fec4dc57f8b7a4aba34ab0a0"
+    },
+    {
+      "name": "numeric property names",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "2": {
+            "type": "null"
+          },
+          "10": {
+            "type": "string"
+          }
+        }
+      },
+      "canonicalJsonUtf8": "{\"properties\":{\"10\":{\"type\":\"string\"},\"2\":{\"type\":\"null\"}},\"type\":\"object\"}\n",
+      "sha256": "881d863c5d8a0b776b25585655c6e65a570baa14c9f5b2b49627acdb605b587d"
+    }
+  ]
+}
