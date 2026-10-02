@@ -345,6 +345,7 @@ export interface HostCapabilities {
 
 export interface SetupAnalysisEntry {
   readonly key: string;
+  readonly persona?: import("./persona-selection.js").PersonaSelection;
   readonly field: JsonSchema;
   readonly type: string;
   readonly values?: readonly (string | number)[];

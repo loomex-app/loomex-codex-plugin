@@ -1,9 +1,10 @@
+import { personaChatMessage, validPersonaReference, type PersonaContextReference } from "./persona-context.js";
 import { formatFollowContinuationMarkdown } from "../monitoring-contract.js";
 import type { JsonObject } from "./contracts.js";
 import { UiTransportError, UiResultDecodeError } from "./result-decoder.js";
 
 export type DeliveryStatus = "ready" | "sending" | "not_sent" | "acknowledged" | "rejected" | "unknown" | "unsupported";
-export type ContinuationPurpose = "reviewed_start" | "accepted_interaction" | "follow_run" | "long_answer";
+export type ContinuationPurpose = "reviewed_start" | "accepted_interaction" | "follow_run" | "long_answer" | "persona_chat";
 export interface ContinuationDeliveryRecord {
   schemaVersion: 1 | 2;
   identity: string;
@@ -90,7 +91,7 @@ const statuses = new Set<DeliveryStatus>(["ready", "sending", "not_sent", "ackno
 export function decodeDelivery(value: unknown): ContinuationDeliveryRecord | undefined {
   if (!value || typeof value !== "object") return;
   const r = value as Partial<ContinuationDeliveryRecord>;
-  if (![1, 2].includes(r.schemaVersion ?? 0) || typeof r.identity !== "string" || !r.identity || typeof r.text !== "string" || !r.text || typeof r.attemptId !== "string" || !r.attemptId || !r.status || !statuses.has(r.status) || !["reviewed_start", "accepted_interaction", "follow_run", "long_answer"].includes(r.purpose || "")) return;
+  if (![1, 2].includes(r.schemaVersion ?? 0) || typeof r.identity !== "string" || !r.identity || typeof r.text !== "string" || !r.text || typeof r.attemptId !== "string" || !r.attemptId || !r.status || !statuses.has(r.status) || !["reviewed_start", "accepted_interaction", "follow_run", "long_answer", "persona_chat"].includes(r.purpose || "")) return;
   try {
     const match = r.text.match(/```json\n([\s\S]*?)\n```/);
     const c = match ? JSON.parse(match[1] || "null") as Record<string, unknown> : null;
@@ -112,6 +113,7 @@ export function reviewedStartMessage(ref: string): string {
 }
 export function deliveryMessage(projection: DeliveryProjection): string {
   const c = projection.continuation;
+  if(projection.identity.startsWith("persona:")){if(c.kind!=="persona_chat"||!validPersonaReference(c)||projection.identity!==`persona:${c.conversationId}`)throw new Error("DELIVERY_IDENTITY_MISMATCH");return personaChatMessage(c as PersonaContextReference);}
   if (projection.identity.startsWith("start:")) {
     const ref = projection.identity.slice(6);
     if (c.handoffRef !== ref) throw new Error("DELIVERY_IDENTITY_MISMATCH");

@@ -137,7 +137,7 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
   const rootEntries = await readdir(skillsRoot, { withFileTypes: true });
   const skillFolders = rootEntries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
   assert.ok(skillFolders.length > 0, "packaged skills must contain at least one skill");
-  assert.deepEqual(skillFolders, ["loomex-browse", "loomex-connect", "loomex-create", "loomex-runs"]);
+  assert.deepEqual(skillFolders, ["loomex-browse", "loomex-connect", "loomex-create", "loomex-persona", "loomex-runs"]);
 
   await t.test("skill manifests and optional UI metadata identify their own skill", async () => {
     for (const folderName of skillFolders) {

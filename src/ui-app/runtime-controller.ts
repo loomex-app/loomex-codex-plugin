@@ -1,3 +1,7 @@
+import {completePersonaResponse} from "./persona-response.js";
+import { createPersonaController } from "./persona-controller.js";
+import { personaFrontendUrl } from "./persona-frontend.js";
+import type { PersonaContextReference } from "./persona-context.js";
 import { workflowFrontendUrl } from "./workflow-frontend.js";
 import { updatePromptOverflowHints } from "./prompt-content.js";
 import { PersistenceFailureError, PresentationPersistenceError } from "./action-errors.js";
@@ -51,7 +55,7 @@ import type {
 
 declare const __LOOMEX_STATUS_CLASSES__: Readonly<Record<string, string>>;
 
-const UI_MODES = new Set<UiMode>(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]);
+const UI_MODES = new Set<UiMode>(["personas", "browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]);
 const CONNECTION_STATUS = {
   authenticated: "Signed in", signed_out: "Signed out", browser_pending: "Sign-in pending", authentication_completing: "Completing sign-in",
   verification_expired: "Expired", logout_pending: "Signing out", recovery_pending: "Recovery required",
@@ -485,6 +489,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   } = runPresentationController;
 
   const runSetupController = createRunSetupController({
+    personaCall:async(name,args)=>{const result=await callTool(name,args,false,false);if(uiResultFailed(result))throw new Error("Persona discovery is unavailable. Check authorization and retry the search.");return jsonObject(dataOf(result));},
     elements: { context, form, summary, errorDetails, refresh, secondary, primary },
     connected: () => connected,
     hydrationReady: mutationHydrationReady,
@@ -835,25 +840,50 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     collectAnswer,
   });
 
+  let personaDeliveryContext:PersonaContextReference|undefined;
+  let personaViewProjection:RuntimeViewSessionProjection|undefined;
   const deliveryController = new ContinuationDeliveryController({
     scope: () => [viewPersistence.session?.viewSessionId, mode, interactionId(latest || {}), requestSchemaDigest(humanRequest(latest || {}) || {})].join(":"),
     changed: () => renderDeliveryRecovery(),
     available: () => Boolean(record(hostCapabilities.message)?.text),
     uuid,
     journal: {
-      get: async identity => deliveryProjection("loomex_delivery_get", {identity}, "presentation.delivery.get"),
+      get: async identity => deliveryProjection("loomex_delivery_get", {identity,...(identity.startsWith("persona:")&&personaDeliveryContext?{personaContext:personaDeliveryContext}:{})}, "presentation.delivery.get"),
       begin: async args => deliveryProjection("loomex_delivery_begin", args, "presentation.delivery.begin"),
       settle: async args => deliveryProjection("loomex_delivery_settle", args, "presentation.delivery.settle"),
     },
     send: text => send("ui/message", {role:"user",content:[{type:"text",text}]}),
   });
 
+  const personaController = createPersonaController({
+    lifecycle,elements:{context,form,summary,primary,secondary,refresh},
+    call:async(name,args)=>{const result=await callTool(name,args,false,false);if(uiResultFailed(result))return result;const data=await completePersonaResponse(jsonObject(dataOf(result)),async parameters=>{const page=await callTool("loomex_response_read",parameters,false,false);if(uiResultFailed(page))throw new Error("The Persona response could not be read. Preserve its reference and refresh.");return jsonObject(dataOf(page));});return rpcResult({structuredContent:{ok:true,data},...(result._meta?{_meta:result._meta}:{})});},data:result=>jsonObject(dataOf(result)),failed:uiResultFailed,
+    session:result=>result ? record(result._meta?.["loomex/viewSession"])??undefined : personaViewProjection&&viewPersistence.session?jsonObject({...personaViewProjection,...viewPersistence.session}):undefined,
+    configure:session=>{personaViewProjection=requiredViewSession(session);viewPersistence.configure(personaViewProjection);},
+    flush:async()=>{await viewPersistence.flush(captureViewState());return !["conflicted","unavailable"].includes(lifecycle.state.persistence);},
+    create:async(personId,key)=>{const result=await callMutation("loomex_persona_context_create",`persona:create:${personId}`,{personId,idempotencyKey:key});if(uiResultFailed(result))return result;const data=await completePersonaResponse(jsonObject(dataOf(result)),async args=>jsonObject(dataOf(await callTool("loomex_response_read",args,false,false))));return rpcResult({structuredContent:{ok:true,data}});},
+    restoredCreateKey:async personId=>{const session=viewPersistence.session;if(!session)return undefined;const fresh=await persistenceTool(VIEW_SESSION_TOOLS.get,{viewSessionId:session.viewSessionId});const operationId=record(fresh.operation)?.operationId;if(!workflowIdValid(operationId))return undefined;const op=await persistenceTool(VIEW_SESSION_TOOLS.operationGet,{viewSessionId:session.viewSessionId,operationId});const params=record(op.params);if(op.method!=="personas.chat_context.create")throw new Error("A different saved operation needs reconciliation before choosing a Persona.");if(params?.personId!==personId||!workflowIdValid(params.idempotencyKey)||op.idempotencyKey!==params.idempotencyKey)throw new Error("The saved context creation belongs to a different Persona.");return params.idempotencyKey;},
+    settleCreate:async response=>{const session=viewPersistence.session,fresh=session?await persistenceTool(VIEW_SESSION_TOOLS.get,{viewSessionId:session.viewSessionId}):undefined,ref=record(fresh?.operation);const operationId=safeText(ref?.operationId,64);if(operationId&&session){const op=await persistenceTool(VIEW_SESSION_TOOLS.operationGet,{viewSessionId:session.viewSessionId,operationId});if(op.method!=="personas.chat_context.create"||record(op.params)?.personId!==record(response.person)?.id)throw new Error("The saved operation does not match this Persona context.");if(op.status!=="completed")await persistenceTool(VIEW_SESSION_TOOLS.operationSettle,{viewSessionId:session.viewSessionId,operationId,status:"completed",resultReference:{ok:true,personId:record(response.person)?.id,conversationId:record(response.conversation)?.conversationId,chatId:record(response.conversation)?.chatId,configDigest:response.configDigest},idempotencyKey:uuid()});}const current=mutationController.current();if(current?.name==="loomex_persona_context_create")mutationController.clearOperation(current);},
+    deliver:async(ref,text)=>{personaDeliveryContext=ref;return deliveryController.deliver({identity:`persona:${ref.conversationId}`,purpose:"persona_chat",text});},
+    messageAvailable:()=>Boolean(record(hostCapabilities.message)?.text),setPage:runtimeShell.setPagePresentation,changed:markViewDirty,error:setError,uuid,
+    managementAvailable:async()=>{const result=await callTool("loomex_connection_get",{},false,false);if(uiResultFailed(result))return false;try{personaFrontendUrl(dataOf(result).webAppUrl,"persons");return Boolean(record(hostCapabilities.message)?.text);}catch{return false;}},
+    openManagement:async path=>{const result=await callTool("loomex_connection_get",{},false,false);if(uiResultFailed(result))throw new Error("The Loomex website address could not be loaded. Refresh and try again.");const url=personaFrontendUrl(dataOf(result).webAppUrl,path);const response=await send("ui/message",{role:"user",content:[{type:"text",text:`Open ${url} in the Codex side panel using open_in_codex with target type browser and placement right. This is the configured Loomex management page. Only open this page.`}]});if(record(response)?.isError===true)throw new Error("The management page could not be opened. Try again.");},
+  });
+
   async function deliveryProjection(name: string, args: JsonObject, expectedMethod: string) {
     const receipt = await persistenceReceipt(name, args);
-    return decodeDeliveryProjection(receipt.data, {
+    const projection=decodeDeliveryProjection(receipt.data, {
       channel: receipt.channel,
       method: receipt.method === expectedMethod ? "expected" : receipt.method === undefined ? "missing" : "unexpected",
     });
+    if(String(args.identity).startsWith("persona:")&&personaDeliveryContext){
+      const stableIdentityMatches=["personId","organizationId","conversationId","chatId"].every(key=>projection.continuation[key]===personaDeliveryContext?.[key]);
+      const newDelivery=projection.status==="ready"&&projection.revision===0;
+      // Existing attempts retain their original digest and message. A fresh
+      // context read cannot rewrite or resend an acknowledged/uncertain receipt.
+      if(!stableIdentityMatches||newDelivery&&projection.continuation.configDigest!==personaDeliveryContext.configDigest)throw new Error("The chat delivery belongs to a different Persona context. Refresh before continuing.");
+    }
+    return projection;
   }
 
   let deliveryRecoveryListeners = new AbortController();
@@ -1250,6 +1280,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     if (runSetupController.flow?.stage === "monitor") return { kind: "monitor", entityType: "execution", entityId: executionId(runSetupController.flow.result) };
     if (runSetupController.flow?.stage === "review") return { kind: "prepare", entityType: "preparation", entityId: safeText(runSetupController.flow.prepared?.preparationId, 64) };
     if (runSetupController.flow?.stage === "setup") return { kind: "prepare", entityType: "workflow", entityId: runSetupController.flow.selected?.workflowId };
+    if (mode === "personas") return {kind:mode,entityType:"catalog",entityId:"00000000-0000-0000-0000-000000000000"};
     if (mode === "browser" && !runSetupController.flow) return { kind: mode, entityType: "catalog", entityId: "00000000-0000-0000-0000-000000000000" };
     if (mode === "runs" && !runSetupController.flow) return { kind: mode, entityType: "catalog", entityId: "00000000-0000-0000-0000-000000000000" };
     if (mode === "interaction") return { kind: mode, entityType: "request", entityId: interactionId(output) };
@@ -1337,6 +1368,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
    * material. The runner validates this state again before returning it.
    */
   function captureDisplayProjection(): JsonObject {
+    if(mode==="personas")return personaController.display();
     const execution = runSetupController.flow?.stage === "monitor"
       ? runSetupController.flow.result?.execution
       : latest?.execution;
@@ -1439,6 +1471,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
 
   function captureViewStateValue(): unknown {
     const base = { schemaVersion: 1, ...(deliveryController.record ? {continuationDelivery: {schemaVersion:2, identity:deliveryController.record.identity, purpose:deliveryController.record.purpose}} : {}), screen: runSetupController.flow?.stage || (browserState.selected || runListState.selected ? "detail" : mode), display: captureDisplayProjection(), disclosures: disclosureState(), readingPosition: { top: window.scrollY, left: window.scrollX } };
+    if (mode === "personas") return {...base,personas:personaController.capture()};
     if (mode === "browser" && !runSetupController.flow) return {
       ...base,
       browser: browserController.capture(),
@@ -1901,6 +1934,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       context.setAttribute("aria-busy", "true");
       return;
     }
+    if (mode === "personas") {void personaController.receive(result).catch(setError);return;}
     if (isConnectionView) {
       void hydrateConnectionView(result).catch(error => { lifecycle.unavailable(); syncRestorationVisibility(); setError(error); });
       return;
@@ -2001,6 +2035,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       case "authoring": authoringController.render(failed, output); break;
       // Connection pages return before the shared durable result lifecycle.
       case "connection":
+      case "personas":
       case "organizations": break;
     }
 
@@ -2563,6 +2598,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
         await initializeHost();
         return;
       }
+      if(mode==="personas"){await personaController.refresh();return;}
       if (isConnectionView) {
         await refreshConnection();
         return;
@@ -2863,6 +2899,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     runMonitorController.dispose();
     runActionsController.dispose();
     navigationController.dispose();
+    personaController.dispose();
     connectionController.dispose();
     runtimeShell.dispose();
     persistenceReads.invalidate();

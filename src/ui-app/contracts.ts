@@ -1,5 +1,5 @@
 /** Browser-only contracts shared by the injected Loomex application modules. */
-export type UiMode = "browser" | "runs" | "authoring" | "prepare" | "monitor" | "interaction" | "connection" | "organizations";
+export type UiMode = "personas" | "browser" | "runs" | "authoring" | "prepare" | "monitor" | "interaction" | "connection" | "organizations";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];

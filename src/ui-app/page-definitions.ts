@@ -7,6 +7,7 @@ export interface PageDefinition {
   readonly domain: 'catalog' | 'workflow' | 'request' | 'execution' | 'connection';
 }
 const definitions: Readonly<Record<UiMode,PageDefinition>> = Object.freeze({
+  personas: {mode:'personas',title:'AI Personas',domain:'catalog'},
   browser: {mode:'browser',title:'Browse workflows',domain:'catalog'},
   runs: {mode:'runs',title:'Workflow runs',domain:'execution'},
   authoring: {mode:'authoring',title:'Authoring review',domain:'workflow'},

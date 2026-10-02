@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use a Loomex AI Persona"
+  short_description: "Choose a Persona for the current native chat"
+  default_prompt: "Choose a Loomex AI Persona to use in this chat."

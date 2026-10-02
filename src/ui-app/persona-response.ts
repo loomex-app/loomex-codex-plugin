@@ -1,0 +1,10 @@
+import type { JsonObject } from "./contracts.js";
+const object=(v:unknown):JsonObject|undefined=>v!==null&&typeof v==="object"&&!Array.isArray(v)?v as JsonObject:undefined;
+/** Read immutable spools instead of replaying context/memory mutations. */
+export async function completePersonaResponse(data:JsonObject,read:(args:JsonObject)=>Promise<JsonObject>):Promise<JsonObject>{
+  if(data.responseRef===undefined)return data;
+  if(typeof data.responseRef!=="string"||data.encoding!=="json"||typeof data.sizeBytes!=="number"||!Number.isSafeInteger(data.sizeBytes)||data.sizeBytes<0||data.sizeBytes>16*1024*1024||typeof data.checksumSha256!=="string"||!/[a-f0-9]{64}/.test(data.checksumSha256))throw new Error("This Persona response needs to be read in chat. Preserve its response reference; do not repeat the operation.");
+  const bytes=new Uint8Array(data.sizeBytes);let offset=0;
+  while(offset<bytes.length){const page=await read({responseRef:data.responseRef,offset,limit:262144});if(page.responseRef!==data.responseRef||page.offset!==offset||page.sizeBytes!==data.sizeBytes||page.checksumSha256!==data.checksumSha256||typeof page.dataBase64!=="string")throw new Error("The Persona response page did not match its immutable reference.");let binary:string;try{binary=atob(page.dataBase64);}catch{throw new Error("The Persona response encoding is invalid.");}const next=page.nextOffset===null?bytes.length:page.nextOffset;if(typeof next!=="number"||!Number.isSafeInteger(next)||next<=offset||next>bytes.length||next-offset!==binary.length)throw new Error("The Persona response cursor is invalid.");for(let i=0;i<binary.length;i++)bytes[offset+i]=binary.charCodeAt(i);offset=next;}
+  const digest=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))).map(v=>v.toString(16).padStart(2,"0")).join("");if(digest!==data.checksumSha256)throw new Error("The Persona response checksum could not be verified.");const result=object(JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes)));if(!result)throw new Error("The Persona response is not an object.");return result;
+}

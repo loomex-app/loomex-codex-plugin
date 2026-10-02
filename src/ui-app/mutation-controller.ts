@@ -13,6 +13,10 @@ export const MUTATION_PERSISTENCE_TOOLS = Object.freeze({
 } as const);
 
 export const MUTATION_JOURNAL_METHODS = Object.freeze({
+  loomex_persona_context_create:"personas.chat_context.create",
+  loomex_persona_memory_write:"personas.memory.write",
+  loomex_persona_memory_update:"personas.memory.update",
+  loomex_persona_scope_upgrade:"auth.scope_upgrade",
   loomex_interaction_respond: "interactions.respond",
   loomex_interaction_decide: "interactions.decide",
   loomex_builder_respond: "builder.respond",
@@ -352,6 +356,7 @@ function viewSessionProjection(result: RpcResult): MutationSessionProjection | u
 }
 
 function reconciliationFor(name: MutationToolName, args: Readonly<JsonObject>): MutationReconciliation | undefined {
+  if (name === "loomex_persona_context_create" || name === "loomex_persona_memory_write" || name === "loomex_persona_memory_update") return {method:"personas.operations.get",params:{operation:name==="loomex_persona_context_create"?"chat_context.create":name==="loomex_persona_memory_write"?"memory.write":"memory.update",idempotencyKey:args.idempotencyKey}};
   if (name === "loomex_workflow_publish") {
     if (typeof args.idempotencyKey !== "string") throw new Error("The publish recovery key is missing.");
     return { method: "workflow.operations.get", params: immutableCopy({ operation: "workflows.publish", idempotencyKey: args.idempotencyKey }) };
@@ -372,11 +377,14 @@ function normalizedReconciliation(value: unknown): JsonObject | null {
 
 function operationReference(result: RpcResult, operation: MutationOperation, data: UiData): JsonObject {
   const request = humanRequest(data);
+  const conversation=object(data.conversation);
+  const person=object(data.person);
   const isAuthoringCommit = operation.name === "loomex_builder_commit" || operation.name === "loomex_editor_commit";
   const builderId = isAuthoringCommit
     ? stringValue(data.builderSessionId, 64) || stringValue(data.sessionId, 64)
     : builderSessionId(data);
   return immutableCopy({
+    ...(conversation&&person?{personId:person.id,conversationId:conversation.conversationId,chatId:conversation.chatId,configDigest:data.configDigest}:{}),
     ok: !resultFailed(result),
     errorCode: errorCodeOf(result) ?? null,
     requestId: stringValue(data.requestId ?? request?.id, 64) || null,

@@ -56,8 +56,8 @@ test("plugin component export is deterministic and covers the evaluated public c
   // coupled to that source of truth so adding a reviewed helper cannot leave
   // a stale, manually maintained count behind.
   assert.equal(first.tools.length, TOOL_DEFINITIONS.length);
-  assert.equal(first.resources.length, 8);
-  assert.equal(first.skills.length, 4);
+  assert.deepEqual(first.resources.map(resource=>resource.name).sort(),["loomex-personas","loomex-browser","loomex-runs","loomex-authoring","loomex-prepare","loomex-monitor","loomex-interaction","loomex-connection","loomex-organizations"].sort());
+  assert.deepEqual(first.skills.map(skill=>skill.path).sort(),["skills/loomex-browse/SKILL.md","skills/loomex-connect/SKILL.md","skills/loomex-create/SKILL.md","skills/loomex-persona/SKILL.md","skills/loomex-runs/SKILL.md"].sort());
   assert.equal(first.hooks.length, 5);
   assert.ok(first.resources.every((resource) => Array.isArray(resource.aliases)));
   assert.ok(first.tools.every((tool) => tool.inputSchema !== undefined));
@@ -150,8 +150,8 @@ test("cached-package compatibility checker evaluates its bundled exporter", asyn
   assert.deepEqual({ ...result, sha256: typeof result.sha256 }, {
     schemaVersion: "loomex.plugin-compatibility-components/v1",
     toolCount: TOOL_DEFINITIONS.length,
-    resourceCount: 8,
-    skillCount: 4,
+    resourceCount: 9,
+    skillCount: 5,
     hookCount: 5,
     sha256: "string",
   });

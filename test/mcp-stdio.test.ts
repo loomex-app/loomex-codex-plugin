@@ -14,6 +14,7 @@ import { LocalControlClient, LocalControlError, toolErrorOutput } from "../src/l
 import {
   APP_CALLABLE_TOOLS,
   REQUIRED_RUNNER_CAPABILITIES,
+  OPTIONAL_RUNNER_METHODS,
   TOOL_DEFINITIONS,
   TOOL_NAMES,
 } from "../src/tool-catalog.js";
@@ -33,6 +34,7 @@ import {
   MONITOR_UI_URI,
   ORGANIZATIONS_UI_URI,
   PREPARE_UI_URI,
+  PERSONAS_UI_URI,
   RUNS_UI_URI,
   UI_RESOURCE_REVISION,
 } from "../src/ui-resources.js";
@@ -156,7 +158,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...REQUIRED_RUNNER_CAPABILITIES, "method:runs.continuation.requeue", "method:workflows.patch", "workflows.patch.notes-preserve/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1"].sort(),
+    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1"])].sort(),
   );
   assert.equal(catalog.capabilities.includes("method:protocol.negotiate"), false);
   const recovery = catalog.methods.find(method => method.name === "runs.continuation.requeue") as typeof catalog.methods[number] & {
@@ -305,7 +307,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
     };
     const primary = output.anyOf[0];
     assert.ok(primary);
-    const variants = output.anyOf.flatMap(variant => (variant as typeof primary & {anyOf?: typeof output.anyOf}).anyOf ?? [variant]);
+    const variants = output.anyOf.flatMap(variant => {const union=variant as typeof primary & {anyOf?: typeof output.anyOf;oneOf?:typeof output.anyOf};return union.anyOf??union.oneOf??[variant];});
     assert.equal(variants.length, method.outputSchema.oneOf.length, `${method.name} result variants`);
     for (const [index, variant] of variants.entries()) {
       assert.equal(variant.additionalProperties, false);
@@ -1642,7 +1644,7 @@ test("MCP Apps resources use the portable bridge and no external network", async
   runner = new FakeRunner((request, socket) => runner.respond(socket, request, {}));
   const client = await connect(runner);
   const resources = await client.listResources();
-  assert.equal(resources.resources.length, 8);
+  assert.deepEqual(resources.resources.map(resource=>resource.uri).sort(),[PERSONAS_UI_URI,BROWSER_UI_URI,RUNS_UI_URI,AUTHORING_UI_URI,PREPARE_UI_URI,MONITOR_UI_URI,INTERACTION_UI_URI,CONNECTION_UI_URI,ORGANIZATIONS_UI_URI].sort());
   for (const resource of resources.resources) {
     const result = await client.readResource({ uri: resource.uri });
     const content = result.contents[0];
@@ -1914,7 +1916,7 @@ test("content-addressed UI resources resolve explicit previously shipped aliases
   runner = new FakeRunner((request, socket) => runner.respond(socket, request, {}));
   const client = await connect(runner);
   const resources = await client.listResources();
-  assert.equal(resources.resources.length, 8);
+  assert.deepEqual(resources.resources.map(resource=>resource.uri).sort(),[PERSONAS_UI_URI,BROWSER_UI_URI,RUNS_UI_URI,AUTHORING_UI_URI,PREPARE_UI_URI,MONITOR_UI_URI,INTERACTION_UI_URI,CONNECTION_UI_URI,ORGANIZATIONS_UI_URI].sort());
   for (const resource of resources.resources) {
     assert.match(resource.uri, new RegExp(`^ui://loomex/[a-z]+-${UI_RESOURCE_REVISION}\\.html$`));
   }

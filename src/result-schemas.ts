@@ -1,3 +1,4 @@
+import { PERSONA_RESULTS, PERSONA_CONTEXT_REFERENCE } from "./persona-contracts.js";
 import { z } from "zod";
 
 import { JsonValueSchema, type JsonValue } from "./protocol.js";
@@ -10,6 +11,7 @@ const NonNegativeInteger = z.number().int().nonnegative();
 const NullableString = z.string().nullable();
 const NullableOffset = NonNegativeInteger.nullable();
 const DeliveryContinuation = z.discriminatedUnion("kind", [
+  PERSONA_CONTEXT_REFERENCE.extend({kind:z.literal("persona_chat")}).strict(),
   z.object({kind:z.literal("start"),schemaVersion:z.literal("loomex.start-continuation/v1"),handoffRef:z.uuid()}).strict(),
   z.object({kind:z.literal("question"),schemaVersion:z.literal("loomex.question-continuation/v1"),requestId:z.uuid(),schemaDigest:z.string().length(64)}).strict(),
   z.object({kind:z.literal("follow"),schemaVersion:z.literal("loomex.follow-session.continuation/v1"),runId:z.uuid(),receipt:z.string().min(16).max(2048),trigger:z.string().min(1).max(64),requestId:z.string().nullable(),requestStatus:z.string().min(1).max(32).nullable()}).strict(),
@@ -96,15 +98,15 @@ const InteractionResolutionResult = z
   .strict();
 
 const ViewSession = z.object({
-  viewSessionId: z.uuid(), kind: z.enum(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]),
-  entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation"]), entityId: z.uuid(),
+  viewSessionId: z.uuid(), kind: z.enum(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations", "personas"]),
+  entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation", "personaRole", "persona", "personaConversation"]), entityId: z.uuid(),
   revision: NonNegativeInteger, state: JsonObject, status: z.string(), createdAt: NonNegativeInteger, updatedAt: NonNegativeInteger,
   details: Details, expiresAt: NonNegativeInteger.nullable(), operation: z.object({operationId:z.uuid(),status:z.string()}).strict().nullable(),
 }).strict();
 const ViewSessionRestore = z.object({
   restoreVersion: z.literal("presentation.sessions.restore/v1"),
-  viewSessionId: z.uuid(), kind: z.enum(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations"]),
-  entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation"]), entityId: z.uuid(),
+  viewSessionId: z.uuid(), kind: z.enum(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations", "personas"]),
+  entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation", "personaRole", "persona", "personaConversation"]), entityId: z.uuid(),
   revision: NonNegativeInteger, state: JsonObject, status: z.enum(["active", "inactive", "resolved"]),
   pendingOperation: z.object({operationId:z.uuid(),status:z.string()}).strict().nullable(), details: JsonObject,
 }).strict();
@@ -468,6 +470,7 @@ const primarySchemas = {
 export type LocalControlMethod = keyof typeof primarySchemas;
 
 export function resultSchemaFor(method: string): z.ZodType | undefined {
+  if (PERSONA_RESULTS[method]) return z.union([PERSONA_RESULTS[method], SpoolResult]);
   if (!(method in primarySchemas)) return undefined;
   return z.union([primarySchemas[method as LocalControlMethod], SpoolResult]);
 }
@@ -483,5 +486,5 @@ export function parseMethodResult(
 }
 
 export const LOCAL_CONTROL_METHODS = Object.freeze(
-  Object.keys(primarySchemas) as LocalControlMethod[],
+  [...Object.keys(primarySchemas),...Object.keys(PERSONA_RESULTS)] as LocalControlMethod[],
 );

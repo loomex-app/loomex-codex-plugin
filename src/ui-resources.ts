@@ -38,6 +38,7 @@ function uri(mode: string): string {
  * registration consume this registry, so the active UI identity cannot drift
  * from the installed browser assets.
  */
+export const PERSONAS_UI_URI = uri("personas");
 export const BROWSER_UI_URI = uri("browser");
 export const RUNS_UI_URI = uri("runs");
 export const AUTHORING_UI_URI = uri("authoring");
@@ -48,6 +49,7 @@ export const CONNECTION_UI_URI = uri("connection");
 export const ORGANIZATIONS_UI_URI = uri("organizations");
 
 export type UiResourceMode =
+  | "personas"
   | "browser"
   | "runs"
   | "authoring"
@@ -74,6 +76,7 @@ export interface UiResourceDefinition {
 const CACHED_RELEASES = ["0.2.3", "0.2.4", "0.2.5", "0.2.6", "0.2.7"] as const;
 
 function aliases(mode: UiResourceMode, uri: string): readonly UiResourceAlias[] {
+  if(mode === "personas")return [];
   // The unversioned identities were canonical through 0.14.11. Keep them as
   // explicit aliases so an already-open card can recover after an upgrade.
   // Browser entered the older compatibility template only at 0.2.7; the other
@@ -99,6 +102,7 @@ function resource(name: string, uri: string, mode: UiResourceMode): UiResourceDe
 }
 
 export const UI_RESOURCE_REGISTRY: readonly UiResourceDefinition[] = Object.freeze([
+  resource("loomex-personas", PERSONAS_UI_URI, "personas"),
   resource("loomex-browser", BROWSER_UI_URI, "browser"),
   resource("loomex-runs", RUNS_UI_URI, "runs"),
   resource("loomex-authoring", AUTHORING_UI_URI, "authoring"),

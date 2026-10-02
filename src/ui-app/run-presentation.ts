@@ -1,3 +1,4 @@
+import {preparedPersonaSummary} from "./persona-preparation.js";
 import { createUiElement as element } from "./components.js";
 import type { HumanRequest, InputSpec, ExecutionProjection, PagedResponse, UiData, JsonSchema, PreparedRun, PreparationPresentation, RpcResult, RunPresentation } from "./page-models.js";
 import type { JsonObject } from "./contracts.js";
@@ -334,6 +335,8 @@ export function createRunPresentation(host: RunPresentationServices) {
     }
     grid.append(providers);
     review.append(grid);
+    const personas=preparedPersonaSummary(binding);
+    if(personas?.length){const selected=element("section",{className:"ui-section","aria-label":"Selected AI Personas"});selected.append(element("h3",{className:"ui-label"},"Selected AI Personas"));for(const persona of personas){const row=element("div",{className:"provider-row"});row.append(element("p",{className:"ui-value"},persona.personName),element("p",{className:"ui-caption"},`${persona.roleName} · ${persona.nodeKey}`));selected.append(row);}selected.append(element("p",{className:"ui-caption"},"Persona configuration is frozen in this reviewed run."));review.append(selected);}else if(personas===undefined){review.append(element("p",{className:"ui-callout"},"The frozen Persona selection could not be verified. Prepare a fresh review before starting."));}
     if (binding.inputs && Object.keys(binding.inputs).length) {
       const inputs = element("section", { className: "ui-section", "aria-label": "Run inputs" });
       inputs.append(element("h3", { className: "ui-label" }, "Run inputs"), reviewValue(binding.inputs));
@@ -351,7 +354,7 @@ export function createRunPresentation(host: RunPresentationServices) {
 
   function preparationReviewable(output: PreparedRun | UiData): boolean {
     const binding = output.binding;
-    return Boolean(presentationMatches(preparationPresentation, output) && binding && ["organizationId", "installationId", "workflowId", "versionId", "workspacePath"]
+    return Boolean(presentationMatches(preparationPresentation, output) && binding && preparedPersonaSummary(binding)!==undefined && ["organizationId", "installationId", "workflowId", "versionId", "workspacePath"]
       .every((key) => typeof binding[key] === "string" && binding[key].length) &&
       binding.executionPolicy === "host_user/v1" &&
       binding.inputs && typeof binding.inputs === "object" &&

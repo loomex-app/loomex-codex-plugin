@@ -1,3 +1,4 @@
+import {personaSelectionEntries,collectPersonaSelection,createPersonaSelectionPicker} from "./persona-selection.js";
 import { createUiElement as element } from "./components.js";
 import type { JsonObject } from "./contracts.js";
 import type { ActionId } from "./shell.js";
@@ -5,6 +6,7 @@ import type { UiData, SelectedWorkflow, JsonSchema, SetupAnalysis, SetupAnalysis
 
 export interface RunSetupServices {
   readonly elements: { context: HTMLElement; form: HTMLFormElement; summary: HTMLElement; errorDetails: HTMLElement; refresh: HTMLButtonElement; secondary: HTMLButtonElement; primary: HTMLButtonElement };
+  personaCall(name:string,args:JsonObject):Promise<JsonObject>;
   connected(): boolean;
   hydrationReady(): boolean;
   taskWorkspace(): TaskWorkspace | null;
@@ -35,6 +37,7 @@ export function createRunSetupController(host: RunSetupServices) {
   const {safeText,authoredLabel,workflowIdValid,workflowVersionNumber,rpcResult,taskWorkspaceFrom,suggestedWorkspacePath,setAction,setMutationAction,renderFailure,renderIntegratedRunFlow,beginSetupReview,preparationView,preparationReviewable} = host;
   let runFlow: RunFlow | null = null;
   let disposed = false;
+  function getRunFlow(){return runFlow;}
   const listeners = new AbortController();
   function activeSetupFlow(): SetupRunFlow {
     if (!runFlow || runFlow.stage !== "setup" || !runFlow.setup || !runFlow.analysis || !runFlow.inputDraft || typeof runFlow.workspaceDraft !== "string") throw new Error("Run setup is not available.");
@@ -88,6 +91,7 @@ export function createRunSetupController(host: RunSetupServices) {
     }
     const entries: SetupAnalysisEntry[] = [];
     for (const [key, field] of Object.entries(properties)) {
+      try {const persona=field&&personaSelectionEntries(key,field);if(persona){entries.push(...persona);continue;}} catch(error){return {supported:false,reason:error instanceof Error?error.message:"Persona selections are unavailable."};}
       if (!field || typeof field !== "object" || Array.isArray(field) || field.anyOf || field.oneOf || field.allOf || field.$ref || field.const !== undefined) {
         return { supported: false, reason: `The input “${authoredLabel(key, field)}” needs to be provided in the conversation.` };
       }
@@ -219,7 +223,8 @@ export function createRunSetupController(host: RunSetupServices) {
     const runFlow = activeSetupFlow();
     if (!runFlow.analysis.supported) throw new Error("These inputs must be collected in the conversation.");
     clearSetupErrors();
-    const inputs: Record<string, string | number | boolean> = {};
+    const inputs: JsonObject = {};
+    const inputDraft:Record<string,string|number|boolean> = {};
     let firstInvalid: HTMLElement | null = null;
     for (const entry of runFlow.analysis.entries) {
       if (entry.workspace) continue;
@@ -232,6 +237,7 @@ export function createRunSetupController(host: RunSetupServices) {
         continue;
       }
       if (empty) continue;
+      if(entry.persona){if(control.dataset.personaVerified!=="true"){setupFieldError(control,"Verify the active Persona before continuing.");firstInvalid ||= control;continue;}collectPersonaSelection(inputs,entry,control.value);inputDraft[entry.key]=control.value;continue;}
       let value;
       if (entry.values) {
         const index = Number(control.value);
@@ -268,7 +274,7 @@ export function createRunSetupController(host: RunSetupServices) {
       if (typeof value === "number" && typeof entry.field.maximum === "number" && value > entry.field.maximum) {
         setupFieldError(control, `Enter a value no greater than ${entry.field.maximum}.`); firstInvalid ||= control; continue;
       }
-      inputs[entry.key] = value;
+      inputs[entry.key] = value;inputDraft[entry.key]=value;
     }
     const workspace = form.querySelector<HTMLInputElement>("#run-workspace");
     if (!workspace || !workspace.value.trim()) {
@@ -281,13 +287,14 @@ export function createRunSetupController(host: RunSetupServices) {
       firstInvalid?.focus();
       throw new Error("Complete the required inputs before continuing.");
     }
-    runFlow.inputDraft = inputs;
+    runFlow.inputDraft = inputDraft;
     runFlow.workspaceDraft = workspace.value.trim();
     return inputs;
   }
 
   function createSetupControl(entry: SetupAnalysisEntry) {
     const runFlow = activeSetupFlow();
+    if(entry.persona)return createPersonaSelectionPicker(entry,{organizationId:runFlow.selected?.organizationId??"",initialValue:typeof runFlow.inputDraft[entry.key]==="string"?String(runFlow.inputDraft[entry.key]):undefined,disposed:()=>disposed||runFlow!==getRunFlow(),call:host.personaCall,changed:value=>{runFlow.inputDraft[entry.key]=value;}});
     const id = `run-input-${entry.key.replace(/[^a-z0-9_-]/gi, "-")}`;
     const labelText = authoredLabel(entry.key, entry.field);
     const wrapper = element("div", { className: "setup-field" });

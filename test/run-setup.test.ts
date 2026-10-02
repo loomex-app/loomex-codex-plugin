@@ -12,6 +12,7 @@ function fixture() {
   let ready=true;
   let calls=0;
   const host:RunSetupServices={
+    personaCall:async()=>({personas:[],nextCursor:null}),
     elements:{} as RunSetupServices['elements'], connected:()=>true,hydrationReady:()=>ready,
     taskWorkspace:()=>workspace,setTaskWorkspace:value=>{workspace=value;}, taskWorkspaceFrom:value=>value as TaskWorkspace,
     suggestedWorkspacePath:()=>workspace?.workspacePath || workspace?.taskContext?.cwd || '',
@@ -52,4 +53,8 @@ test('unsupported constraints and required fields fail closed to conversation',(
   assert.equal(view.setupSchemaAnalysis(setup({type:'object',properties:{},required:['missing']})).supported,false);
   assert.equal(view.setupSchemaAnalysis(setup({type:'object',properties:{value:{type:'string',pattern:'secret'}}})).supported,false);
   assert.equal(view.setupSchemaAnalysis(setup({type:'object',properties:{value:{type:'string'}},required:['value']})).supported,true);
+});
+
+test('nested Persona selections use exact role metadata and block automatic prepare',()=>{
+ const {view}=fixture();const field={type:'object','x-loomex-input-kind':'persona_selections',properties:{persona_node_2f_review:{type:'string','x-loomex-input-kind':'persona_select','x-loomex-role-id':id2,'x-loomex-node-key':'node/review'}},required:['persona_node_2f_review']};view.initializeRunSetup(setup({type:'object',properties:{aiPersonaSelections:field},required:['aiPersonaSelections']}));const analysis=view.flow!.analysis!;assert.equal(analysis.supported,true);if(analysis.supported){assert.equal(analysis.entries[0]?.persona?.selectionKey,'persona_node_2f_review');assert.equal(analysis.entries[0]?.persona?.roleId,id2);}assert.equal(view.autoPreparationEligible(),false);
 });
