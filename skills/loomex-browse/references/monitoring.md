@@ -137,7 +137,8 @@ two-minute cadence, verification, pausing, and cleanup rules. A projection of
 `registrationState: not_observed` requires `loomex_recovery_get`; it is not an
 ambiguous scheduling attempt. If recovery is unavailable or ambiguous, disclose
 that protection state once and keep live polling while observation is usable.
-Only call recovery active after a host record has been verified. Do not claim
+Quiet waits never write recovery checkpoints or refresh schedules. Only call
+recovery active after a host record has been verified. Do not claim
 monitoring continues after a final response unless that verified recovery
 schedule remains active; hooks and UI handoffs alone are not proof of ongoing
 monitoring.

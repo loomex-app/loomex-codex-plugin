@@ -1,5 +1,7 @@
 # Loomex Codex plugin
 
+Current workspace installation and delivery status: [authoritative reliability status](../planning/plugin-runner-integration/reliability-persona-performance-2026-10-03/current-status.md). Source package versions and historical examples below do not establish an installed candidate.
+
 This private macOS arm64 plugin connects Codex desktop and Codex CLI to the
 signed Loomex runner over an owner-checked Unix socket. The plugin contains no
 Loomex credentials and makes no backend or provider calls itself.
@@ -14,7 +16,7 @@ for its socket boundary, exact event payloads, and hook-trust activation steps.
 
 ## Command skills
 
-Use four focused skills: connect, browse, create, and runs. Their contextual
+Use five focused skills: connect, browse, create, runs, and persona. Their contextual
 cards expose the actions that depend on the selected item, including
 organization selection, workflow editing and publishing, run preparation,
 human responses, results, cancellation, and deletion. See [the command

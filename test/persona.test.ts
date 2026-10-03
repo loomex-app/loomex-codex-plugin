@@ -41,3 +41,14 @@ test("Frozen Persona summary binds exact reviewed input, version and config fing
 });
 
 test("Persona scope upgrades reject duplicate reviewed scopes before dispatch",()=>{const organizationId=randomUUID(),idempotencyKey=randomUUID();assert.equal(PERSONA_INPUTS.scopeUpgrade.safeParse({organizationId,idempotencyKey,requestedScopes:["runner.personas.read","runner.personas.read"]}).success,false);assert.equal(PERSONA_INPUTS.scopeUpgrade.safeParse({organizationId,idempotencyKey,requestedScopes:["runner.personas.read","runner.personas.chat"]}).success,true);});
+
+test("Verified Persona scope status preserves empty authority without exposing backend self metadata",()=>{
+ const baseline={organizationId,runnerId:personId,delegationId:conversationId,deviceId:chatId,scopes:[],status:"verified"};
+ for(const method of ["auth.scope_status","auth.scope_upgrade"]){
+  const schema=PERSONA_RESULTS[method]!;
+  assert.equal(schema.safeParse(baseline).success,true);
+  const {scopes,...unknown}=baseline;
+  assert.equal(schema.safeParse(unknown).success,false);
+  assert.equal(schema.safeParse({...baseline,scopeContext:{grantedScopes:[],effectiveTokenScopes:[]}}).success,false);
+ }
+});

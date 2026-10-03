@@ -36,6 +36,7 @@ import {
   PREPARE_UI_URI,
   PERSONAS_UI_URI,
   RUNS_UI_URI,
+  UI_RESOURCE_REGISTRY,
   UI_RESOURCE_REVISION,
 } from "../src/ui-resources.js";
 import { FakeRunner } from "./fake-runner.js";
@@ -158,7 +159,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1"])].sort(),
+    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1"])].sort(),
   );
   const status = catalog.methods.find(method => method.name === "status.get");
   assert.ok(status);
@@ -1671,7 +1672,9 @@ test("MCP Apps resources use the portable bridge and no external network", async
     assert.doesNotMatch(text, /connect-src[^;]*(?:https?:\/\/(?!127\.0\.0\.1)[^\s;]+)/);
     assert.match(text, /frame-src 'none'/);
     assert.match(text, /form-action 'none'/);
-    assert.match(text, /startLoomexApp/);
+    const mode = UI_RESOURCE_REGISTRY.find(candidate => candidate.uri === resource.uri)?.mode;
+    assert.ok(mode, "served resource has a canonical browser mode");
+    assert.equal(text, renderUiHtml(mode), "resource serves the exact verified offline application for its mode");
     assert.doesNotMatch(text, /id="diagnostics"|id="state"|json-answer/);
     const meta = content?._meta as Record<string, unknown>;
     assert.ok(meta.ui);

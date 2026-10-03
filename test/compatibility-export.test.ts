@@ -14,7 +14,7 @@ import {
   validateSkillAndHookReferences,
   validateToolMappings,
 } from "../src/compatibility-export.js";
-import { TOOL_DEFINITIONS } from "../src/tool-catalog.js";
+import { REQUIRED_RUNNER_CAPABILITIES, TOOL_DEFINITIONS } from "../src/tool-catalog.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -80,6 +80,24 @@ test("component export rejects stale skill tools and hook entrypoints", async ()
   const invalidHooks = structuredClone(layout.hooks) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
   invalidHooks.hooks.SessionStart![0]!.hooks[0]!.command = "node hooks/other.mjs";
   assert.throws(() => validateSkillAndHookReferences({ ...layout, hooks: invalidHooks }), /lifecycle adapter/);
+});
+
+test("startup auth observation remains runner-only and optional for the public plugin", async () => {
+  const catalog = JSON.parse(await readFile("contracts/method-catalog.json", "utf8")) as {
+    capabilities: string[];
+    methods: Array<{name: string; inputSchema: {properties: Record<string, unknown>; required: string[]}}>;
+  };
+  const authStatus = catalog.methods.find(({name}) => name === "auth.status");
+  assert.ok(authStatus);
+  assert.deepEqual(authStatus.inputSchema.properties.observation, {type: "string", enum: ["startup"]});
+  assert.deepEqual(authStatus.inputSchema.required, []);
+  assert.ok(catalog.capabilities.includes("auth:startup-observation/v1"));
+  assert.equal(REQUIRED_RUNNER_CAPABILITIES.includes("auth:startup-observation/v1"), false);
+  const publicTool = TOOL_DEFINITIONS.find(({name}) => name === "loomex_auth_status");
+  assert.ok(publicTool);
+  assert.equal(publicTool.inputSchema.safeParse({}).success, true);
+  assert.equal(publicTool.inputSchema.safeParse({observation: "startup"}).success, false);
+  assert.deepEqual(publicTool.omittedRunnerInputKeys, ["observation"]);
 });
 
 test("runner wire digest orders mixed-case schema keys exactly like the canonical runner export", async () => {

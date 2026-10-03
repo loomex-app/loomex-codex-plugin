@@ -10,6 +10,9 @@ test("every UI resource embeds the same verified offline frontend design artifac
   const provenance = JSON.parse(readFileSync("assets/frontend-design-system.json", "utf8"));
   const artifact = JSON.parse(readFileSync("assets/ui-artifacts.json", "utf8"));
   const browserAsset = readFileSync("assets/browser-application.js", "utf8");
+  const validated = validateDesignSystem(provenance, readFileSync("assets/loomex-app.html", "utf8"), css, artifact, browserAsset);
+  const inlineBrowserAsset = browserAsset.replace(/<\/script/gi, "<\\/script")
+    .replace("__LOOMEX_STATUS_CLASSES__", () => JSON.stringify(validated.statusClasses).replaceAll("<", "\\u003c"));
   assert.equal(provenance.schema, "loomex/frontend-design-system/v3");
   assert.equal(provenance.cssSha256, createHash("sha256").update(css).digest("hex"));
   assert.equal(artifact.browserCodeSha256, createHash("sha256").update(browserAsset).digest("hex"));
@@ -20,9 +23,11 @@ test("every UI resource embeds the same verified offline frontend design artifac
     const html = renderUiHtml(mode);
     assert.ok(html.includes(css));
     assert.equal(html.split(css).length, 2, "exactly one foundation per view");
-    // Assert the compiled entry point and full packaged artifact digest.
-    assert.match(browserAsset, /startLoomexApp/);
-    assert.equal((html.match(/startLoomexApp/g) ?? []).length, 2, "one generated browser application per view");
+    // The build gate checks the authored entry point/metafile. Rendered views
+    // must embed those exact verified bytes once, independent of minified names.
+    assert.equal(html.split(inlineBrowserAsset).length, 2, "one complete verified browser application per view");
+    assert.match(browserAsset, /ui\/initialize/);
+    assert.match(browserAsset, /tools\/call/);
     assert.doesNotMatch(html, /__LOOMEX_DESIGN_SYSTEM__|__LOOMEX_STATUS_CLASSES__|__LOOMEX_MODE__|__LOOMEX_VERSION__/);
     for (const style of html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
       assert.doesNotMatch(style[1]!, /@import\s|url\(/, "styles must remain offline");

@@ -2,8 +2,10 @@ import type { RecoveryRegistrationState } from "../src/monitoring-contract.js";
 
 export type MonitoringProjection = {
   readonly execution?: { readonly id?: string };
+  readonly timedOut?: boolean;
   readonly monitoring?: {
     readonly state?: string;
+    readonly observation?: string;
     readonly recovery?: {
       readonly observedLifecycle?: string;
       readonly requiredLifecycle?: string;
@@ -29,7 +31,7 @@ export type TranscriptEntry =
   | { readonly kind: "assistant_final"; readonly text: string; readonly recoveryEstablished?: boolean };
 
 export interface TranscriptIssue {
-  readonly code: "final_before_poll" | "recovery_initialization_missing" | "recovery_claim_unverified" | "duplicate_request_presentation" | "stale_request_presentation" | "recovery_create_unpermitted" | "recovery_host_mutation_unpermitted" | "follow_identity_unverified" | "poll_retry_without_observation";
+  readonly code: "final_before_poll" | "recovery_initialization_missing" | "recovery_claim_unverified" | "duplicate_request_presentation" | "stale_request_presentation" | "recovery_create_unpermitted" | "recovery_host_mutation_unpermitted" | "recovery_settle_without_host_mutation" | "recovery_settle_identity_mismatch" | "recovery_settle_repeated" | "recovery_mutation_without_follow" | "recovery_checkpoint_on_quiet_wait" | "follow_identity_unverified" | "poll_retry_without_observation";
   readonly message: string;
 }
 
@@ -112,15 +114,17 @@ function markerParts(record: Record<string, unknown>): { marker: string; taskId:
 }
 
 function recoveryVerification(entry: Extract<TranscriptEntry, { kind: "tool" }>): { id: string; runId: string; taskId: string; status: "ACTIVE" | "PAUSED" } | undefined {
-  if (entry.name !== "automation_update") return undefined;
+  if (entry.name !== "automation_update" || !responseAccepted(entry)) return undefined;
   const result = recordFromResult(entry.result ?? {});
   const id = entry.arguments?.id;
   const parts = markerParts(result);
+  const promptParts = markerParts({ prompt: result.prompt });
   if (!(result.kind === "heartbeat" &&
     entry.arguments?.mode === "view" &&
+    Object.keys(entry.arguments).every(key => key === "mode" || key === "id") &&
     typeof id === "string" && result.id === id &&
     (result.status === "ACTIVE" || result.status === "PAUSED") &&
-    parts !== undefined && result.targetThreadId === parts.taskId &&
+    parts !== undefined && promptParts?.marker === parts.marker && result.targetThreadId === parts.taskId &&
     result.rrule === "FREQ=MINUTELY;INTERVAL=2")) return undefined;
   if (parts === undefined) return undefined;
   return { id, runId: parts.runId, taskId: parts.taskId, status: result.status as "ACTIVE" | "PAUSED" };
@@ -130,6 +134,14 @@ function createResultId(entry: Extract<TranscriptEntry, { kind: "tool" }>): stri
   if (entry.name !== "automation_update" || entry.arguments?.mode !== "create") return undefined;
   const result = recordFromResult(entry.result ?? {});
   return typeof result.id === "string" ? result.id : undefined;
+}
+
+function hostMutationKind(entry: Extract<TranscriptEntry, { kind: "tool" }>): string | undefined {
+  if (entry.name !== "automation_update") return undefined;
+  const mode = entry.arguments?.mode;
+  if (mode === "delete") return "remove";
+  if (mode === "update" && entry.arguments?.status === "PAUSED") return "pause";
+  return ["create", "update", "pause", "remove"].includes(String(mode)) ? String(mode) : undefined;
 }
 
 function responseAccepted(entry: Extract<TranscriptEntry, { kind: "tool" }>): boolean {
@@ -171,6 +183,9 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
   let recoveryOperationPermitted = false;
   let recoveryOperationKind: string | undefined;
   let recoveryOperationSettled = false;
+  let recoverySettlementObserved = false;
+  let hostMutationObserved = false;
+  let quietWaitObserved = false;
   const displayedRequests = new Set<string>();
   const resolvedRequests = new Set<string>();
   let freshReadRequired = false;
@@ -189,10 +204,15 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
       registrationState = entry.knownAutomationId === undefined ? undefined : "registered";
       recoveryOperationPermitted = entry.knownAutomationId !== undefined;
       recoveryOperationSettled = entry.knownAutomationId !== undefined;
+      recoverySettlementObserved = false;
+      hostMutationObserved = false;
+      quietWaitObserved = false;
       continue;
     }
     if (entry.kind === "projection") {
       latestProjection = entry.projection;
+      quietWaitObserved = entry.method === "runs.wait" && (entry.projection.timedOut === true ||
+        entry.projection.monitoring?.observation === "quiet_timeout");
       expectedPollTool = isPolling(entry.projection) ? entry.projection.nextAction?.tool : undefined;
       if (follow !== undefined && entry.projection.execution?.id !== follow.runId) {
         followIdentityValid = false;
@@ -203,6 +223,12 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
     }
 
     if (entry.kind === "tool") {
+      if (entry.name.startsWith("loomex_recovery_") && entry.name !== "loomex_recovery_get" && follow === undefined) {
+        issues.push({ code: "recovery_mutation_without_follow", message: "one-off reads and listings cannot mutate recovery" });
+      }
+      if (entry.name === "loomex_recovery_update" && quietWaitObserved) {
+        issues.push({ code: "recovery_checkpoint_on_quiet_wait", message: "a quiet wait does not authorize a recovery checkpoint write" });
+      }
       if ((entry.name === "loomex_run_wait" || entry.name === "loomex_run_events") &&
           entry.name !== expectedPollTool) {
         issues.push({
@@ -224,6 +250,9 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
         if (recovery !== undefined && typeof recovery.registrationState === "string") registrationState = recovery.registrationState as RecoveryRegistrationState;
       }
       if (entry.name === "loomex_recovery_operation_begin") {
+        hostMutationObserved = false;
+        recoveryOperationSettled = false;
+        recoverySettlementObserved = false;
         recoveryOperationPermitted = result.attemptPermitted === true ||
           (result.data !== null && typeof result.data === "object" && !Array.isArray(result.data) && (result.data as Record<string, unknown>).attemptPermitted === true);
         const operation = result.operation ??
@@ -235,14 +264,36 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
           : undefined;
       }
       if (entry.name === "loomex_recovery_operation_settle" && (result.status === "succeeded" || result.operation !== undefined || (result.data !== null && typeof result.data === "object" && !Array.isArray(result.data)))) {
-        recoveryOperationSettled = true;
         const settled = recoveryRecordFromResult(result);
         const automationId = settled?.automationId;
-        if (typeof automationId === "string") expectedVerificationId = automationId;
+        const operation = result.operation ?? (result.data !== null && typeof result.data === "object" && !Array.isArray(result.data)
+          ? (result.data as Record<string, unknown>).operation : undefined);
+        const operationStatus = operation !== null && typeof operation === "object" && !Array.isArray(operation)
+          ? (operation as Record<string, unknown>).status : undefined;
+        const succeeded = result.status === "succeeded" || operationStatus === "succeeded" ||
+          (operationStatus === undefined && settled?.registrationState === "registered");
+        if (succeeded && recoverySettlementObserved) {
+          issues.push({ code: "recovery_settle_repeated", message: "a begun recovery operation can be settled successfully only once" });
+        } else if (succeeded && !hostMutationObserved) {
+          issues.push({ code: "recovery_settle_without_host_mutation", message: "journal settlement cannot replace the actual host mutation" });
+        }
+        if (typeof automationId === "string" && expectedVerificationId !== undefined && automationId !== expectedVerificationId) {
+          issues.push({ code: "recovery_settle_identity_mismatch", message: "settlement substituted the observed host automation ID" });
+        }
+        recoveryOperationSettled = succeeded && hostMutationObserved && typeof automationId === "string" && automationId === expectedVerificationId;
+        recoverySettlementObserved = true;
+        hostMutationObserved = false;
+        recoveryOperationPermitted = false;
       }
-      const hostMutation = entry.name === "automation_update" &&
-        ["create", "update", "pause", "remove"].includes(String(entry.arguments?.mode));
-      if (hostMutation && (!recoveryOperationPermitted || recoveryOperationKind !== entry.arguments?.mode)) {
+      const hostMutation = hostMutationKind(entry);
+      // A prior view cannot prove the current schedule after any attempted
+      // mutation, including a failed or ambiguous pause/remove.
+      if (hostMutation !== undefined) recoveryVerified = undefined;
+      if (hostMutation !== undefined && quietWaitObserved) {
+        issues.push({ code: "recovery_checkpoint_on_quiet_wait", message: "a quiet wait does not authorize refreshing or reinitializing a recovery schedule" });
+      }
+      const mutationPermitted = recoveryOperationPermitted && recoveryOperationKind === hostMutation;
+      if (hostMutation !== undefined && !mutationPermitted) {
         issues.push({
           code: entry.arguments?.mode === "create" ? "recovery_create_unpermitted" : "recovery_host_mutation_unpermitted",
           message: entry.arguments?.mode === "create"
@@ -255,9 +306,13 @@ export function checkMonitoringTranscript(entries: readonly TranscriptEntry[]): 
         issues.push({ code: "recovery_create_unpermitted", message: "recovery creation requires durable registration state not_attempted" });
       }
       if (entry.name === "automation_update" && entry.arguments?.mode === "create" &&
-          registrationState === "not_attempted" && recoveryOperationPermitted && follow?.knownAutomationId === undefined) {
+          mutationPermitted && follow?.knownAutomationId === undefined) {
         const id = createResultId(entry);
         if (id !== undefined) expectedVerificationId = id;
+      }
+      if (hostMutation !== undefined && mutationPermitted) {
+        hostMutationObserved = true;
+        recoveryOperationPermitted = false;
       }
       const verification = recoveryVerification(entry);
       if (verification !== undefined && verification.id === expectedVerificationId) recoveryVerified = verification;

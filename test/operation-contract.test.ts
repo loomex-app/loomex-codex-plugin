@@ -11,6 +11,12 @@ test('unknown failures require reconciliation, not replay',()=>{
  assert.deepEqual(errorRecovery('WORKFLOW_NOT_FOUND'),{recovery:'refresh_authority',outcome:'rejected'});
  assert.deepEqual(errorRecovery('RUNNER_RESPONSE_UNAVAILABLE'),{recovery:'reconcile_outcome',outcome:'unknown'});
  assert.match(safeErrorMessage('ACTIVE_WORK_REQUIRES_DRAIN'), /current work to finish/);
+ assert.doesNotMatch(safeErrorMessage('ACTIVE_WORK_REQUIRES_DRAIN'), /sign out/);
+ assert.doesNotMatch(safeErrorMessage('AUTH_RECOVERY_PENDING'), /authentication is required|sign out/);
+ assert.deepEqual(errorRecovery('INVALID_ARGUMENT'),{recovery:'correct_input',outcome:'rejected'});
+ assert.deepEqual(errorRecovery('VERSION_NOT_OWNED'),{recovery:'correct_input',outcome:'rejected'});
+ assert.match(safeErrorMessage('INVALID_ARGUMENT'), /rejected an argument/);
+ assert.match(safeErrorMessage('VERSION_NOT_OWNED'), /selected workflow/);
 });
 for (const name of ['error-recovery.json', 'mutation-recovery.json']) {
  test(`integration: ${name} matches the runner-owned export`, async (t) => {

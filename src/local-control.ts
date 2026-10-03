@@ -4,6 +4,7 @@ import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { createConnection, type Socket } from "node:net";
+import { performance } from "node:perf_hooks";
 
 import {
   LOCAL_PROTOCOL,
@@ -128,6 +129,55 @@ function transportError(options: {
   });
 }
 
+function scheduleDeadline(deadline: number, onDeadline: () => void): () => void {
+  let timer: NodeJS.Timeout;
+  let cancelled = false;
+  const check = (): void => {
+    if (cancelled) return;
+    const remaining = deadline - performance.now();
+    // Node timers may fire slightly early. Do not turn that into a transport
+    // failure and an otherwise unnecessary read retry before the deadline.
+    if (remaining > 0) {
+      timer = setTimeout(check, Math.ceil(remaining));
+      timer.unref();
+    } else onDeadline();
+  };
+  timer = setTimeout(check, Math.max(0, Math.ceil(deadline - performance.now())));
+  timer.unref();
+  return () => { cancelled = true; clearTimeout(timer); };
+}
+
+function verifyOwnerBeforeDeadline(
+  path: string,
+  deadline: number,
+  signal: AbortSignal | undefined,
+  timeoutError: () => LocalControlError,
+  requestId: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cancelDeadlineTimer();
+      signal?.removeEventListener("abort", onAbort);
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+    const onAbort = (): void => finish(new LocalControlError({ code: "CANCELLED", requestId }));
+    const cancelDeadlineTimer = scheduleDeadline(deadline, () => finish(timeoutError()));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) { onAbort(); return; }
+    if (performance.now() >= deadline) { finish(timeoutError()); return; }
+    // lstat cannot be cancelled. Bound the caller's wait and consume any late
+    // completion/rejection without allowing it to open a socket.
+    void assertOwnerCheckedSocket(path).then(() => {
+      if (signal?.aborted) onAbort();
+      else finish(performance.now() >= deadline ? timeoutError() : undefined);
+    }, error => finish(error));
+  });
+}
+
 export class LocalControlClient {
   async call(
     method: string,
@@ -189,12 +239,9 @@ export class LocalControlClient {
     params: Record<string, JsonValue>,
     options: LocalControlCallOptions,
   ): Promise<ToolOutput> {
-    const deadline = Date.now() + (options.timeoutMs ?? 30_000);
+    const deadline = performance.now() + (options.timeoutMs ?? 30_000);
     const attempt = (): Promise<ToolOutput> =>
-      this.callOnce(method, params, {
-        ...options,
-        timeoutMs: Math.max(1, deadline - Date.now()),
-      });
+      this.callOnce(method, params, options, deadline);
     try {
       return await attempt();
     } catch (error) {
@@ -203,7 +250,7 @@ export class LocalControlClient {
         options.signal?.aborted ||
         !(error instanceof LocalControlError) ||
         !error.transportFailure ||
-        Date.now() >= deadline
+        performance.now() >= deadline
       ) {
         throw error;
       }
@@ -223,6 +270,7 @@ export class LocalControlClient {
     method: string,
     params: Record<string, JsonValue>,
     options: LocalControlCallOptions,
+    deadline: number,
   ): Promise<ToolOutput> {
     const negotiationId = randomUUID();
     const requestId = randomUUID();
@@ -230,7 +278,9 @@ export class LocalControlClient {
       ? [...REQUIRED_RUNNER_CAPABILITIES, `method:${method}`, ...(OPTIONAL_RUNNER_CAPABILITIES_BY_METHOD[method] ?? [])]
       : [...REQUIRED_RUNNER_CAPABILITIES];
     const path = socketPath();
-    await assertOwnerCheckedSocket(path);
+    await verifyOwnerBeforeDeadline(path, deadline, options.signal, () => transportError({
+      mutating: options.mutating, sent: false, requestId: negotiationId, params,
+    }), negotiationId);
 
     const negotiation = RpcRequestSchema.parse({
       protocol: LOCAL_PROTOCOL,
@@ -262,7 +312,6 @@ export class LocalControlClient {
       let actionSent = false;
       let settled = false;
       let received = Buffer.alloc(0);
-      const timeoutMs = options.timeoutMs ?? 30_000;
 
       const activeRequestId = (): string =>
         phase === "negotiation" ? negotiationId : requestId;
@@ -270,7 +319,7 @@ export class LocalControlClient {
       const finish = (callback: () => void): void => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cancelDeadlineTimer();
         options.signal?.removeEventListener("abort", onAbort);
         socket?.destroy();
         callback();
@@ -309,22 +358,27 @@ export class LocalControlClient {
         );
       };
 
-      const timer = setTimeout(failTransport, timeoutMs);
-      timer.unref();
+      const cancelDeadlineTimer = scheduleDeadline(deadline, failTransport);
       options.signal?.addEventListener("abort", onAbort, { once: true });
-      if (options.signal?.aborted) {
-        onAbort();
-        return;
-      }
+      const canProceed = (): boolean => {
+        if (settled) return false;
+        if (options.signal?.aborted) { onAbort(); return false; }
+        if (performance.now() >= deadline) { failTransport(); return false; }
+        return true;
+      };
+      if (!canProceed()) return;
 
       socket = createConnection(path);
       socket.setNoDelay(true);
       socket.once("connect", () => {
+        if (!canProceed()) return;
         socket?.write(negotiationFrame);
       });
       socket.on("data", (chunk: Buffer) => {
+        if (!canProceed()) return;
         received = Buffer.concat([received, chunk]);
         while (!settled) {
+          if (!canProceed()) return;
           const newline = received.indexOf(0x0a);
           if (newline < 0) {
             if (received.byteLength > MAX_FRAME_BYTES) {
@@ -343,11 +397,16 @@ export class LocalControlClient {
           try {
             decoded = JSON.parse(frame);
           } catch {
+            if (!canProceed()) return;
             failNonDefinitiveResponse("INVALID_RESPONSE");
             return;
           }
+          // Decoding and schema validation are synchronous work. They can
+          // consume the remaining budget before the timer gets to run.
+          if (!canProceed()) return;
 
           const parsed = RpcResponseSchema.safeParse(decoded);
+          if (!canProceed()) return;
           const expectedId = activeRequestId();
           if (!parsed.success || parsed.data.id !== expectedId) {
             failNonDefinitiveResponse("INVALID_RESPONSE");
@@ -359,6 +418,7 @@ export class LocalControlClient {
             const code = RpcErrorCodeSchema.parse(rpcError.code);
             const idempotencyKey =
               phase === "action" && options.mutating ? idempotencyKeyFrom(params) : undefined;
+            if (!canProceed()) return;
             finish(() =>
               reject(
                 new LocalControlError({
@@ -393,6 +453,7 @@ export class LocalControlClient {
               requiredCapabilities.every((capability) =>
                 capabilities?.has(capability),
               );
+            if (!canProceed()) return;
             if (!compatible) {
               finish(() =>
                 reject(
@@ -416,6 +477,7 @@ export class LocalControlClient {
               delete legacyParams.includeFingerprintDiagnostics;
               requestFrame = `${JSON.stringify({ ...request, params: legacyParams })}\n`;
             }
+            if (!canProceed()) return;
             phase = "action";
             actionSent = true;
             socket?.write(requestFrame);
@@ -427,6 +489,7 @@ export class LocalControlClient {
             return;
           }
           const rpcResult = parseMethodResult(method, parsed.data.result);
+          if (!canProceed()) return;
           if (rpcResult === undefined) {
             failNonDefinitiveResponse("INVALID_RESPONSE");
             return;

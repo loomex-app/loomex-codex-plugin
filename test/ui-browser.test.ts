@@ -1626,8 +1626,16 @@ test("closing and reopening interaction and authoring cards restores the exact q
   await interaction.locator("#question-0-value").fill("Ada");
   await interaction.getByRole("button", { name: "Next question", exact: true }).click();
   await interaction.getByText("Question 2 of 3", { exact: true }).waitFor();
-  await interactionPage.waitForFunction((id: string) =>
-    window.__loomexPersistenceStore.drafts[id]?.answers?.first?.value === "Ada", requestId, { timeout: 5_000 });
+  // An earlier autosave can already contain Ada. Wait for this navigation's
+  // draft and presentation position, then its acknowledged save status, before
+  // counting writes attributable to the remount's hydration guard.
+  await interactionPage.waitForFunction(({ requestId, viewSessionId }: { requestId: string; viewSessionId: string }) => {
+    const draft = window.__loomexPersistenceStore.drafts[requestId];
+    const session = window.__loomexPersistenceStore.sessions[viewSessionId];
+    return draft?.answers?.first?.value === "Ada" && draft.currentQuestionId === "notify" &&
+      session?.state?.currentQuestionId === "notify";
+  }, { requestId, viewSessionId: interactionSession.viewSessionId }, { timeout: 5_000 });
+  await interaction.locator("#save-status").waitFor({ state: "hidden" });
   const writesBeforeReopen = await interactionPage.evaluate(() => ({
     sessions: window.__loomexPersistenceCalls.filter((call: any) => call.name === "loomex_view_session_update").length,
     drafts: window.__loomexPersistenceCalls.filter((call: any) => call.name === "loomex_interaction_draft_update").length,

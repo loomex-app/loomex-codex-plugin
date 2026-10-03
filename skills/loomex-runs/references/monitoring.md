@@ -74,17 +74,13 @@ authoritative stopping condition:
    observation failure. Do not substitute a progress report for continued
    monitoring.
 
-If `waitState: observation_lost` is authoritative after required event
-pages are drained, stop live waits and report the fixed observation issue.
-`WORKFLOW_CONTINUATION_OBSERVATION_LOST` identifies a required backend
-continuation that exhausted its retries: “This step stopped before its result
-could be confirmed. Review the run before taking another action.”
-`RUNNER_OBSERVATION_LOST` remains distinct: the owning runner session is
-unavailable and its lease expired; the host outcome is not confirmed.
-Neither observation proves a provider failure or saved draft. Pause known
-exact recovery before presenting it; do not dispatch or replay the step.
-A later authoritative terminal state requires complete `loomex_run_result`
-retrieval before reporting completion.
+The observation issues have distinct fixed meanings:
+`WORKFLOW_CONTINUATION_OBSERVATION_LOST` identifies an exhausted required backend
+continuation: “This step stopped before its result could be confirmed. Review
+the run before taking another action.” `RUNNER_OBSERVATION_LOST` remains distinct:
+the owning runner session is unavailable and its lease expired; the host outcome
+remains unconfirmed. Neither observation proves a provider failure or saved draft. A later
+terminal state still requires complete `loomex_run_result` retrieval.
 
 If that fresh exact run read includes a safe `continuationRecovery` binding,
 ask for an explicit user instruction to recover that continuation before
@@ -120,14 +116,10 @@ job succeeded while the workflow result is still being processed. Keep
 following the exact `nextAction` until input, terminal result, or observation
 failure is authoritative.
 
-An active stage's elapsed time is a duration, not evidence of progress. Use
-only new, allowlisted progress events or authoritative node transitions for
-intermediate updates, with the event sequence from the latest drained page.
-If the last observed activity remains unchanged through quiet waits, say
-nothing; do not infer a percentage, stall, provider completion, or hidden
-activity. A one-off `loomex_run_get` without `afterSequence` can return old
-event pages; in an explicit follow use the exact `nextAction` cursor and never
-treat a repeated historical preview as new work.
+Elapsed time and heartbeats are not progress. Use only new allowlisted milestones
+or authoritative stage transitions from the latest drained sequence; do not infer
+a percentage, stall, hidden activity or provider completion. A one-off read can
+return old event previews; use the exact `nextAction` cursor during following.
 
 When `observation_blocked` is verified, stop this follow and report its fixed
 issue without claiming the workflow ended. A later explicit status read or
@@ -158,7 +150,8 @@ two-minute cadence, verification, pausing, and cleanup rules. A projection of
 `registrationState: not_observed` requires `loomex_recovery_get`; it is not an
 ambiguous scheduling attempt. If recovery is unavailable or ambiguous, disclose
 that protection state once and keep live polling while observation is usable.
-Only call recovery active after a host record has been verified. Do not claim
+Quiet waits never write recovery checkpoints or refresh schedules. Only call
+recovery active after a host record has been verified. Do not claim
 monitoring continues after a final response unless that verified recovery
 schedule remains active; hooks and UI handoffs alone are not proof of ongoing
 monitoring.

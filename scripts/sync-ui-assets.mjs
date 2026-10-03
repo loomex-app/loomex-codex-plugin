@@ -2,14 +2,11 @@
 // Record integrity for generated, packaged UI assets. This is intentionally
 // independent from the frontend checkout used by sync-design-system.mjs.
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
 import { verifyDesignConsumers } from "./design-consumers.mjs";
-import { checkRetiredUiPaths } from "./retired-ui-paths.mjs";
-import { browserCoverage } from "./browser-coverage.mjs";
+import { compileBrowserApplication } from "./browser-build.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -19,44 +16,9 @@ const digest = (value) => createHash("sha256").update(value).digest("hex");
 const read = (name) => readFile(resolve(root, "assets", name), "utf8");
 const browserAssetPath = resolve(root, "assets/browser-application.js");
 
-async function compileBrowserApplication() {
-  const outputDirectory = await mkdtemp(join(tmpdir(), "loomex-ui-build-"));
-  const outputPath = join(outputDirectory, "browser-application.js");
-  try {
-    const result = await build({
-      metafile: true,
-      absWorkingDir: root,
-      bundle: true,
-      charset: "utf8",
-      entryPoints: ["src/ui-app/app.ts"],
-      format: "iife",
-      legalComments: "none",
-      // esbuild otherwise emits dependency-layout comments such as
-      // `node_modules/.pnpm/...` into the browser asset. Those vary between a
-      // developer's package manager and the clean npm release build despite
-      // identical executable code, making integrity checks non-reproducible.
-      minifyWhitespace: true,
-      logLevel: "silent",
-      outfile: outputPath,
-      platform: "browser",
-      sourcemap: false,
-      target: "es2022",
-      write: true,
-    });
-    const failures = browserCoverage(root, Object.keys(result.metafile.inputs));
-    if (failures.length) throw new Error(failures.join("\n"));
-    const code = await readFile(outputPath, "utf8");
-    const retirementFailures = checkRetiredUiPaths(Object.keys(result.metafile.inputs), code, await read("loomex-app.html"));
-    if (retirementFailures.length) throw new Error(retirementFailures.join("\n"));
-    return code;
-  } finally {
-    await rm(outputDirectory, { force: true, recursive: true });
-  }
-}
-
 const designSnapshot = JSON.parse(await read("frontend-design-system.json"));
 await verifyDesignConsumers(root, designSnapshot);
-const browserCode = await compileBrowserApplication();
+const { code: browserCode } = await compileBrowserApplication(root);
 const template = await read("loomex-app.html");
 const foundation = await read("frontend-design-system.css");
 const manifest = {

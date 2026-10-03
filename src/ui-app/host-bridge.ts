@@ -55,13 +55,23 @@ export class HostBridge {
         if (!this.#pending.has(id)) return;
         safelyReportSlow(options.onSlow, { stage: "slow", operation: method, elapsedMs: Math.max(0, this.#now() - startedAt) });
       }, options.slowAfterMs);
-      this.#pending.set(id, {
+      const pending: PendingRequest = {
         resolve,
         reject,
         timeoutTimer,
         ...(slowTimer === undefined ? {} : { slowTimer }),
-      });
-      this.#target.postMessage(message, this.#targetOrigin);
+      };
+      this.#pending.set(id, pending);
+      try {
+        this.#target.postMessage(message, this.#targetOrigin);
+      } catch {
+        // A synchronous posting failure must settle only this request. A host
+        // adapter may already have resolved or disposed it while posting.
+        if (this.#pending.get(id) !== pending) return;
+        this.#pending.delete(id);
+        clearPendingTimers(pending);
+        pending.reject(new UiTransportError({ code: "HOST_SEND_FAILED", message: "The request could not be sent to the host.", retryable: true }));
+      }
     });
   }
 
