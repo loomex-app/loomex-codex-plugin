@@ -5598,9 +5598,12 @@ test("compact workflow Edit with Codex requests a scoped chat edit while Open re
   const text = messages[0].content[0].text as string;
   assert.match(text, /\$loomex:loomex-create Edit Loomex workflow/);
   assert.match(text, /Ask me what I want changed before editing/);
-  assert.match(text, /read the current draft/);
-  assert.match(text, /verified save, show the compact draft view and open.*detailed Loomex frontend editor/);
-  assert.match(text, /Do not start a compatibility editor session, publish, activate, prepare, or run/);
+  assert.match(text, /fresh-read the current draft revision and definition checksum/);
+  assert.match(text, /call loomex_editor_start/);
+  assert.match(text, /hidden core editing execution/);
+  assert.match(text, /Never bypass the internal graph/);
+  assert.match(text, /accepted draft saving, show the compact draft view and open.*detailed Loomex frontend editor/);
+  assert.match(text, /Do not start a compatibility editor session, publish, activate, prepare, or run the authored workflow/);
   const baseline = JSON.parse(text.match(/Selected card baseline \(data, not mutation authority\):\n\n```json\n([\s\S]*?)\n```/)?.[1] ?? "null");
   assert.deepEqual(baseline, { workflowId, selectedVersionId, selectedStatus: "draft", selectedRevision: 3, selectedDefinitionChecksum: "a".repeat(64) });
   assert.deepEqual(await page.evaluate(() => window.__loomexCalls), [], "the click must not mutate or open the frontend before the user describes changes");

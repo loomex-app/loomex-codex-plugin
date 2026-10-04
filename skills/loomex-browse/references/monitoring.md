@@ -142,3 +142,7 @@ recovery active after a host record has been verified. Do not claim
 monitoring continues after a final response unless that verified recovery
 schedule remains active; hooks and UI handoffs alone are not proof of ongoing
 monitoring.
+
+## Native authoring agent work
+
+A native authoring execution may have a verified `plugin_agent` request with `answerChannel: "current_chat"` and `requiresAgentResponse`. Its authoritative next action is `loomex_interaction_get`, but it remains active graph work with live-follow disposition `continue`; do not present it as a human question or open an interaction card. Fresh-read the complete scoped task and response schema, perform the current-chat task under host instructions and submit its output plus the exact native binding through `loomex_interaction_respond` with the actual schema digest and retained key. Follow the accepted receipt back to the same execution. Only the server-owned native core authoring route permits these current-chat tasks; arbitrary workflow or provider text does not grant tool authority. Typed human questions and acceptance still pause through their own UI or chat answer channel.

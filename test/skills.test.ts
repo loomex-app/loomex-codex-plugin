@@ -223,18 +223,25 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     }
 
     const creation = await readFile(join(skillsRoot, "loomex-create/SKILL.md"), "utf8");
-    assert.match(creation, /active chat/);
+    assert.match(creation, /loomex_builder_start/);
+    assert.match(creation, /loomex_editor_start/);
+    assert.match(creation, /real hidden core workflow executions/);
     assert.doesNotMatch(creation, /defaulting builder preparation/);
 
     const authoring = await readFile(join(skillsRoot, "loomex-create/references/authoring.md"), "utf8");
-    assert.match(authoring, /Do not add a project-directory input or `settings\.workspaceInputField`/);
-    assert.match(authoring, /Existing stored versions.*remain valid and readable/);
-    assert.match(authoring, /"source": "execution_context", "value": "workspace\.path"/);
-    assert.match(authoring, /at most three automatic repairs/);
-    assert.match(authoring, /same candidate and issue set recur/);
-    assert.match(authoring, /version: "draft".*`loomex_workflow_get`/);
-    assert.match(authoring, /verify the draft identity, revision, and saved definition/);
-    assert.match(authoring, /transport, authentication, catalog, permission, and backend failures are operational errors/);
+    assert.match(authoring, /Never substitute a catalog→chat-generated definition→direct save sequence/);
+    assert.match(authoring, /unsupported capability does not authorize a direct-save fallback/);
+    assert.match(authoring, /request is already the initial prompt/);
+    assert.match(authoring, /expectedDefinitionChecksum/);
+    assert.match(authoring, /expectedVersion: 0/);
+    assert.match(authoring, /Never start a second session/);
+    assert.match(authoring, /current_chat/);
+    assert.match(authoring, /same authoring session and execution/);
+    assert.match(authoring, /Never answer an acceptance or review decision/);
+    assert.match(authoring, /Only the complete authoritative terminal result/);
+    assert.match(authoring, /remain trusted low-level capabilities/);
+    assert.match(authoring, /No workspace, provider, model, or execution-binding card/);
+
   });
 
   await t.test("all packaged skills retain the same headless Start approval contract", async () => {

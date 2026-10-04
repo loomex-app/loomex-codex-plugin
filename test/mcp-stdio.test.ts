@@ -159,7 +159,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1"])].sort(),
+    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "authoring.chat-native/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1"])].sort(),
   );
   const status = catalog.methods.find(method => method.name === "status.get");
   assert.ok(status);
@@ -367,6 +367,8 @@ test("SDK stdio discovery exposes only the focused tool catalog", async () => {
       | undefined;
     if ((tool._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri || [
       "loomex_workflows_list",
+      "loomex_builder_start",
+      "loomex_editor_start",
       "loomex_preparation_get",
       "loomex_run_start_handoff_approve_headless",
       "loomex_run_continuation_requeue",
@@ -2153,7 +2155,7 @@ test("older runners reject recovery coordination during capability negotiation",
   assert.equal(runner.requests.length, 0);
 });
 
-test("active-chat atomic creation retains definition and verified draft receipt without a card", async () => {
+test("explicit definition import retains atomic definition and draft receipt without a card", async () => {
   let runner!: FakeRunner;
   const workflowId = "b121d6a8-9d89-4991-a49c-f972829b3d21";
   const draft = { id: "8cebe362-f96e-4274-8941-929e9bf478dc", revision: 1, status: "draft" };
@@ -2457,4 +2459,50 @@ test("explicit headless typed answer reconciles a lost accepted receipt by readi
   assert.equal((reconciled.structuredContent as Record<string, any>).data.humanRequest.status, "resolved");
   assert.equal(reconciled._meta?.["loomex/viewSession"], undefined);
   assert.deepEqual(runner.requests.map(request => request.method), ["interactions.get", "interactions.respond", "interactions.get"]);
+});
+
+test("native authoring starts are strict optional graph routes with no workspace or provider card", async () => {
+  const receipt = { schemaVersion: "loomex.native-authoring-session/v1", sessionId: "18f23362-287a-4b92-927f-51d5808dce97",
+    builderSessionId: "18f23362-287a-4b92-927f-51d5808dce97", executionId: "adc7b3ba-1979-47d2-ac14-638ed91c5f82", status: "queued",
+    systemWorkflowKey: "workflow_builder", systemWorkflowVersionId: "c69ca6a1-709a-4e92-a8b0-d1f784a8cb2a", systemWorkflowDefinitionChecksum: "a".repeat(64), nextAction: "run_get" };
+  for (const [name, method, args] of [
+    ["loomex_builder_start", "builder.start", { prompt: "Build the requested workflow", idempotencyKey: "5b3c3e7e-8a41-45b4-ad2c-9a3fc8297f8a" }],
+    ["loomex_editor_start", "editor.start", { workflowId: "b121d6a8-9d89-4991-a49c-f972829b3d21", prompt: "Change the review question", expectedVersion: 4, expectedDefinitionChecksum: "b".repeat(64), idempotencyKey: "5b3c3e7e-8a41-45b4-ad2c-9a3fc8297f8a" }],
+  ] as const) {
+    let runner!: FakeRunner;
+    runner = new FakeRunner((request, socket) => runner.respond(socket, request, { ...receipt, systemWorkflowKey: method === "editor.start" ? "workflow_editor" : "workflow_builder" }),
+      { capabilities: [...REQUIRED_RUNNER_CAPABILITIES, `method:${method}`, "authoring.chat-native/v1"] });
+    const client = await connect(runner);
+    const result = await client.callTool({ name, arguments: args });
+    assert.notEqual(result.isError, true);
+    assert.deepEqual(runner.requests[0]?.params, args);
+    assert.equal(runner.requests[0]?.method, method);
+    assert.deepEqual((result.structuredContent as any).data.nextAction, { tool: "loomex_run_get", arguments: { runId: receipt.executionId } });
+    const definition = TOOL_DEFINITIONS.find(tool => tool.name === name)!;
+    assert.equal(definition.uiUri, undefined);
+    assert.equal(definition.optionalRunnerMethod, true);
+    for (const field of ["workspacePath", "providerConfiguration", "model", "context"]) assert.equal(definition.inputSchema.safeParse({ ...args, [field]: "invented" }).success, false);
+  }
+});
+
+test("native authoring never falls back on an unsupported runner and start receipt identities agree", async () => {
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, {}), { capabilities: [...REQUIRED_RUNNER_CAPABILITIES] });
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_builder_start", arguments: { prompt: "Build a workflow", idempotencyKey: "5b3c3e7e-8a41-45b4-ad2c-9a3fc8297f8a" } });
+  assert.equal(result.isError, true);
+  assert.equal(runner.requests.length, 0);
+  assert.ok(TOOL_DEFINITIONS.find(tool => tool.name === "loomex_workflow_operation_get")!.inputSchema.safeParse({ operation: "builder.start", idempotencyKey: "5b3c3e7e-8a41-45b4-ad2c-9a3fc8297f8a" }).success);
+});
+
+test("native authoring receipt rejects contradictory session identity and unknown binding fields", () => {
+  const receipt = { schemaVersion: "loomex.native-authoring-session/v1", sessionId: "18f23362-287a-4b92-927f-51d5808dce97",
+    builderSessionId: "18f23362-287a-4b92-927f-51d5808dce97", executionId: "adc7b3ba-1979-47d2-ac14-638ed91c5f82", status: "queued",
+    systemWorkflowKey: "workflow_builder", systemWorkflowVersionId: "c69ca6a1-709a-4e92-a8b0-d1f784a8cb2a", systemWorkflowDefinitionChecksum: "a".repeat(64), nextAction: "run_get" };
+  const schema = resultSchemaFor("builder.start")!;
+  assert.equal(schema.safeParse(receipt).success, true);
+  assert.equal(schema.safeParse({ ...receipt, builderSessionId: receipt.executionId }).success, false);
+  assert.equal(schema.safeParse({ ...receipt, executionPolicy: "host_user/v1" }).success, false);
+  assert.equal(schema.safeParse({ ...receipt, systemWorkflowKey: "workflow_editor" }).success, false);
+  assert.equal(schema.safeParse({ ...receipt, systemWorkflowDefinitionChecksum: "wrong" }).success, false);
 });

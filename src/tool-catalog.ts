@@ -521,7 +521,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_workflow_create",
     rpcMethod: "workflows.create",
     title: "Create Loomex workflow",
-    description: "Create a workflow and, when definition is supplied, save its validated draft atomically. Publishing, activation, and execution remain separate actions.",
+    description: "Low-level explicit definition import: create a workflow and, when definition is supplied, save its validated draft atomically. Conversational authoring starts with loomex_builder_start. Publishing, activation, and execution remain separate actions.",
     inputSchema: z
       .object({
         name: z.string().min(1),
@@ -539,7 +539,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "workflows.update",
     title: "Update Loomex workflow",
     description:
-      "Update workflow metadata or its draft definition with optional optimistic version checking. Validate the resulting definition before publishing.",
+      "Low-level explicit manual definition or metadata update with optional optimistic version checking. Conversational editing starts with loomex_editor_start. Validate the resulting definition before publishing.",
     inputSchema: z
       .object({
         workflowId: Uuid,
@@ -579,9 +579,9 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "workflow.operations.get",
     title: "Reconcile Loomex workflow operation",
     description:
-      "Read the exact durable outcome of a workflow create, update, or publish operation after an ambiguous response. Use the original operation and idempotency key; do not infer completion from names or workflow listings.",
+      "Read the exact durable outcome of a workflow create, update, publish, or native authoring start after an ambiguous response. Use the original operation and idempotency key; do not infer completion from names or workflow listings.",
     inputSchema: z.object({
-      operation: z.enum(["workflows.create", "workflows.update", "workflows.publish"]),
+      operation: z.enum(["workflows.create", "workflows.update", "workflows.publish", "builder.start", "editor.start"]),
       idempotencyKey: IdempotencyKey,
     }).strict(),
     mutating: false,
@@ -623,6 +623,26 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     destructive: true,
   },
   {
+    name: "loomex_builder_start",
+    rpcMethod: "builder.start",
+    title: "Start native Loomex workflow creation",
+    description: "Start one hidden, immutable core workflow authoring execution from the user's original request in the current chat. Pass that request unchanged; no workspace or provider review is needed. Immediately read the returned execution with loomex_run_get and follow its authoritative nextAction, completing verified current_chat agent tasks and presenting typed human questions through their answerChannel. Reconcile an ambiguous start with loomex_workflow_operation_get using builder.start and the original key. Never bypass this graph with direct definition construction and save. Acceptance saves a draft; publication and activation are separate actions.",
+    inputSchema: z.object({ prompt: z.string().min(1).regex(/\S/), idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true,
+    destructive: false,
+    optionalRunnerMethod: true,
+  },
+  {
+    name: "loomex_editor_start",
+    rpcMethod: "editor.start",
+    title: "Start native Loomex workflow editing",
+    description: "Start one hidden, immutable core editing execution for the exact workflow and requested change in the current chat. Fresh-read its current draft and pass its revision and definitionChecksum; if no draft exists, use expectedVersion zero with the fresh active published definition checksum. The graph guards that baseline and owns review, feedback, acceptance and draft saving. Immediately read the returned execution with loomex_run_get and follow nextAction. Reconcile ambiguity using loomex_workflow_operation_get with editor.start and the original key. Never replace this graph with a direct chat update. Publication and activation are separate actions.",
+    inputSchema: z.object({ workflowId: Uuid, prompt: z.string().min(1).regex(/\S/), expectedVersion: z.number().int().min(0), expectedDefinitionChecksum: z.string().length(64).regex(/^[0-9a-f]{64}$/), idempotencyKey: IdempotencyKey }).strict(),
+    mutating: true,
+    destructive: true,
+    optionalRunnerMethod: true,
+  },
+  {
     name: "loomex_builder_catalog",
     rpcMethod: "builder.catalog",
     title: "Get Loomex builder catalog",
@@ -646,7 +666,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "builder.prepare",
     title: "Prepare Loomex workflow builder",
     description:
-      "Compatibility path for an existing execution-backed builder integration; active-chat conversational authoring instead uses the builder catalog, validation, and workflow create/update. This prepares, but does not start, that compatibility session and returns its exact canonical workspace, provider, host_user/v1 authority, binding digest, and confirmation key for explicit review before commit.",
+      "Compatibility path for an existing execution-backed builder integration; new conversational authoring starts the hidden core graph with loomex_builder_start. This prepares, but does not start, that compatibility session and returns its exact canonical workspace, provider, host_user/v1 authority, binding digest, and confirmation key for explicit review before commit.",
     inputSchema: z
       .object({
         prompt: z.string().min(1),
@@ -713,7 +733,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "editor.prepare",
     title: "Prepare Loomex workflow editor",
     description:
-      "Compatibility path for an existing execution-backed editor integration; active-chat conversational edits instead read the workflow, use the builder catalog and validation, then update its draft at a fresh expected version. This prepares, but does not start, that compatibility session and returns its exact canonical workspace, provider, host_user/v1 authority, binding digest, and confirmation key for explicit review before commit.",
+      "Compatibility path for an existing execution-backed editor integration; new conversational edits start the hidden core graph with loomex_editor_start and a fresh guarded baseline. This prepares, but does not start, that compatibility session and returns its exact canonical workspace, provider, host_user/v1 authority, binding digest, and confirmation key for explicit review before commit.",
     inputSchema: z
       .object({
         workflowId: Uuid,
@@ -1000,7 +1020,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_interaction_get",
     rpcMethod: "interactions.get",
     title: "Get Loomex interaction",
-    description: "Read this interaction and its authoritative run identity and complete typed answer schema without opening a UI. A pending batch read includes every question, exact choice IDs and labels, and the submission response schema. Complete headless contracts have a 256 KiB UTF-8 model-response budget; an oversized or deeply nested schema returns an explicit issue with no partial answer contract. Follow authoritative answerChannel for presentation: chat asks the singular long-answer question directly; ui normally uses loomex_interaction_view, while an explicitly headless flow may use this read to collect exact typed user answers, review the proposed response and submit after a fresh schema read. A clear direct user answer may submit after a fresh read; research is not an answer and synthesized answers require review. Do not poll or invent answers while a human response is pending.",
+    description: "Read this interaction and its authoritative run identity and complete typed answer schema without opening a UI. A pending batch read includes every question, exact choice IDs and labels, and the submission response schema. Complete headless contracts have a 256 KiB UTF-8 model-response budget; an oversized or deeply nested schema returns an explicit issue with no partial answer contract. Follow authoritative answerChannel for presentation: chat asks the singular long-answer question directly; ui normally uses loomex_interaction_view, while an explicitly headless flow may use this read to collect exact typed user answers, review the proposed response and submit after a fresh schema read. A clear direct user answer may submit after a fresh read; research is not an answer and synthesized answers require review. Do not poll or invent answers while a human response is pending. A verified native-authoring plugin_agent current_chat request instead returns the complete scoped agent task and unchanged response schema; perform that task under host instructions and continue the same execution after responding.",
     inputSchema: z.object({ requestId: Uuid }).strict(),
     mutating: false,
     destructive: false,
@@ -1194,4 +1214,6 @@ export const OPTIONAL_RUNNER_METHODS = new Set(
 // may expose workflows.patch but overwrite existing draft notes when omitted.
 export const OPTIONAL_RUNNER_CAPABILITIES_BY_METHOD: Readonly<Record<string, readonly string[]>> = Object.freeze({
   "workflows.patch": ["workflows.patch.notes-preserve/v1"],
+  "builder.start": ["authoring.chat-native/v1"],
+  "editor.start": ["authoring.chat-native/v1"],
 });

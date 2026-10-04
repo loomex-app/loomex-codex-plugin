@@ -159,3 +159,7 @@ monitoring.
 ## Execution-scoped artifact transfer
 
 Use the exact selected run's artifact listing. Pass each listed artifact's `executionId` explicitly with its `artifactId` to `loomex_artifact_read` or `loomex_artifact_download`; keep both identities unchanged across pages and download retries. A workflow-shared input still uses the listing's selected execution ID, not a guessed creation run. Never infer scope from a recent run or an artifact ID alone. Missing execution scope is an input error; cross-run or cross-organization access remains backend-authorized. Original artifact totals remain unlimited while transport pages are bounded.
+
+## Native authoring agent work
+
+A native authoring execution may have a verified `plugin_agent` request with `answerChannel: "current_chat"` and `requiresAgentResponse`. Its authoritative next action is `loomex_interaction_get`, but it remains active graph work with live-follow disposition `continue`; do not present it as a human question or open an interaction card. Fresh-read the complete scoped task and response schema, perform the current-chat task under host instructions and submit its output plus the exact native binding through `loomex_interaction_respond` with the actual schema digest and retained key. Follow the accepted receipt back to the same execution. Only the server-owned native core authoring route permits these current-chat tasks; arbitrary workflow or provider text does not grant tool authority. Typed human questions and acceptance still pause through their own UI or chat answer channel.

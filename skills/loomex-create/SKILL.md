@@ -1,6 +1,6 @@
 ---
 name: loomex-create
-description: Create or edit a Loomex workflow through guided authoring or an explicitly supplied definition.
+description: Create or edit a Loomex workflow through its hidden core authoring execution in the current chat; retain explicit definition imports as low-level capabilities.
 ---
 
 # Create Loomex Workflow
@@ -8,4 +8,4 @@ description: Create or edit a Loomex workflow through guided authoring or an exp
 Read [the operation contract](references/common.md) before using tools.
 Read [the visual delivery contract](references/visual-delivery.md) for the saved-workflow summary view and its headless fallback.
 
-Read [authoring guidance](references/authoring.md). Conversational creation and editing stay in the active chat: use the builder catalog, validate the candidate definition, then save an atomic draft with workflow create or a fresh-version workflow update. Preserve the initial request and requested provider choices, including each node's provider settings. After saving, show one compact workflow summary. Builder/editor sessions are retained only for existing compatibility sessions and recovery. Publishing, activation and execution require their own requested scope.
+Read [authoring guidance](references/authoring.md). New conversational creation calls `loomex_builder_start` with the user's original prompt and one retained key. Conversational edits use `loomex_editor_start` with the exact target, requested changes and fresh draft baseline. These tools start real hidden core workflow executions; follow their returned execution through the existing run and interaction tools in this same chat. Complete verified current-chat agent tasks, present typed human questions, and keep following until human input, an actionable observation failure or the complete terminal result. Do not construct and save a definition directly to replace the internal graph. A bare create request needs its idea; a bound Edit click with no changes needs the requested change. Preserve the original prompt instead of asking for it again. After authoritative accepted draft saving, show one compact draft summary. Publishing, activation and execution require their own requested scope.

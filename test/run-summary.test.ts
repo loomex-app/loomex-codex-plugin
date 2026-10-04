@@ -995,3 +995,101 @@ test("continuation recovery projects only safe exact-run identity after blocked 
     assert.equal(runSummary("runs.get", state)?.continuationRecovery, undefined);
   }
 });
+
+const nativeSessionId = "18f23362-287a-4b92-927f-51d5808dce97";
+const nativeVersionId = "c69ca6a1-709a-4e92-a8b0-d1f784a8cb2a";
+const nativeBinding = { schemaVersion: "loomex.native-authoring/v1", mode: "create", systemKey: "workflow_builder",
+  sessionId: nativeSessionId, runnerId: "07c2f53b-1687-469c-b2aa-d6a3fc1a608a", workflowVersionId: nativeVersionId,
+  definitionChecksum: "a".repeat(64) };
+const nativeTaskBinding = { ...nativeBinding, executionId: runId, organizationId, requestId,
+  nodeExecutionId: "2905b270-ae08-47f7-91c5-f70319ed72d4", nodeKey: "compose", attempt: 1, generation: 1 };
+const agentRequest = { id: requestId, status: "pending", type: "plugin_agent", interactionCategory: "plugin_agent", answerChannel: "current_chat",
+  schemaDigest: "b".repeat(64), execution: { id: runId }, organizationId,
+  responseSchema: { type: "object", properties: { status: { const: "completed" }, output: { $ref: "#/$defs/output" }, nativeAuthoringBinding: { const: nativeTaskBinding } },
+    $defs: { output: { type: "object", properties: { prompt: { type: "string", pattern: "^x" } }, required: ["prompt"], additionalProperties: false } }, required: ["status", "output", "nativeAuthoringBinding"] },
+  agentTask: { schemaVersion: "loomex.plugin-agent-task/v2", executionStrategy: "current_chat", strategy: "current_chat",
+    prompt: "Perform the scoped authoring task.", promptTemplate: "{{request}}", promptContext: { request: "x" }, input: { request: "x" },
+    schemas: { input: { type: "object" }, output: { type: "object", properties: { prompt: { type: "string", pattern: "^x" } }, required: ["prompt"], additionalProperties: false } },
+    outputValidation: { strategy: "schema" }, nativeAuthoringBinding: nativeTaskBinding,
+    providerExecution: { model: "fabricated-model" } },
+  privateOutput: "must-not-be-projected" };
+
+test("native starts expose pinned receipt and follow the existing execution without a review card", () => {
+  for (const method of ["builder.start", "editor.start"]) {
+    const result = runSummary(method, { schemaVersion: "loomex.native-authoring-session/v1", sessionId: nativeSessionId, builderSessionId: nativeSessionId,
+      executionId: runId, status: "queued", systemWorkflowKey: "workflow_builder", systemWorkflowVersionId: nativeVersionId,
+      systemWorkflowDefinitionChecksum: "a".repeat(64), nextAction: "run_get", privateNestedContext: { secret: "hidden" } });
+    assert.deepEqual(result?.nextAction, { tool: "loomex_run_get", arguments: { runId } });
+    assert.equal(result?.systemWorkflowVersionId, nativeVersionId);
+    assert.doesNotMatch(JSON.stringify(result), /privateNestedContext|hidden/);
+  }
+});
+
+test("native current-chat tasks remain active and drain events before agent response", () => {
+  const snapshot = { execution: data.execution, nativeAuthoringBinding: nativeBinding, requiresAgentResponse: true,
+    agentRequest: { id: requestId, requestType: "plugin_agent", answerChannel: "current_chat" }, waitState: "agent_response_required",
+    events: [], latestSequence: 9, hasMoreEvents: false, timedOut: false };
+  const result = runSummary("runs.get", snapshot);
+  assert.deepEqual(result?.nextAction, { tool: "loomex_interaction_get", arguments: { requestId } });
+  assert.equal(result?.requiresUserInput, undefined);
+  assert.equal(result?.requiresAgentResponse, true);
+  assert.equal((result?.monitoring as any).liveFollow.disposition, "continue");
+  const malformedAgent = runSummary("runs.get", { ...snapshot, requiresAgentResponse: false, waitState: "human_action_required", humanRequest: agentRequest });
+  assert.equal(malformedAgent?.stateNeedsVerification, true);
+  assert.equal(malformedAgent?.requiresUserInput, undefined, "agent work cannot fall back to a human form");
+  const paged = runSummary("runs.get", { ...snapshot, hasMoreEvents: true, events: [{ sequence: 8 }] });
+  assert.deepEqual(paged?.nextAction, { tool: "loomex_run_events", arguments: { runId, afterSequence: 8 } });
+  for (const changed of [ { ...snapshot, nativeAuthoringBinding: { ...nativeBinding, systemKey: "arbitrary_workflow" } },
+    { ...snapshot, agentRequest: { ...snapshot.agentRequest, answerChannel: "ui" } },
+    { ...snapshot, execution: { ...data.execution, organizationId: "invalid" } } ]) {
+    const rejected = runSummary("runs.get", changed);
+    assert.equal(rejected?.stateNeedsVerification, true);
+    assert.equal(rejected?.requiresAgentResponse, undefined);
+  }
+});
+
+test("native agent read retains complete typed schema and context without provider fabrication", () => {
+  const result = runSummary("interactions.get", { execution: data.execution, humanRequest: agentRequest });
+  assert.equal(result?.requiresAgentResponse, true);
+  assert.equal(result?.requiresUserInput, undefined);
+  assert.deepEqual(result?.responseSchema, agentRequest.responseSchema);
+  assert.deepEqual((result?.agentTask as any).schemas, agentRequest.agentTask.schemas);
+  assert.deepEqual((result?.agentTask as any).promptContext, { request: "x" });
+  assert.deepEqual((result?.agentTask as any).nativeAuthoringBinding, nativeTaskBinding);
+  assert.doesNotMatch(JSON.stringify(result), /fabricated-model|providerExecution|must-not-be-projected/);
+  for (const request of [ { ...agentRequest, schemaDigest: "invalid" }, { ...agentRequest, interactionCategory: "human" },
+    { ...agentRequest, execution: { id: nativeSessionId } },
+    { ...agentRequest, agentTask: { ...agentRequest.agentTask, nativeAuthoringBinding: { ...nativeTaskBinding, requestId: nativeSessionId } } },
+    { ...agentRequest, agentTask: { ...agentRequest.agentTask, strategy: "cli" } } ]) {
+    const rejected = runSummary("interactions.get", { execution: data.execution, humanRequest: request });
+    assert.equal(rejected?.stateNeedsVerification, true);
+    assert.equal(rejected?.agentTask, undefined);
+    assert.equal(rejected?.responseSchema, undefined);
+  }
+  const oversized = runSummary("interactions.get", { execution: data.execution, humanRequest: { ...agentRequest,
+    agentTask: { ...agentRequest.agentTask, prompt: "x".repeat(300_000) } } });
+  assert.equal(oversized?.headlessSchemaComplete, false);
+  assert.equal(oversized?.agentTask, undefined);
+});
+
+test("native authoring completion requires verified accepted terminal result and exposes exact draft receipt", () => {
+  const accepted = { schemaVersion: "loomex.native-authoring-result/v1", status: "accepted", workflowId: nativeSessionId,
+    draft: { id: nativeVersionId, revision: 3, definitionChecksum: "c".repeat(64), definition: { private: "must-not-enter-result" } } };
+  const snapshot = { execution: { ...data.execution, status: "completed" }, nativeAuthoringBinding: nativeBinding,
+    nativeAuthoringResult: accepted, events: [], latestSequence: 20, hasMoreEvents: false, timedOut: false };
+  const result = runSummary("runs.result", snapshot);
+  assert.deepEqual(result?.nativeAuthoringResult, { schemaVersion: accepted.schemaVersion, status: "accepted", workflowId: nativeSessionId,
+    draft: { id: nativeVersionId, revision: 3, definitionChecksum: "c".repeat(64) } });
+  assert.doesNotMatch(JSON.stringify(result), /must-not-enter-result/);
+  for (const changed of [ { ...snapshot, nativeAuthoringBinding: null },
+    { ...snapshot, nativeAuthoringResult: { ...accepted, status: "proposed" } },
+    { ...snapshot, execution: { ...data.execution, status: "running" } },
+    { ...snapshot, execution: { ...data.execution, status: "failed" } } ]) {
+    assert.equal(runSummary("runs.result", changed)?.nativeAuthoringResult, undefined);
+  }
+  const unverified = runSummary("runs.result", { ...snapshot, nativeAuthoringResult: null });
+  assert.equal(unverified?.stateNeedsVerification, true);
+  assert.equal((unverified?.resultIssue as any).code, "NATIVE_AUTHORING_RESULT_UNVERIFIED");
+  assert.equal((unverified?.monitoring as any).liveFollow.disposition, "observation_blocked");
+  assert.equal(runSummary("runs.get", snapshot)?.nativeAuthoringResult, undefined, "terminal snapshot still requires complete result retrieval");
+});

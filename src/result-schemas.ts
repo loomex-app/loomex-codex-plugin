@@ -42,6 +42,15 @@ const SpoolResult = z
   })
   .strict();
 
+const NativeAuthoringStartResult = z.object({
+  schemaVersion: z.literal("loomex.native-authoring-session/v1"),
+  sessionId: z.uuid(), builderSessionId: z.uuid(), executionId: z.uuid(),
+  status: z.literal("queued"),
+  systemWorkflowKey: z.enum(["workflow_builder", "workflow_editor"]),
+  systemWorkflowVersionId: z.uuid(), systemWorkflowDefinitionChecksum: z.string().regex(/^[a-f0-9]{64}$/),
+  nextAction: z.literal("run_get"), details: Details,
+}).strict().refine((value) => value.sessionId === value.builderSessionId, { message: "Native authoring session identities must match" });
+
 const BuilderMutationResult = z
   .object({
     builderSession: JsonObject.optional(),
@@ -67,6 +76,23 @@ const BuilderCommitResult = z
   .strict();
 
 const EditorCommitResult = BuilderCommitResult.extend({ editSessionId: z.string() }).strict();
+
+const NativeAuthoringBinding = z.object({
+  schemaVersion: z.literal("loomex.native-authoring/v1"), mode: z.enum(["create", "edit"]),
+  systemKey: z.enum(["workflow_builder", "workflow_editor"]), sessionId: z.uuid(), runnerId: z.uuid(),
+  workflowVersionId: z.uuid(), definitionChecksum: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+const NativeAuthoringResult = z.object({
+  schemaVersion: z.literal("loomex.native-authoring-result/v1"), status: z.literal("accepted"), workflowId: z.uuid(),
+  draft: z.object({ id: z.uuid(), revision: z.number().int().min(1), definitionChecksum: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+}).strict();
+
+const NativeAuthoringProjection = {
+  requiresAgentResponse: z.boolean().optional(),
+  agentRequest: z.object({ id: z.uuid(), requestType: z.literal("plugin_agent"), answerChannel: z.literal("current_chat") }).strict().optional(),
+  nativeAuthoringBinding: NativeAuthoringBinding.optional(),
+  nativeAuthoringResult: NativeAuthoringResult.optional(),
+} as const;
 
 const RunProjection = {
   execution: JsonObject,
@@ -273,7 +299,7 @@ const primarySchemas = {
     .strict(),
   "workflow.operations.get": z
     .object({
-      operation: z.enum(["workflows.create", "workflows.update", "workflows.publish"]),
+      operation: z.enum(["workflows.create", "workflows.update", "workflows.publish", "builder.start", "editor.start"]),
       idempotencyKey: z.string(),
       status: z.enum(["not_found", "pending", "completed"]),
       response: JsonObject.optional(),
@@ -295,6 +321,8 @@ const primarySchemas = {
   "workflows.activate": z
     .object({ workflow: JsonObject, version: JsonObject, details: Details })
     .strict(),
+  "builder.start": NativeAuthoringStartResult.refine(value => value.systemWorkflowKey === "workflow_builder", { message: "The creation receipt must bind the builder graph" }),
+  "editor.start": NativeAuthoringStartResult.refine(value => value.systemWorkflowKey === "workflow_editor", { message: "The editing receipt must bind the editor graph" }),
   "builder.catalog": z
     .object({
       nodeTypes: Objects,
@@ -384,10 +412,10 @@ const primarySchemas = {
   "runs.list": z
     .object({ executions: Objects, nextCursor: NullableString, details: Details })
     .strict(),
-  "runs.get": z.object(RunProjection).strict(),
-  "runs.wait": z.object(RunProjection).strict(),
-  "runs.events": z.object(RunProjection).strict(),
-  "runs.result": z.object(RunProjection).strict(),
+  "runs.get": z.object({ ...RunProjection, ...NativeAuthoringProjection }).strict(),
+  "runs.wait": z.object({ ...RunProjection, ...NativeAuthoringProjection }).strict(),
+  "runs.events": z.object({ ...RunProjection, ...NativeAuthoringProjection }).strict(),
+  "runs.result": z.object({ ...RunProjection, ...NativeAuthoringProjection }).strict(),
   "runs.cancel": z.object({ execution: JsonObject, jobs: Objects, details: Details }).strict(),
   "runs.continuation.requeue": z.object({ executionId: z.uuid(), deliveryId: z.uuid(),
     expectedContinuationDigest: z.string().length(64).regex(/^[a-f0-9]{64}$/), requeued: z.boolean(),

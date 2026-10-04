@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { TOOL_NAMES } from "../src/tool-catalog.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import packageMetadata from "../package.json" with { type: "json" };
@@ -87,7 +88,7 @@ test("actual MCP resource diagnostics invokes only initialization, descriptor li
     try {
         const result = await inspectPackagedMcp(process.execPath, [resolve("dist/server.js")]);
         assert.equal(result.mcp.state, "verified");
-        assert.equal(result.mcp.observation?.count, 101);
+        assert.equal(result.mcp.observation?.count, TOOL_NAMES.length);
         assert.equal(result.resources.state, "verified");
         assert.equal(result.resources.observation?.count, 9);
         assert.deepEqual(await readdir(dir), []);
