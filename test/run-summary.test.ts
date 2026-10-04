@@ -102,19 +102,18 @@ test("focused interaction read preserves every typed choice and submission field
   assert.equal(stale?.responseSchema, undefined);
 });
 
-test("chat interaction keeps only the filtered submission schema and preserves null for an absent schema", () => {
+test("chat interaction preserves opaque submission syntax and filters unrelated provider data", () => {
   const request = { ...data.humanRequest, answerChannel: "chat", schemaDigest: "c".repeat(64),
     inputSpec: { inputType: "long_text", question: "Explain the design" },
-    responseSchema: { type: "object", description: "private provider prompt", properties: {
-      value: { type: "string", minLength: 1, description: "private field prompt",
-        allOf: [{ type: "string", privateRef: "private schema internals" }] },
-    }, required: ["value"], privateKey: "private schema root" } };
+    providerOutput: "private provider output",
+    responseSchema: { type: "object", description: "contract annotation", properties: {
+      value: { type: "string", minLength: 1, description: "field annotation",
+        allOf: [{ type: "string", extension: "contract extension" }] },
+    }, required: ["value"], extension: "contract root extension" } };
   const projected = runSummary("interactions.get", { execution: data.execution, humanRequest: request });
   assert.equal(projected?.answerChannel, "chat");
-  assert.deepEqual(projected?.responseSchema, { type: "object", properties: {
-    value: { type: "string", minLength: 1, allOf: [{ type: "string" }] },
-  }, required: ["value"] });
-  assert.doesNotMatch(JSON.stringify(projected), /private provider prompt|private field prompt|private schema internals|private schema root/);
+  assert.deepEqual(projected?.responseSchema, request.responseSchema);
+  assert.doesNotMatch(JSON.stringify(projected), /private provider output|private-prompt|private-answer/);
   for (const absent of [undefined, null]) {
     const noSchema = { ...request, ...(absent === undefined ? { responseSchema: undefined } : { responseSchema: null }) };
     const result = runSummary("interactions.get", { execution: data.execution, humanRequest: noSchema as any });

@@ -432,28 +432,38 @@ function question(value: JsonValue | undefined, complete = false): ObjectValue {
   return result;
 }
 
-/** Preserve the server's submission contract, excluding display and provider metadata. */
-function responseSchema(value: JsonValue | undefined, state: { complete: boolean }, depth = 0): ObjectValue | undefined {
-  if (depth > 12) { state.complete = false; return undefined; }
-  const schema = object(value);
-  if (!Object.keys(schema).length) return undefined;
-  const result = fields(schema, ["type", "const", "format", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "additionalProperties"], Number.MAX_SAFE_INTEGER);
-  const properties = object(schema.properties);
-  if (Object.keys(properties).length) {
-    result.properties = Object.fromEntries(Object.entries(properties)
-      .map(([name, nested]) => [name, responseSchema(nested, state, depth + 1)])
-      .filter((entry) => entry[1] !== undefined));
-  }
-  if (schema.items !== undefined) result.items = responseSchema(schema.items, state, depth + 1) ?? {};
-  for (const key of ["oneOf", "anyOf", "allOf"] as const) {
-    const values = schema[key];
-    if (Array.isArray(values)) result[key] = values.map((nested) => responseSchema(nested, state, depth + 1) ?? {});
-  }
-  for (const key of ["required", "enum"] as const) {
-    const values = schema[key];
-    if (Array.isArray(values)) result[key] = values.filter((item) => typeof item === "string" || typeof item === "boolean" || typeof item === "number" || item === null);
-  }
-  return result;
+/** JSON Schema is contract syntax: {} and false must never mean "absent". */
+function isSchema(value: JsonValue | undefined): value is ObjectValue | boolean {
+  return typeof value === "boolean" || value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Keep the existing twelve-level schema bound without rewriting contracts.
+// Schema dictionaries/arrays hold sibling schemas; their container does not
+// add a schema level. Other JSON values (including const/enum/annotations)
+// remain opaque data, but their nesting is checked as well.
+const SCHEMA_DICTIONARIES = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"]);
+const SCHEMA_LISTS = new Set(["allOf", "anyOf", "oneOf", "prefixItems", "items"]);
+const SCHEMA_VALUES = new Set(["items", "additionalItems", "contains", "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "propertyNames", "not", "if", "then", "else", "contentSchema"]);
+function schemaWithinDepth(value: JsonValue, depth = 0): boolean {
+  if (depth > 12) return false;
+  if (value === null || typeof value !== "object") return true;
+  if (Array.isArray(value)) return value.every(item => schemaWithinDepth(item,
+    item !== null && typeof item === "object" ? depth + 1 : depth));
+  return Object.entries(value).every(([key, nested]) =>
+    SCHEMA_DICTIONARIES.has(key) && nested !== null && typeof nested === "object" && !Array.isArray(nested)
+      ? Object.values(nested).every(item => schemaWithinDepth(item, depth + 1))
+      : SCHEMA_LISTS.has(key) && Array.isArray(nested)
+        ? nested.every(item => schemaWithinDepth(item, depth + 1))
+        // Scalar keyword data (type, const, enum values, annotations) is not
+        // another schema level; boolean subschemas still are.
+        : schemaWithinDepth(nested, SCHEMA_VALUES.has(key) || nested !== null && typeof nested === "object" ? depth + 1 : depth));
+}
+
+/** Preserve the complete validated contract; filter unrelated data outside it. */
+function responseSchema(value: JsonValue | undefined, state: { complete: boolean }): ObjectValue | boolean | undefined {
+  if (!isSchema(value)) return undefined;
+  if (!schemaWithinDepth(value)) { state.complete = false; return undefined; }
+  return value;
 }
 
 function interaction(value: JsonValue | undefined, complete = false): ObjectValue {
@@ -506,8 +516,8 @@ function nativeAgentAuthorized(data: ObjectValue): boolean {
     typeof binding.attempt === "number" && Number.isSafeInteger(binding.attempt) && binding.attempt >= 1 &&
     typeof binding.generation === "number" && Number.isSafeInteger(binding.generation) && binding.generation >= 1 &&
     typeof request.schemaDigest === "string" && /^[a-f0-9]{64}$/.test(request.schemaDigest) &&
-    typeof task.prompt === "string" && Boolean(Object.keys(object(object(task.schemas).output)).length) &&
-    Boolean(Object.keys(object(request.responseSchema)).length);
+    typeof task.prompt === "string" && isSchema(object(task.schemas).output) &&
+    isSchema(request.responseSchema);
 }
 
 function agentInteractionSummary(data: ObjectValue): ObjectValue {
@@ -756,7 +766,7 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
   const schemaProjection = { complete: true };
   if (completeInteraction) {
     const schema = responseSchema(object(data.humanRequest).responseSchema, schemaProjection);
-    if (schema) summary.responseSchema = schema;
+    if (schema !== undefined) summary.responseSchema = schema;
   }
   const waitState = enumField(data.waitState, WAIT_STATES);
   if (waitState !== undefined) summary.waitState = waitState;
