@@ -69,3 +69,19 @@ an authorized host observation.
 Custom views consume the frontend design system through a pinned, compiled CSS artifact. The shared renderer inlines it offline for every MCP resource. See [design-system.md](docs/design-system.md) for canonical sources, sync/check commands, dark-mode behavior and accessibility adaptations.
 
 Read-only installed checks are available through `scripts/lifecycle.sh diagnostics`; see [diagnostics and host routing](docs/diagnostics.md).
+
+## Public preview distribution
+
+The public component repository is `loomex-app/loomex-codex-plugin`. End users
+install the exact compatible runner and plugin through the unified installer
+attached to a reviewed paired release in `loomex-app/loomex-runner`. The release
+set binds both source revisions, versions, archive checksums, and passing
+compatibility evidence. Select an explicit `preview-runner-vX.Y.Z-plugin-vX.Y.Z`
+tag; mixing `latest` assets is unsupported. The local Codex marketplace identity
+remains `loomex-private`, with plugin name `loomex`.
+
+Unsigned previews require explicit unsafe development opt-in and an isolated
+test installation. They have no Apple signing, notarization, or production
+assurance. Publication is a separate maintainer decision after reviewing the
+draft and paired compatibility evidence. See [public distribution](docs/public-distribution.md)
+for exact archive contents, install commands, and release checkpoints.

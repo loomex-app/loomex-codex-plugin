@@ -1,0 +1,71 @@
+name: Unsigned public preview candidate
+on:
+  workflow_dispatch:
+    inputs:
+      runner_version:
+        description: Exact compatible runner version (no latest selector)
+        required: true
+        type: string
+      stage_draft:
+        description: Stage a draft only after protected maintainer review
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-14-xlarge
+    outputs:
+      release_tag: ${{ steps.identity.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.20.0
+          cache: npm
+      - name: Bind exact paired candidate identity
+        id: identity
+        env:
+          RUNNER_VERSION: ${{ inputs.runner_version }}
+        run: |
+          [[ "$RUNNER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="$(node -p 'require("./package.json").version')"
+          echo "release_tag=preview-runner-v${RUNNER_VERSION}-plugin-v${version}" >> "$GITHUB_OUTPUT"
+      - name: Build and test compiled unsigned envelope
+        run: ./scripts/build-release.sh --unsigned-development --output "$RUNNER_TEMP/envelope"
+      - name: Export immutable public preview archive
+        env:
+          RELEASE_TAG: ${{ steps.identity.outputs.release_tag }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          npm run build
+          python3 scripts/package-public-release.py --release "$RUNNER_TEMP/envelope" --output "$RUNNER_TEMP/public/loomex-plugin-${version}-darwin-arm64-preview.tar.gz" --release-tag "$RELEASE_TAG" --source-revision "$GITHUB_SHA" --unsigned-preview --qualify-clean-source
+          python3 scripts/test-public-release.py --release "$RUNNER_TEMP/envelope" --release-tag "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-public-preview-${{ steps.identity.outputs.release_tag }}
+          path: ${{ runner.temp }}/public/*
+          if-no-files-found: error
+  stage-draft:
+    if: ${{ inputs.stage_draft }}
+    needs: build
+    runs-on: ubuntu-latest
+    # Configure this environment with required reviewers before enabling draft staging.
+    environment: preview-release-review
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-public-preview-${{ needs.build.outputs.release_tag }}
+          path: candidate
+      - name: Stage reviewed immutable draft (never publish)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+        run: |
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
+          gh release create "$RELEASE_TAG" candidate/* --repo loomex-app/loomex-codex-plugin --verify-tag --draft --prerelease --title "Unsigned preview $RELEASE_TAG" --notes "Unsigned development preview. Requires explicit unsafe development opt-in; no Apple signing, notarization, or production assurance. Install the exact paired set from loomex-app/loomex-runner; this draft is a component mirror. Maintainer must attach passing compatibility evidence before separately authorizing publication."

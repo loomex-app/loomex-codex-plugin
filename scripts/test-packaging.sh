@@ -143,6 +143,60 @@ fi
 python3 "$repo/scripts/artifact.py" verify --release "$legacy_release" --project loomex-plugin --platform darwin-arm64 --allow-unsigned-development --allow-legacy-source-provenance
 LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base"
 test -L "$base/current"
+# Registration retries accept only the exact healthy current release without
+# rewriting the receipt, metadata, helper, or creating a lifecycle journal.
+cp "$base/install-receipt.json" "$fixture/receipt-before-exact-retry.json"
+cp "$base/.agents/plugins/marketplace.json" "$fixture/marketplace-before-exact-retry.json"
+LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base" > "$fixture/exact-retry.out"
+grep -Fq 'Verified already installed' "$fixture/exact-retry.out"
+cmp "$base/install-receipt.json" "$fixture/receipt-before-exact-retry.json"
+cmp "$base/.agents/plugins/marketplace.json" "$fixture/marketplace-before-exact-retry.json"
+test ! -e "$base/lifecycle.json"
+test ! -e "$base/.stage-0.1.0"
+if "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
+  echo "exact retry accepted missing unsafe development opt-in" >&2; exit 1
+fi
+same_version_release="$fixture/same-version-other-release"; cp -R "$release" "$same_version_release"
+python3 - "$same_version_release/manifest.json" <<'PYRETRY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); data=json.loads(p.read_text()); data['sourceDateEpoch']+=1
+p.write_text(json.dumps(data,sort_keys=True,separators=(',',':'))+'\n')
+PYRETRY
+if LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$same_version_release" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
+  echo "exact retry accepted same version with a different manifest" >&2; exit 1
+fi
+cmp "$base/install-receipt.json" "$fixture/receipt-before-exact-retry.json"
+test ! -e "$base/lifecycle.json"
+cp "$root/plugin/dist/server.js" "$fixture/server-before-retry-tamper.js"
+printf '\n// unexpected local alteration\n' >> "$root/plugin/dist/server.js"
+if LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
+  echo "exact retry accepted altered installed bytes" >&2; exit 1
+fi
+cp "$fixture/server-before-retry-tamper.js" "$root/plugin/dist/server.js"
+test ! -e "$base/lifecycle.json"
+# A registration retry cannot pronounce an owner healthy with a broken durable
+# helper. Reject without automatically rewriting it or creating a transaction.
+cp "$base/.lifecycle-runtime/lifecycle.mjs" "$fixture/manager-before-retry-tests.mjs"
+for helper_fault in missing corrupt mode symlink; do
+  case "$helper_fault" in
+    missing) mv "$base/.lifecycle-runtime/lifecycle.mjs" "$fixture/missing-manager.mjs" ;;
+    corrupt) printf '\n// changed helper\n' >> "$base/.lifecycle-runtime/lifecycle.mjs" ;;
+    mode) chmod 0644 "$base/.lifecycle-runtime/lifecycle.mjs" ;;
+    symlink) mv "$base/.lifecycle-runtime/lifecycle.mjs" "$fixture/symlink-manager.mjs"; ln -s "$fixture/symlink-manager.mjs" "$base/.lifecycle-runtime/lifecycle.mjs" ;;
+  esac
+  if LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
+    echo "exact retry accepted $helper_fault durable helper" >&2; exit 1
+  fi
+  test ! -e "$base/lifecycle.json"
+  cmp "$base/install-receipt.json" "$fixture/receipt-before-exact-retry.json"
+  case "$helper_fault" in
+    missing) test ! -e "$base/.lifecycle-runtime/lifecycle.mjs"; mv "$fixture/missing-manager.mjs" "$base/.lifecycle-runtime/lifecycle.mjs" ;;
+    symlink) test -L "$base/.lifecycle-runtime/lifecycle.mjs"; rm "$base/.lifecycle-runtime/lifecycle.mjs"; mv "$fixture/symlink-manager.mjs" "$base/.lifecycle-runtime/lifecycle.mjs" ;;
+    *) cp "$fixture/manager-before-retry-tests.mjs" "$base/.lifecycle-runtime/lifecycle.mjs" ;;
+  esac
+  chmod 0600 "$base/.lifecycle-runtime/lifecycle.mjs"
+done
 # First installation has no in-root lock anchor yet.  Concurrent installers
 # serialize on the narrowly scoped sibling bootstrap lock; one may establish
 # ownership and the other must not write a competing lifecycle transaction.
@@ -153,9 +207,9 @@ set +e
 wait "$bootstrap_one"; bootstrap_one_status=$?
 wait "$bootstrap_two"; bootstrap_two_status=$?
 set -e
-if [[ "$bootstrap_one_status" -eq 0 && "$bootstrap_two_status" -eq 0 ]]; then
-  echo "two first installers both mutated the install root" >&2; exit 1
-fi
+# The second serialized caller may return verified success, but only one
+# caller may report a new activation.
+test "$(grep -h '^Installed Loomex plugin ' "$fixture/bootstrap-one.out" "$fixture/bootstrap-two.out" | wc -l | tr -d ' ')" = 1
 if [[ "$bootstrap_one_status" -ne 0 && "$bootstrap_two_status" -ne 0 ]]; then
   echo "no first installer established the install root" >&2; exit 1
 fi
@@ -243,6 +297,10 @@ test -f "$base/lifecycle.json"
 test "$(basename "$(readlink "$base/current")")" = 0.1.0
 cp "$payload2/plugin/dist/server.js" "$base/versions/0.1.1/plugin/dist/server.js"
 LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release2" --allow-unsigned-development --install-base "$base"
+if LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 "$repo/scripts/install.sh" "$release" --allow-unsigned-development --install-base "$base" >/dev/null 2>&1; then
+  echo "install retry implicitly rolled back a retained version" >&2; exit 1
+fi
+test "$(basename "$(readlink "$base/current")")" = 0.1.1
 test ! -e "$base/lifecycle.json"
 test -f "$registered_marketplace/.agents/plugins/marketplace.json"
 test -x "$registered_marketplace/current/plugin/runtime/bin/node"

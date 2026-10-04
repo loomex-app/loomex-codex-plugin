@@ -4,9 +4,9 @@
  */
 import { createHash, randomUUID, verify as verifySignature } from "node:crypto";
 import { collectInstalledDiagnostics } from "./diagnostics.js";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync, fsyncSync, openSync, closeSync, copyFileSync, chmodSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync, fsyncSync, openSync, closeSync, copyFileSync, chmodSync, mkdtempSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 
@@ -512,13 +512,35 @@ function ensureHelper(p: ReturnType<typeof paths>, payload: string): void {
 }
 function switchCurrent(p: ReturnType<typeof paths>, target: string): void { const next = join(dirname(p.current), `.current.${randomUUID()}.new`); symlinkSync(target, next); renameSync(next, p.current); fsyncDirectory(dirname(p.current)); }
 
+// A unified installer may retry after host registration fails. Only the exact
+// healthy current package can be accepted; retained versions require rollback.
+function verifyCompletedInstall(args: Arguments, p: ReturnType<typeof paths>, release: string, installRoot: string, version: string): void {
+  const current = verifyOwnership(p);
+  if (current !== installRoot) fail("installed version is retained but not current; explicit rollback is required");
+  validatePayload(current, version, p.current);
+  lifecycleRuntime(p.helper);
+  if (typeof process.getuid === "function" && lstatSync(p.helper).uid !== process.getuid()) fail("installed lifecycle helper ownership differs; explicit repair is required");
+  for (const [name, source, mode] of [["node", join(current, "plugin", "runtime", "bin", "node"), 0o755], ["lifecycle.mjs", join(current, "plugin", "dist", "lifecycle.mjs"), 0o600]] as const) {
+    const helper = join(p.helper, name);
+    if (sha(helper) !== sha(source) || (lstatSync(helper).mode & 0o7777) !== mode) fail("installed lifecycle helper differs from verified current payload; explicit repair is required");
+  }
+  const record = object(receiptVersions(p)[version]);
+  const temporary = mkdtempSync(join(tmpdir(), "loomex-plugin-retry-"));
+  try {
+    const verified = extractVerified(release, join(temporary, "payload"), args.publicKey, args.allowDevelopment);
+    if (verified.version !== version || verified.manifestSha256 !== record.releaseManifestSha256 || verified.payloadSha256 !== record.payloadSha256 || verified.inventorySha256 !== record.payloadInventorySha256 || !equalJson(verified.inventory as Json, record.inventory as Json)) fail("installed version belongs to a different release; refusing same-version replacement");
+  } finally { rmSync(temporary, { recursive: true }); }
+  console.log(`Verified already installed Loomex plugin ${version} at ${installRoot}`);
+  console.log(`Private marketplace root: ${dirname(p.current)}`);
+}
+
 function install(args: Arguments): void {
   if (!args.release) fail("usage: install RELEASE_DIR [--public-key FILE | --allow-unsigned-development] [--install-base DIR]");
   const release = resolve(args.release); const p = paths(safeBase(args.installBase)); mkdirSync(dirname(p.current), { recursive: true, mode: 0o700 }); noLink(p.versions, "versions directory may not be a symlink"); if (!existsSync(p.versions)) mkdirSync(p.versions, { mode: 0o700 }); directory(p.versions, "versions directory may not be a symlink");
   let state: Lifecycle; if (existsSync(p.lifecycle)) { state = loadLifecycle(p.lifecycle); validateLifecycleBinding(state, p); if (state.operation !== "install" || state.release !== release || !state.version) fail("unfinished plugin lifecycle is not this install"); } else {
     if (present(p.current)) verifyOwnership(p);
     else for (const candidate of [p.marketplace, `${p.marketplace}.new`, p.receipt, `${p.receipt}.new`]) if (present(candidate)) fail(`unowned marketplace metadata already exists: ${candidate}`);
-    directory(release, "release directory missing"); const manifestPath = join(release, "manifest.json"); const manifest = json(manifestPath); const version = validateVersion(text(manifest.version)); const installRoot = join(p.versions, version); if (present(installRoot)) fail(`version ${version} is already installed; refusing to overwrite signed files`); const stage = join(dirname(p.current), `.stage-${version}`); state = { schema: LIFECYCLE_SCHEMA, operation: "install", operationId: randomUUID(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), phase: "prepared", release, version, stage, installRoot, oldTarget: null, current: p.current, versions: p.versions, marketplace: p.marketplace, receipt: p.receipt, releaseManifestSha256: sha(manifestPath) }; saveLifecycle(p.lifecycle, state);
+    directory(release, "release directory missing"); const manifestPath = join(release, "manifest.json"); const manifest = json(manifestPath); const version = validateVersion(text(manifest.version)); const installRoot = join(p.versions, version); if (present(installRoot)) { verifyCompletedInstall(args, p, release, installRoot, version); return; } const stage = join(dirname(p.current), `.stage-${version}`); state = { schema: LIFECYCLE_SCHEMA, operation: "install", operationId: randomUUID(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), phase: "prepared", release, version, stage, installRoot, oldTarget: null, current: p.current, versions: p.versions, marketplace: p.marketplace, receipt: p.receipt, releaseManifestSha256: sha(manifestPath) }; saveLifecycle(p.lifecycle, state);
   }
   const stage = text(state.stage); const installRoot = text(state.installRoot); const version = validateVersion(text(state.version));
   if (!["prepared", "extracted", "bytes", "current", "marketplace", "receipt", "complete"].includes(state.phase)) fail("unsupported install lifecycle phase");

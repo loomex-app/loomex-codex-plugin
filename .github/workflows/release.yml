@@ -1,6 +1,11 @@
 name: Production release
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact reviewed paired production tag runner-vX.Y.Z-plugin-vX.Y.Z
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -42,8 +47,15 @@ jobs:
         run: |
           openssl rsa -in "$RUNNER_TEMP/manifest-private.pem" -pubout -out "$RUNNER_TEMP/manifest-public.pem"
           ./scripts/install.sh "$RUNNER_TEMP/release" --public-key "$RUNNER_TEMP/manifest-public.pem" --install-base "$RUNNER_TEMP/production-install"
+      - name: Export immutable production distribution
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          npm run build
+          python3 scripts/package-public-release.py --release "$RUNNER_TEMP/release" --output "$RUNNER_TEMP/public/loomex-plugin-${version}-darwin-arm64.tar.gz" --release-tag "$RELEASE_TAG" --source-revision "$GITHUB_SHA" --public-key "$RUNNER_TEMP/manifest-public.pem" --qualify-clean-source
       - uses: actions/upload-artifact@v4
         with:
           name: loomex-plugin-darwin-arm64
-          path: ${{ runner.temp }}/release
+          path: ${{ runner.temp }}/public/*
           if-no-files-found: error

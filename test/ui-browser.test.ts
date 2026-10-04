@@ -1319,6 +1319,8 @@ test("a conflict automatically uses verified saved answers, and a failed read ke
   await app.getByText("Saved answers could not be verified", { exact: false }).waitFor();
   assert.equal(await app.locator("#question-0-value").inputValue(), "Newer local edit");
   await page.evaluate(() => { window.__blockedPersistenceTools = []; });
+  // A failed verified read retains the local edit until the explicit retry.
+  await app.getByRole("button", { name: "Use saved version", exact: true }).click();
   await available.tools.expect(app.locator("#question-0-value")).toHaveValue("Saved on server");
   await app.getByRole("button", { name: "Use saved version", exact: true }).waitFor({ state: "hidden" });
   assert.equal(await app.locator("#question-0-value").isDisabled(), false, "recovered answer remains editable");
