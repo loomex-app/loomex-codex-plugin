@@ -7,11 +7,22 @@ platform, component manifest hashes, outer archive hashes and sizes, and passing
 compatibility evidence. The initial public channel is an unsigned development
 preview for isolated evaluation; it does not carry production assurance.
 
-The release-set schema is `app.loomex.release-set/v1`. Its initial paired tag is
+The release-set schema is `app.loomex.release-set/v2`. Its initial paired tag is
 `preview-runner-v<RUNNER_VERSION>-plugin-v<PLUGIN_VERSION>`. Component URLs use
 that exact tag in `releases/download`; they never use `latest`. Both component
 assets live on the runner's paired release. A plugin draft may mirror its
 component archive, but is not an independently selected compatible installation.
+
+The release set seals an explicit `deployment` profile. The initial local
+preview uses `{"profile":"local-development","apiOrigin":"http://127.0.0.1:28080/","webAppOrigin":null}`;
+null preserves the runner’s unset web application origin. Its verified runner
+metadata is `metadata/local-development-origin.json`. The unified installer
+passes the existing `--development-api-origin` option and requires the explicit
+unsafe development opt-in. A `cloud-preview` profile instead binds a canonical
+HTTPS DNS API root and uses `--preview-api-origin` with the same opt-in. Version 1
+release sets and mixed profile metadata are rejected; changing profiles requires
+a separately verified release set. The plugin envelope and lifecycle command
+remain identical for these profiles.
 
 ## What is shipped
 
