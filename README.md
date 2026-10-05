@@ -8,37 +8,20 @@ owner-checked local socket. The runner handles authentication and job execution;
 the plugin contains no Loomex credentials and makes no backend or provider calls
 itself.
 
-## Version 1.0.0 release and installation
+## Install
 
-Plugin **1.0.0** is paired with runner **1.0.0** in the
-[authoritative paired release](https://github.com/loomex-app/loomex-runner/releases/tag/preview-runner-v1.0.0-plugin-v1.0.0),
-tagged `preview-runner-v1.0.0-plugin-v1.0.0`. The
-[plugin release](https://github.com/loomex-app/loomex-codex-plugin/releases/tag/preview-runner-v1.0.0-plugin-v1.0.0)
-mirrors the identical plugin archive; use the paired installer to select compatible
-components. The tag, asset names, and `--allow-unsigned-preview` installer flag
-retain their original technical names; they do not describe the release classification.
+Install using the instructions in the runner's
+[paired GitHub release](https://github.com/loomex-app/loomex-runner/releases/latest).
+The paired installer selects compatible runner and plugin components. Review the
+release's platform, backend, and signing prerequisites before installation.
+[Plugin releases](https://github.com/loomex-app/loomex-codex-plugin/releases)
+provide component downloads; use the paired instructions for installation.
 
-This is the **1.0.0 release for macOS Apple Silicon**, distributed with an unsigned
-local-development profile without Developer ID signing or notarization. Installation
-requires explicit development consent and an existing compatible backend at **`http://127.0.0.1:28080/`**.
-The release does not include a backend or configured web app, and cannot connect
-to a hosted cloud backend.
-
-Follow the runner's [verified installation instructions](https://github.com/loomex-app/loomex-runner#install):
-download and inspect `install-preview.sh`, verify its pinned checksum, then run
-it with `LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1` and `--allow-unsigned-preview`.
-The default installs both components and registers `loomex@loomex-private` using
-the supported Codex CLI when available. Do not mix assets from different tags.
-The release-set SHA-256 is
-`906cca85109be51819ebe6ba5c3d8de6b4ff9bbe8b427f86f5592f1ce0906cdd`.
-
-You need Codex desktop or CLI and any provider CLIs required by your workflows,
-with their own account access. The plugin includes its pinned Node.js runtime;
-you do not need npm, system Node, Python, or a source checkout to install it.
-If the Codex CLI is unavailable, the installer reports the local marketplace root
-for supported GUI import. If the host has no local import, install the supported
-Codex CLI and retry the same release set. Installation does not force login,
-organization selection, workflow execution, or hook trust.
+You need Codex desktop or CLI, a compatible Loomex backend, and any provider CLIs
+required by your workflows, with their own account access. The release instructions
+specify the backend configuration and Codex registration requirements. The plugin
+includes its Node.js runtime. Installation does not force login, organization
+selection, workflow execution, or hook trust.
 
 ## Get started in Codex
 
@@ -75,17 +58,17 @@ alone does not activate that trust or guarantee follow-up delivery. See
 
 ## Updates and removal
 
-Update through a complete reviewed paired release. If installation or registration
-is interrupted, preserve its verified release assets and use the supported owner
-recovery flow. Do not remove lifecycle journals, edit Codex caches, or delete
-installed versions manually. See [public distribution](docs/public-distribution.md)
-for offline assets and registration, and [release and lifecycle](docs/release.md)
-for status, resume, rollback, repair, pruning, and uninstall. Remove or disable the
-plugin's Codex registration as part of removal; runner uninstall is separate.
+Follow the paired GitHub release's instructions to update. If installation or
+registration is interrupted, preserve its verified assets and use the supported
+owner recovery flow. Do not remove lifecycle journals, edit Codex caches, or delete
+installed versions manually. See [distribution](docs/public-distribution.md) for
+registration, and [lifecycle details](docs/release.md) for status, resume, rollback,
+repair, pruning, and uninstall. Remove or disable the plugin's Codex registration
+as part of removal; runner uninstall is separate.
 
 ## Development
 
-Use the pinned Node.js 24 runtime described in [development](docs/development.md):
+Use the pinned Node.js runtime described in [development](docs/development.md):
 
 ```sh
 npm ci
@@ -96,12 +79,6 @@ npm run build
 
 Read [architecture](docs/architecture.md) and
 [compatibility contracts](docs/compatibility-components.md) before changing the
-bridge. Low-level MCP tools are separate from the chat skills. The local protocol
-is `loomex.local-control/v2`; mutating tools use UUID idempotency keys. Reconcile
-an ambiguous result with the original key rather than issuing another change.
-
-The published plugin was built from
-[`349cbbbca34bfe172714088f633bc7bf656b378c`](https://github.com/loomex-app/loomex-codex-plugin/commit/349cbbbca34bfe172714088f633bc7bf656b378c),
-paired with runner
-[`031ea7aa612786cb76b24bf98fe3c0644058c71c`](https://github.com/loomex-app/loomex-runner/commit/031ea7aa612786cb76b24bf98fe3c0644058c71c).
-Later source or documentation changes do not change those immutable release bytes.
+bridge. Low-level MCP tools are separate from the chat skills. Mutating tools use
+UUID idempotency keys. Reconcile an ambiguous result with the original key rather
+than issuing another change.
