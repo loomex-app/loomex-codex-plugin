@@ -1,87 +1,106 @@
 # Loomex Codex plugin
 
-Current workspace installation and delivery status: [authoritative reliability status](../planning/plugin-runner-integration/reliability-persona-performance-2026-10-03/current-status.md). Source package versions and historical examples below do not establish an installed candidate.
+Use Loomex workflows from Codex chat: browse and create workflows, prepare a run,
+answer its questions, follow progress, retrieve results and artifacts, or choose
+an AI Persona. The plugin connects Codex desktop and CLI to the
+[Loomex runner](https://github.com/loomex-app/loomex-runner) on your Mac through an
+owner-checked local socket. The runner handles authentication and job execution;
+the plugin contains no Loomex credentials and makes no backend or provider calls
+itself.
 
-This private macOS arm64 plugin connects Codex desktop and Codex CLI to the
-signed Loomex runner over an owner-checked Unix socket. The plugin contains no
-Loomex credentials and makes no backend or provider calls itself.
+## Version 1.0.0 preview and installation
 
-See [architecture](docs/architecture.md) for component ownership and trust
-boundaries, and [development](docs/development.md) for contract synchronization,
-testing, and packaging rules.
+Plugin **1.0.0** is paired with runner **1.0.0** in the
+[authoritative paired release](https://github.com/loomex-app/loomex-runner/releases/tag/preview-runner-v1.0.0-plugin-v1.0.0),
+tagged `preview-runner-v1.0.0-plugin-v1.0.0`. The
+[plugin release](https://github.com/loomex-app/loomex-codex-plugin/releases/tag/preview-runner-v1.0.0-plugin-v1.0.0)
+mirrors the identical plugin archive; use the paired installer to select compatible
+components.
 
-The installed plugin also contains a reviewed-and-trusted Codex lifecycle-hook
-bridge for durable follow sessions. See [lifecycle hooks](docs/lifecycle-hooks.md)
-for its socket boundary, exact event payloads, and hook-trust activation steps.
+This is an **unsigned local-development prerelease for macOS Apple Silicon**,
+without Developer ID signing or notarization. It requires explicit development
+consent and an existing compatible backend at **`http://127.0.0.1:28080/`**.
+The release does not include a backend or configured web app, and cannot connect
+to a hosted cloud backend. It has not been promoted to a latest stable release.
 
-## Command skills
+Follow the runner's [verified installation instructions](https://github.com/loomex-app/loomex-runner#install):
+download and inspect `install-preview.sh`, verify its pinned checksum, then run
+it with `LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1` and `--allow-unsigned-preview`.
+The default installs both components and registers `loomex@loomex-private` using
+the supported Codex CLI when available. Do not mix assets from different tags.
+The release-set SHA-256 is
+`906cca85109be51819ebe6ba5c3d8de6b4ff9bbe8b427f86f5592f1ce0906cdd`.
 
-Use five focused skills: connect, browse, create, runs, and persona. Their contextual
-cards expose the actions that depend on the selected item, including
-organization selection, workflow editing and publishing, run preparation,
-human responses, results, cancellation, and deletion. See [the command
-guide](docs/commands.md) for the entry points and examples. Connection details
-and browser device-flow safety are documented in [connection](docs/connection.md).
-Natural-language access remains available.
+You need Codex desktop or CLI and any provider CLIs required by your workflows,
+with their own account access. The plugin includes its pinned Node.js runtime;
+you do not need npm, system Node, Python, or a source checkout to install it.
+If the Codex CLI is unavailable, the installer reports the local marketplace root
+for supported GUI import. If the host has no local import, install the supported
+Codex CLI and retry the same release set. Installation does not force login,
+organization selection, workflow execution, or hook trust.
+
+## Get started in Codex
+
+Open a fresh chat or refresh the skill picker after installation. Select a Loomex
+skill or write a natural-language request such as “Connect to Loomex” or “Show my
+Loomex workflows.” These are chat skills, not shell or native slash commands.
+
+| Chat skill | What it does |
+| --- | --- |
+| `$loomex:loomex-connect` | Check your connection, sign in, and choose an organization |
+| `$loomex:loomex-browse` | Find workflows and inspect run, edit, and publish actions |
+| `$loomex:loomex-create` | Create or edit a workflow through guided review |
+| `$loomex:loomex-runs` | Find runs, follow progress, answer questions, and retrieve results |
+| `$loomex:loomex-persona` | Choose an active Persona for this chat |
+
+Start with `$loomex:loomex-connect`, then `$loomex:loomex-browse`. When running a
+workflow, supply its required inputs and review the exact workspace, provider,
+and execution policy before choosing **Start**. Your current local Codex task
+directory is the initial workspace suggestion; an explicit path takes precedence.
+Workflow creation and editing include human review and acceptance. Saving a draft,
+publishing it, and running it are separate actions.
+
+Connection credentials stay with the runner and never need to be pasted into
+chat. Provider login and model access remain with the provider CLIs. Workflow
+jobs use your OS user's host permissions; workspace approval is not a filesystem
+sandbox.
+
+The plugin presents interactive cards on supported hosts and follows runs in chat
+when requested. Host support and configuration determine whether a card renders.
+Review and trust the packaged lifecycle hooks separately in Codex; installation
+alone does not activate that trust or guarantee follow-up delivery. See
+[connection](docs/connection.md), [lifecycle hooks](docs/lifecycle-hooks.md), and
+[diagnostics](docs/diagnostics.md) for troubleshooting.
+
+## Updates and removal
+
+Update through a complete reviewed paired release. If installation or registration
+is interrupted, preserve its verified release assets and use the supported owner
+recovery flow. Do not remove lifecycle journals, edit Codex caches, or delete
+installed versions manually. See [public distribution](docs/public-distribution.md)
+for offline assets and registration, and [release and lifecycle](docs/release.md)
+for status, resume, rollback, repair, pruning, and uninstall. Remove or disable the
+plugin's Codex registration as part of removal; runner uninstall is separate.
 
 ## Development
 
-Requires the pinned Node.js 24 runtime used by release packaging.
+Use the pinned Node.js 24 runtime described in [development](docs/development.md):
 
 ```sh
 npm ci
 npm run typecheck
 npm test
+npm run build
 ```
 
-`npm run build` creates the compiled MCP server at `dist/server.js`. Release
-packaging generates `.mcp.json` with absolute paths to a bundled, pinned Node
-runtime and this compiled file; the released plugin never launches raw
-TypeScript and does not depend on the desktop application's `PATH` or working
-directory.
+Read [architecture](docs/architecture.md) and
+[compatibility contracts](docs/compatibility-components.md) before changing the
+bridge. Low-level MCP tools are separate from the chat skills. The local protocol
+is `loomex.local-control/v2`; mutating tools use UUID idempotency keys. Reconcile
+an ambiguous result with the original key rather than issuing another change.
 
-The local RPC protocol is `loomex.local-control/v2`. All mutating tools require
-a UUID idempotency key. Reuse that key after an ambiguous transport failure.
-Never create a new key merely to retry the same intended change.
-
-Builder sessions, editor sessions, and workflow execution use two-step
-prepare/commit operations. Each prepare tool returns the canonical workspace,
-provider and execution policy binding, digest, and confirmation key. Call its
-matching commit tool only after those facts have been reviewed and accepted.
-
-Local task entry points default workspace selection to the actual Codex task
-working directory supplied by the calling skill. An explicit user path wins.
-This context is handled inside the plugin and is never inferred from the MCP
-server process or forwarded as a runner protocol field; grants and prepared
-bindings still establish the canonical execution workspace.
-
-Visual entry points use direct MCP Apps invocation when the host supports it;
-each packaged skill carries its visual-delivery contract for the native and
-headless paths. On hosts that gate direct invocation,
-diagnostics should verify that the supported
-`features.code_mode.direct_only_tool_namespaces` setting includes
-`mcp__loomex`. The plugin advertises the namespace and visual resources but
-cannot change that host setting. Installed transport and browser-resource
-checks do not prove that a native Codex card rendered; record that only from
-an authorized host observation.
-
-
-Custom views consume the frontend design system through a pinned, compiled CSS artifact. The shared renderer inlines it offline for every MCP resource. See [design-system.md](docs/design-system.md) for canonical sources, sync/check commands, dark-mode behavior and accessibility adaptations.
-
-Read-only installed checks are available through `scripts/lifecycle.sh diagnostics`; see [diagnostics and host routing](docs/diagnostics.md).
-
-## Public preview distribution
-
-The public component repository is `loomex-app/loomex-codex-plugin`. End users
-install the exact compatible runner and plugin through the unified installer
-attached to a reviewed paired release in `loomex-app/loomex-runner`. The release
-set binds both source revisions, versions, archive checksums, and passing
-compatibility evidence. Select an explicit `preview-runner-vX.Y.Z-plugin-vX.Y.Z`
-tag; mixing `latest` assets is unsupported. The local Codex marketplace identity
-remains `loomex-private`, with plugin name `loomex`.
-
-Unsigned previews require explicit unsafe development opt-in and an isolated
-test installation. They have no Apple signing, notarization, or production
-assurance. Publication is a separate maintainer decision after reviewing the
-draft and paired compatibility evidence. See [public distribution](docs/public-distribution.md)
-for exact archive contents, install commands, and release checkpoints.
+The published plugin was built from
+[`349cbbbca34bfe172714088f633bc7bf656b378c`](https://github.com/loomex-app/loomex-codex-plugin/commit/349cbbbca34bfe172714088f633bc7bf656b378c),
+paired with runner
+[`031ea7aa612786cb76b24bf98fe3c0644058c71c`](https://github.com/loomex-app/loomex-runner/commit/031ea7aa612786cb76b24bf98fe3c0644058c71c).
+Later source or documentation changes do not change those immutable release bytes.
