@@ -13,7 +13,7 @@ declare const window: any;
 declare const document: any;
 
 type BrowserTools = {
-  expect(locator: any): { toHaveValue(value: string): Promise<void> };
+  expect(locator: any): { toHaveValue(value: string): Promise<void>; toBeVisible(): Promise<void> };
   chromium: {
     executablePath(): string;
     launch(options: Record<string, unknown>): Promise<any>;
@@ -5877,7 +5877,7 @@ test("implementation report presentation retains the complete prompt and keeps t
     assert.equal(await app.getByRole("button", { name: "Review answer", exact: true }).isVisible(), true);
     assert.deepEqual(await page.evaluate(() => window.__loomexCalls), [], "presentation never submits or executes report data");
     await captureRequestedScreenshots(page, `report-${name}`);
-    assert.equal(await app.locator(".ui-prompt-scroll-hint").isVisible(), true);
+    await available.tools.expect(app.locator(".ui-prompt-scroll-hint")).toBeVisible();
     if (name === "markdown") {
       await app.locator("html").evaluate((node: any) => { node.style.zoom = "2"; });
       assert.equal(await app.locator("html").evaluate((node: any) => getComputedStyle(node).zoom), "2");
@@ -5914,7 +5914,7 @@ test("implementation report presentation retains the complete prompt and keeps t
     await submitted.getByRole("heading", { name: "Submitted answers", exact: true }).waitFor();
     assert.equal(await submitted.locator(".accepted-answer-review .ui-prompt-original").textContent(), question, "resolved remount retains long question text");
     assert.equal(await submitted.locator('input, textarea, select').count(), 0, "accepted interaction stays read-only");
-    assert.equal(await submitted.locator(".accepted-answer-review .ui-prompt-scroll-hint").isVisible(), true);
+    await available.tools.expect(submitted.locator(".accepted-answer-review .ui-prompt-scroll-hint")).toBeVisible();
     await captureRequestedScreenshots(page, `report-${name}-submitted`);
   }
 });
@@ -5938,14 +5938,14 @@ test("explicit report fields remain grouped around the actual question and appro
   assert.equal(await app.locator(".ui-report-context .ui-section").filter({ has: app.getByRole("heading", { name: "Checks", exact: true }) }).locator(".ui-prompt-original").textContent(), implementationReport);
   assert.equal(await app.getByRole("radio", { name: "Accept", exact: true }).isVisible(), true);
   assert.equal(await app.getByRole("radio", { name: "Request changes", exact: true }).isVisible(), true);
-  assert.equal(await app.locator('[aria-label="Check details"] + .ui-prompt-scroll-hint').isVisible(), true);
+  await available.tools.expect(app.locator('[aria-label="Check details"] + .ui-prompt-scroll-hint')).toBeVisible();
   await captureRequestedScreenshots(page, "report-structured");
   const approval = await mountApp(page, "interaction", { humanRequest: { id: requestId, status: "pending", type: "approval", title: "Authorize the implementation?", prompt: implementationReport } });
   await approval.getByRole("button", { name: "Approve", exact: true }).waitFor();
   assert.equal(await approval.getByRole("button", { name: "Approve", exact: true }).isVisible(), true);
   assert.equal(await approval.getByRole("button", { name: "Reject", exact: true }).isVisible(), true);
   assert.equal(await approval.locator(".ui-prompt-original").textContent(), implementationReport.trim(), "request copy retains its existing outer-whitespace normalization");
-  assert.equal(await approval.locator(".request-copy .ui-prompt-scroll-hint").isVisible(), true);
+  await available.tools.expect(approval.locator(".request-copy .ui-prompt-scroll-hint")).toBeVisible();
   await captureRequestedScreenshots(page, "report-approval");
   assert.deepEqual(await page.evaluate(() => window.__loomexCalls), [], "context and approval fixture never mutate");
 });
@@ -6073,8 +6073,8 @@ test("ordinary long verification entries retain complete rich formatting", async
   assert.equal(await app.locator("#context .ui-prompt-original").textContent(), verification);
   assert.equal(await app.getByRole("radio", { name: "Accept", exact: true }).isVisible(), true);
   assert.equal(await app.locator("#context .ui-hero .ui-rich-text").textContent(), summary);
-  assert.equal(await app.locator('[aria-label="Implementation summary"] + .ui-prompt-scroll-hint').isVisible(), true);
-  assert.equal(await app.locator('[aria-label="Check details"] + .ui-prompt-scroll-hint').isVisible(), true);
+  await available.tools.expect(app.locator('[aria-label="Implementation summary"] + .ui-prompt-scroll-hint')).toBeVisible();
+  await available.tools.expect(app.locator('[aria-label="Check details"] + .ui-prompt-scroll-hint')).toBeVisible();
   assert.equal(await app.locator(".ui-report-context .ui-section > h3").filter({ hasText: /^Changed files$/ }).count(), 1);
   await captureRequestedScreenshots(page, "report-long-summary-pending");
   const submitted = await mountApp(page, "interaction", { humanRequest: {
@@ -6085,8 +6085,8 @@ test("ordinary long verification entries retain complete rich formatting", async
   } });
   await submitted.getByRole("heading", { name: "Submitted answers", exact: true }).waitFor();
   assert.equal(await submitted.locator("#context .ui-hero .ui-rich-text").textContent(), summary);
-  assert.equal(await submitted.locator('[aria-label="Implementation summary"] + .ui-prompt-scroll-hint').isVisible(), true);
-  assert.equal(await submitted.locator('[aria-label="Check details"] + .ui-prompt-scroll-hint').isVisible(), true);
+  await available.tools.expect(submitted.locator('[aria-label="Implementation summary"] + .ui-prompt-scroll-hint')).toBeVisible();
+  await available.tools.expect(submitted.locator('[aria-label="Check details"] + .ui-prompt-scroll-hint')).toBeVisible();
   assert.equal(await submitted.locator("input, textarea, select").count(), 0);
   assert.equal(await submitted.locator(".ui-report-context").count(), 1);
   assert.equal(await submitted.locator(".accepted-answer-review").count(), 1);
