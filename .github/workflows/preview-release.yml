@@ -14,7 +14,8 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: macos-14-xlarge
+    # Standard Apple Silicon runner: public CI must not depend on paid larger runners.
+    runs-on: macos-15
     outputs:
       release_tag: ${{ steps.identity.outputs.release_tag }}
     steps:
@@ -23,6 +24,10 @@ jobs:
         with:
           node-version: 24.20.0
           cache: npm
+      - name: Verify native release platform
+        run: |
+          test "$(uname -m)" = arm64
+          node -e 'if (process.platform !== "darwin" || process.arch !== "arm64") process.exit(1)'
       - name: Bind exact paired candidate identity
         id: identity
         env:
