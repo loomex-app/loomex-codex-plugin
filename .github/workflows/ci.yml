@@ -8,6 +8,7 @@ jobs:
   test:
     # Standard Apple Silicon runner: public CI must not depend on paid larger runners.
     runs-on: macos-15
+    timeout-minutes: 30
     env:
       LOOMEX_REQUIRE_BROWSER: "1"
     steps:
@@ -27,12 +28,15 @@ jobs:
       - run: npm run compatibility:check
       - run: npx playwright install chromium
       - run: npm test
+        env:
+          DEBUG: pw:browser
       - run: ./scripts/test-packaging.sh
       - run: ./scripts/test-node-runtime.sh
   installer:
     # This independently rebuilds and tests the immutable source snapshot.
     # Run alongside source checks; neither qualification replaces the other.
     runs-on: macos-15
+    timeout-minutes: 30
     env:
       LOOMEX_REQUIRE_BROWSER: "1"
     steps:
