@@ -13,7 +13,7 @@ declare const window: any;
 declare const document: any;
 
 type BrowserTools = {
-  expect(locator: any): { toHaveValue(value: string): Promise<void>; toBeVisible(): Promise<void> };
+  expect(locator: any): { toHaveValue(value: string, options?: { timeout: number }): Promise<void>; toBeVisible(): Promise<void> };
   chromium: {
     executablePath(): string;
     launch(options: Record<string, unknown>): Promise<any>;
@@ -1337,9 +1337,13 @@ test("a conflict automatically uses verified saved answers, and a failed read ke
     draft.revision += 1;
     draft.answers = { name: { questionId: "name", value: "Newest saved answer" } };
     window.__loomexPersistenceStore.sessions[viewSessionId].revision += 1;
+    // Recovery verifies the presentation, request and draft in sequence. Slow
+    // acknowledgments must retain local edits until all those reads complete.
+    window.__persistenceDelayMs = 1500;
   }, { requestId, viewSessionId: session.viewSessionId });
   await app.locator("#question-0-value").fill("Another unsaved local edit");
-  await available.tools.expect(app.locator("#question-0-value")).toHaveValue("Newest saved answer");
+  await available.tools.expect(app.locator("#question-0-value")).toHaveValue("Newest saved answer", { timeout: 15_000 });
+  await page.evaluate(() => { window.__persistenceDelayMs = 0; });
   await page.evaluate(({ requestId, viewSessionId }: any) => {
     const draft = window.__loomexPersistenceStore.drafts[requestId];
     draft.revision += 1;
