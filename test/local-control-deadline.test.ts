@@ -3,8 +3,8 @@ import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { before, test } from "node:test";
-import { build } from "esbuild";
+import { after, before, test } from "node:test";
+import { build, stop } from "esbuild";
 import type { LocalControlClient } from "../src/local-control.js";
 
 // Exercise the actual transport with synthetic OS adapters; no real runner or
@@ -21,6 +21,8 @@ before(async () => {
     } }] });
   transportSource = result.outputFiles[0]!.text;
 });
+
+after(async () => { await stop(); });
 
 type Frame = { protocol: string; id: string; method: string; params: Record<string, unknown> };
 class SyntheticSocket extends EventEmitter {

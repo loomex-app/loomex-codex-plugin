@@ -2,7 +2,7 @@ import { after, before, test } from "node:test";
 import * as assert from "node:assert/strict";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
-import { build } from "esbuild";
+import { build, stop } from "esbuild";
 import { chromium, type Browser, type Page } from "@playwright/test";
 import { inputSpecSupported, normalizeInputType, validDate } from "../src/ui-app/interaction-form.js";
 import type { InputSpec } from "../src/ui-app/page-models.js";
@@ -66,7 +66,8 @@ before(async () => {
 });
 
 after(async () => {
-  await browser?.close();
+  try { await browser?.close(); }
+  finally { await stop(); }
 });
 
 test("normalizes aliases and strictly bounds supported input specifications", () => {

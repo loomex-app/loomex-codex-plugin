@@ -2,7 +2,7 @@ import { after, before, test } from "node:test";
 import * as assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { build } from "esbuild";
+import { build, stop } from "esbuild";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "@playwright/test";
 
@@ -96,7 +96,10 @@ before(async () => {
   page = await browser.newPage();
 });
 
-after(async () => { await browser?.close(); });
+after(async () => {
+  try { await browser?.close(); }
+  finally { await stop(); }
+});
 
 test("renders verified approval actions and disables stale authority", async (context) => {
   if (!requireBrowser(context)) return;
