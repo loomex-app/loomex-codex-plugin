@@ -138,7 +138,12 @@ export class ViewRestorationCoordinator {
   persistence(status: PersistenceStatus, error?: PersistenceError, store="presentation"): void {
     const value:LifecyclePersistence = /CONFLICT|STALE/.test(error?.code ?? "") ? "conflicted"
       : status === "saved" ? "clean" : status === "dirty" ? "dirty" : status === "saving" ? "saving" : "unavailable";
-    this.#stores.set(store,value);
+    // Starting another autosave does not verify recovery of a failed store.
+    // Retain its warning and mutation gate until a verified save/read reports
+    // success, instead of flashing the banner on every pending retry.
+    const previous = this.#stores.get(store);
+    this.#stores.set(store, (status === "dirty" || status === "saving") &&
+      (previous === "conflicted" || previous === "unavailable") ? previous : value);
     this.#persistence=(["conflicted","unavailable","saving","dirty","clean"] as const).find(state=>[...this.#stores.values()].includes(state)) ?? "clean";
     this.#emit();
   }

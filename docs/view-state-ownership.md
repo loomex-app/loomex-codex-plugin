@@ -22,6 +22,11 @@ closure but are best effort: an iframe can be destroyed before the RPC completes
 Only an acknowledged write counts as saved. The host owns scrolling outside the
 iframe; the plugin restores only its own document reading position.
 
+An unresolved persistence failure stays attached to its store while subsequent
+autosaves are dirty or pending. Only verified recovery of that same store clears
+the warning and mutation gate; another store's success cannot clear it. Local
+editing and question navigation remain available during the outage.
+
 Terminal executions and resolved interaction cards may mark their presentation
 session `resolved` after authoritative hydration. That marker is a lifecycle
 hint for restoration, never a substitute for the backend run or request state;

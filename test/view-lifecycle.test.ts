@@ -54,6 +54,28 @@ test("a successful draft save cannot conceal a presentation conflict",async()=>{
  view.persistence("saved",undefined,"presentation");assert.equal(view.state.persistence,"clean");view.dispose();
 });
 
+test("pending autosaves retain a store failure until that store verifies recovery", async () => {
+ const view = new ViewRestorationCoordinator();
+ await view.open({mode:"interaction", identity:"card", domainIdentity:"request", snapshot:async()=>({}),
+  display:()=>{}, verify:async()=>"ready", failed:()=>assert.fail()});
+ await until(()=>view.state.phase==="ready");
+ for (const [code, expected] of [["PERSISTENCE_UNAVAILABLE", "unavailable"], ["REVISION_CONFLICT", "conflicted"]] as const) {
+  view.persistence("save_failed", Object.assign(new Error("save failed"), {code}), "draft");
+  for (const status of ["dirty", "saving"] as const) {
+   view.persistence(status, undefined, "draft");
+   view.persistence("saved", undefined, "presentation");
+   assert.equal(view.state.persistence, expected);
+   assert.equal(view.permissions().mutate, false);
+   assert.equal(view.permissions().edit, true);
+   assert.equal(view.permissions().navigate, true);
+  }
+  view.persistence("saved", undefined, "draft");
+  assert.equal(view.state.persistence, "clean");
+  assert.equal(view.permissions().mutate, true);
+ }
+ view.dispose();
+});
+
 test("a cached completed projection never enables actions before verification",async()=>{
  const view=new ViewRestorationCoordinator();const done=deferred<"ready">();
  await view.open({mode:"prepare",identity:"card",domainIdentity:"entity",snapshot:async()=>({}),display:()=>"read_only",verify:()=>done.promise,failed:()=>assert.fail()});

@@ -1252,8 +1252,11 @@ test("failed and conflicting durable draft saves retain the current in-card answ
   const page = await browser.newPage();
   const app = await mountApp(page, "interaction", { humanRequest: request }, false, false, null, false, { "loomex/viewSession": session });
   await waitForPersistenceToolCount(page, "loomex_interaction_draft_get", 1);
-  await page.evaluate(() => { window.__failNextPersistenceCall = "loomex_interaction_draft_update"; });
+  // Hold the outage across navigation. A one-shot failure can be consumed
+  // by autosave, then legitimately reconciled before this click/assertion.
+  await page.evaluate(() => { window.__blockedPersistenceTools = ["loomex_interaction_draft_update"]; });
   await app.locator("#question-0-value").fill("Ada");
+  await app.locator("#save-status").getByText("Your changes remain here", { exact: false }).waitFor();
   await app.getByRole("button", { name: "Next question", exact: true }).click();
   await app.getByText("Question 2 of 2", { exact: true }).waitFor();
   assert.equal(await app.locator("#question-0-value").inputValue(), "Ada");
@@ -1262,6 +1265,7 @@ test("failed and conflicting durable draft saves retain the current in-card answ
   assert.deepEqual(await page.evaluate(() => window.__loomexCalls), []);
 
   await page.evaluate(({ requestId }: any) => {
+    window.__blockedPersistenceTools = [];
     window.__loomexPersistenceStore.drafts[requestId] = {
       requestId, schemaDigest: "b".repeat(64), answers: { first: { value: "Grace" } },
       currentQuestionId: "first", phase: "answer", revision: 1,
@@ -1273,6 +1277,9 @@ test("failed and conflicting durable draft saves retain the current in-card answ
   assert.equal(await app.locator("#question-0-value").inputValue(), "Ada", "a stale card never overwrites or loses its local answer");
   const updates = (await page.evaluate(() => window.__loomexPersistenceCalls)).filter((call: any) => call.name === "loomex_interaction_draft_update");
   assert.equal(updates.at(-1).arguments.expectedRevision, 0);
+  assert.ok(updates.length >= 2);
+  assert.ok(updates.every((call: any) => call.arguments.idempotencyKey === updates[0].arguments.idempotencyKey),
+    "the outage and conflict retain the exact pending save attempt");
   assert.equal(await page.evaluate(() => window.__loomexPersistenceStore.drafts["7acebd3d-c12d-4686-bd71-eaa708960a86"].answers.first.value), "Grace");
 });
 
@@ -2090,8 +2097,11 @@ test("persistence failure during Back keeps the local answer navigable and never
   await app.locator("#question-0-value").fill("Ada");
   await app.getByRole("button", { name: "Next question", exact: true }).click();
   await app.getByText("Question 2 of 2", { exact: true }).waitFor();
+  await page.evaluate(() => { window.__blockedPersistenceTools = ["loomex_interaction_draft_update"]; });
   await app.locator("#question-1-value").fill("Lovelace");
-  await page.evaluate(() => { window.__failNextPersistenceCall = "loomex_interaction_draft_update"; });
+  // Navigate only after the injected outage is observable, rather than
+  // racing the autosave status banner while the pointer is dispatched.
+  await app.locator("#save-status").getByText("Your changes remain here", { exact: false }).waitFor();
   await app.getByRole("button", { name: "Previous question", exact: true }).click();
   await app.getByText("Question 1 of 2", { exact: true }).waitFor();
   assert.equal(await app.locator("#question-0-value").inputValue(), "Ada");

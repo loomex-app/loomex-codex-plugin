@@ -90,7 +90,7 @@ The test suite currently checks:
 
 Packaging tests build deterministic fixture manifests, reject forbidden development or credential-like paths, detect tampering, verify explicit unsafe-development installation, and uninstall only the versioned fixture. The Node runtime test downloads the exact `darwin-arm64` archive pinned in `scripts/node-runtime.lock.json`, verifies its SHA-256, and starts the compiled server with that runtime. It requires network access to the pinned Node distribution URL.
 
-CI runs these checks on macOS arm64 and also validates a packaged development plugin with Codex CLI 0.146.0. These are source and fixture validations. They do not authenticate a real Loomex account, deploy or migrate the backend, execute real provider sessions, prove Desktop UI behavior or accessibility in every supported Codex surface, qualify a production-signed artifact, or confirm revocation of historical remote credentials.
+CI uses the standard `macos-15` Apple Silicon runner for public-repository validation and release builds, with an explicit native-platform check. It does not require paid larger-runner capacity. CI runs these checks on macOS arm64 and also validates a packaged development plugin with Codex CLI 0.146.0. These are source and fixture validations. They do not authenticate a real Loomex account, deploy or migrate the backend, execute real provider sessions, prove Desktop UI behavior or accessibility in every supported Codex surface, qualify a production-signed artifact, or confirm revocation of historical remote credentials.
 
 ## Packaging boundaries
 
