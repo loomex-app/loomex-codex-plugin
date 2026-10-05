@@ -25,7 +25,7 @@ Logout is an explicit, safety-sensitive request. The runner stops admitting new 
 Use the focused tools when visual delivery is unavailable or not requested:
 
 - `loomex_readiness` and `loomex_auth_status` inspect local runner and authentication state.
-- `loomex_auth_start` begins browser authentication; the runner completes it after its callback. `loomex_auth_cancel` cancels one pending flow without signing out.
+- `loomex_auth_start` begins browser authentication; the runner completes it after its callback. An exact retry preserves the original request and can recover its transaction reference after expiry without renewing approval. `loomex_auth_cancel` closes that exact sign-in; it refuses cancellation of an already locally authenticated installation.
 - `loomex_organizations_list` lists available organizations; `loomex_organization_select` applies an explicit choice.
 - `loomex_auth_logout` requests safe logout after the user explicitly asks for it.
 
@@ -38,6 +38,10 @@ Connection and Organizations use separate content-addressed `ui://loomex/…` re
 Organizations are fetched on opening and refresh, including when one is already selected. Accessible unenrolled entries remain selectable: explicit submission invokes the existing enrollment/selection operation. Search filters the complete returned list, with five entries per page. Failed refresh retains the old list as unverified and disables switching; only successful empty responses show an empty state. Selection affects subsequent operations, not existing run or preparation bindings.
 
 Verification polling belongs to the active login flow. Copying, opening the browser and navigating do not cancel it. Hiding/unmounting suspends polling; visible restoration checks the current flow. Pending mutations retain their original arguments and idempotency key; retry first reads current state, then reuses that operation only if needed. No navigation or refresh initiates authentication, enrollment or logout.
+
+Expired or unrecoverable browser sign-in exposes **Restart sign-in** when the runner supplies the exact flow and `auth.cancel`. This explicit action closes the old sign-in first; the user can then choose Sign in. It remains available beside an unresolved Start/Recover attempt. The saved cancellation attempt retains the displaced attempt's arguments and key until cancellation is confirmed; refresh and remount never generate another attempt. An ambiguous cancellation remains pending and retries the same key. Existing stores without the optional `superseded` reference decode unchanged. Neither a stale page nor presentation state grants revocation or execution authority.
+
+The backend must support proof-bound cancellation after expiry and the separately signed recovery-cancellation purpose. Deploy that backend before the fixed runner and plugin. An older backend rejection leaves recovery evidence intact and requires the compatible backend update; deleting Keychain records or local journals is not a supported repair.
 
 The loopback callback page uses the frontend-owned browser-auth stylesheet embedded in the runner binary. The backend approval and runner completion pages share the generated design export while remaining independently deployable. The callback reports sign-in success only after the runner has durably stored credentials; organization selection still happens in the card.
 

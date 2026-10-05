@@ -20,6 +20,16 @@ test('login projection requires a safe browser URL and complete flow identity',(
  assert.equal(normalizedConnection({...data,login:null}),undefined);
 });
 
+test('expired sign-in recovery retains its exact cancel capability and actionable errors',()=>{
+ const data={...projection(),state:'recovery_pending',actions:['auth.recover','auth.cancel'],
+  login:{flowId:'expired-flow',authorizationUrl:null,expiresAt:0}};
+ const result=normalizedConnection(data);assert.ok(result);
+ assert.equal(result.login?.flowId,'expired-flow');assert.ok(result.actions.has('auth.cancel'));
+ assert.match(safeErrorMessage('RUNNER_BROWSER_AUTH_INVALID'),/Restart sign-in/);
+ assert.match(safeErrorMessage('RUNNER_BROWSER_AUTH_RETRY'),/same cancellation/);
+ assert.doesNotMatch(safeErrorMessage('RUNNER_BROWSER_AUTH_INVALID'),/local Loomex runner could not complete/);
+});
+
 test('connection presentation restores only bridge-elided nullable fields',()=>{
  const data=projection();
  const bridgeShape={...data,organization:{status:'organization_required'},};

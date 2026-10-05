@@ -1117,6 +1117,95 @@ test("connection recovery offers exact reconciliation and explicit reconnect", a
   assert.equal(await app.getByRole("button", { name: "Reconnect", exact: true }).count(), 1);
 });
 
+test("expired sign-in can cancel an unresolved recovery and then start a fresh flow", async (t) => {
+  const available = await browserTools();
+  if (!available) {
+    if (process.env.LOOMEX_REQUIRE_BROWSER === "1") assert.fail("Playwright requires an installed Chromium browser");
+    t.skip("Playwright browser unavailable"); return;
+  }
+  const browser = await available.tools.chromium.launch({ executablePath: available.executablePath, headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const recovery = connectionProjection({state:"recovery_pending",actions:["auth.recover","auth.cancel"],
+    login:{flowId:"expired-flow",expiresAt:0,authorizationUrl:null}});
+  const result = (data: unknown) => ({structuredContent:{ok:true,data}});
+  const session={...viewSession(randomUUID(),"browser","catalog","00000000-0000-0000-0000-000000000000",{page:"connection"}),kind:"connection"};
+  const app = await mountApp(page,"connection",recovery,false,false,null,false,{"loomex/viewSession":session},undefined,[result(recovery)]);
+  await app.getByRole("button",{name:"Retry connection",exact:true}).waitFor();
+  await page.evaluate(() => {window.__workflowResponses=[{isError:true,structuredContent:{ok:false,
+    error:{code:"RUNNER_BROWSER_AUTH_INVALID",message:"Sign-in expired"}}}];});
+  await app.getByRole("button",{name:"Retry connection",exact:true}).click();
+  await app.getByText("Sign-in expired",{exact:true}).waitFor();
+  await page.evaluate((responses:unknown[])=>{window.__workflowResponses=responses;},[
+    result(recovery),result({canceled:true}),result(connectionProjection()),
+  ]);
+  await app.getByRole("button",{name:"Restart sign-in",exact:true}).click();
+  await waitForToolCount(page,"loomex_auth_cancel",1);
+  await app.getByRole("button",{name:"Sign in",exact:true}).waitFor();
+  const calls = await page.evaluate(()=>window.__loomexCalls);
+  assert.equal(calls.filter((call:{name:string})=>call.name==="loomex_auth_recover").length,1);
+  assert.equal(calls.find((call:{name:string})=>call.name==="loomex_auth_cancel").arguments.flowId,"expired-flow");
+  const savedAttempts=await page.evaluate(()=>window.__loomexPersistenceCalls.filter((call:{name:string})=>call.name==="loomex_connection_view_update"));
+  const cancellation=savedAttempts.find((call:any)=>call.arguments.state.pending?.name==="loomex_auth_cancel");
+  assert.equal(cancellation.arguments.state.pending.superseded.key,calls.find((call:{name:string})=>call.name==="loomex_auth_recover").arguments.idempotencyKey);
+  const browserPending=connectionProjection({state:"browser_pending",actions:["auth.cancel"],
+    login:{flowId:"new-flow",expiresAt:Math.floor(Date.now()/1000)+60,authorizationUrl:"https://example.test/sign-in"}});
+  await page.evaluate((responses:unknown[])=>{window.__workflowResponses=responses;},[
+    result({status:"browser_pending"}),result(browserPending),result(browserPending),result(browserPending),result({status:"launch_requested"}),
+  ]);
+  await app.getByRole("button",{name:"Sign in",exact:true}).click();
+  await waitForToolCount(page,"loomex_auth_start",1);
+  await waitForToolCount(page,"loomex_auth_open_browser",1);
+  const start=await page.evaluate(()=>window.__loomexCalls.find((call:{name:string})=>call.name==="loomex_auth_start"));
+  assert.notEqual(start.arguments.idempotencyKey,cancellation.arguments.state.pending.key);
+});
+
+test("reopening unresolved sign-in cancellation reconciles the same key and displaced attempt", async (t) => {
+  const available=await browserTools(); assert.ok(available,"Chromium required");
+  const browser=await available.tools.chromium.launch({executablePath:available.executablePath,headless:true});
+  t.after(()=>browser.close());
+  const page=await browser.newPage();
+  const recovery=connectionProjection({state:"recovery_pending",actions:["auth.recover","auth.cancel"],
+    login:{flowId:"expired-flow",expiresAt:0,authorizationUrl:null}});
+  const key=randomUUID(); const originalKey=randomUUID();
+  const session={...viewSession(randomUUID(),"browser","catalog","00000000-0000-0000-0000-000000000000",{
+    page:"connection",pending:{name:"loomex_auth_cancel",args:{flowId:"expired-flow"},key,
+      superseded:{name:"loomex_auth_recover",args:{},key:originalKey}},
+  }),kind:"connection"};
+  const result=(data:unknown)=>({structuredContent:{ok:true,data}});
+  const app=await mountApp(page,"connection",recovery,false,false,null,false,{"loomex/viewSession":session},undefined,[result(recovery)]);
+  await app.getByRole("button",{name:"Retry previous action",exact:true}).waitFor();
+  await page.evaluate((responses:unknown[])=>{window.__workflowResponses=responses;},[
+    result(recovery),result({canceled:true}),result(connectionProjection()),
+  ]);
+  await app.getByRole("button",{name:"Retry previous action",exact:true}).click();
+  await app.getByRole("button",{name:"Sign in",exact:true}).waitFor();
+  const calls=await page.evaluate(()=>window.__loomexCalls);
+  assert.equal(calls.filter((call:{name:string})=>call.name==="loomex_auth_cancel").length,1);
+  assert.equal(calls.find((call:{name:string})=>call.name==="loomex_auth_cancel").arguments.idempotencyKey,key);
+  assert.equal(calls.some((call:{name:string})=>call.name==="loomex_auth_recover"||call.name==="loomex_auth_start"),false);
+  const saved=await page.evaluate((id:string)=>window.__loomexPersistenceStore.sessions[id],session.viewSessionId);
+  assert.equal(saved.state.pending,null);
+});
+
+test("a saved recovery made obsolete by completed cancellation settles without another credential mutation", async (t) => {
+  const available=await browserTools(); assert.ok(available,"Chromium required");
+  const browser=await available.tools.chromium.launch({executablePath:available.executablePath,headless:true});
+  t.after(()=>browser.close());
+  const page=await browser.newPage();
+  const signedOut=connectionProjection();
+  const session={...viewSession(randomUUID(),"browser","catalog","00000000-0000-0000-0000-000000000000",{
+    page:"connection",pending:{name:"loomex_auth_recover",args:{},key:randomUUID()},
+  }),kind:"connection"};
+  const result=(data:unknown)=>({structuredContent:{ok:true,data}});
+  const app=await mountApp(page,"connection",signedOut,false,false,null,false,{"loomex/viewSession":session},undefined,[result(signedOut)]);
+  await app.getByRole("button",{name:"Retry previous action",exact:true}).waitFor();
+  await app.getByRole("button",{name:"Retry previous action",exact:true}).click();
+  await app.getByRole("button",{name:"Sign in",exact:true}).waitFor();
+  const calls=await page.evaluate(()=>window.__loomexCalls);
+  assert.equal(calls.some((call:{name:string})=>["loomex_auth_start","loomex_auth_recover","loomex_auth_cancel"].includes(call.name)),false);
+});
+
 test("a fresh authenticated connection loads organizations separately before selection", async (t) => {
   const available = await browserTools();
   if (!available) {

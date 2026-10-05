@@ -13,7 +13,10 @@ const loginSchema=z.object({flowId:z.string().min(1).max(128),authorizationUrl:z
 const projectionSchema=z.object({schemaVersion:z.literal('loomex.runner.connection/v2'),state:z.enum(['signed_out','browser_pending','authentication_completing','verification_expired','authenticated','recovery_pending','logout_pending','credential_store_unavailable']),activeWork:z.number().int().min(0).max(1000000),actions:z.array(z.enum(['auth.login','auth.cancel','auth.recover','auth.logout','organizations.list','organizations.select'])).max(8),organization:z.object({status:z.enum(['organization_required','connected']),selected:z.object({id:z.uuid(),name:z.string().trim().min(1).max(240).nullable()}).nullable()}),organizations:z.array(organizationSchema),login:loginSchema.nullable(),webAppUrl:z.unknown().optional()});
 type RawProjection=z.infer<typeof projectionSchema>;
 type Projection=Omit<RawProjection,'actions'|'organizations'|'webAppUrl'> & {actions:Set<string>;organizations:Array<{id:string;name:string}>; webAppUrl:string|undefined;credentialStoreCode:string|undefined};
-const pendingSchema=z.object({name:z.enum(['loomex_auth_start','loomex_auth_cancel','loomex_auth_recover','loomex_auth_logout','loomex_organization_select']),args:z.record(z.string(),z.unknown()),key:z.uuid()});
+const attemptSchema=z.object({name:z.enum(['loomex_auth_start','loomex_auth_cancel','loomex_auth_recover','loomex_auth_logout','loomex_organization_select']),args:z.record(z.string(),z.unknown()),key:z.uuid()});
+// A proof-bound cancellation/logout fences an earlier credential attempt. Keep
+// that exact reference until revocation is verified, including across remounts.
+const pendingSchema=attemptSchema.extend({superseded:attemptSchema.optional()});
 type Pending=z.infer<typeof pendingSchema>;
 const sessionSchema=z.object({viewSessionId:z.uuid(),revision:z.number().int().nonnegative(),kind:z.enum(['connection','organizations']),state:z.record(z.string(),z.unknown()).default({})});
 export interface ConnectionServices {
@@ -327,11 +330,7 @@ export function createConnectionController(host:ConnectionServices) {
     if(disposed)return;
     if (connectionState.busy || !(lifecycle.permissions().mutate || lifecycle.permissions().retryPersistence)) return;
     const pending = connectionState.pending;
-    if (pending && (pending.name !== name || JSON.stringify(pending.args) !== JSON.stringify(args))) {
-      throw new Error("An earlier action still needs to be reconciled. Retry that action first.");
-    }
-    const attempt = pending || { name, args: structuredClone(args), key: uuid() };
-    connectionState.pending = attempt;
+    const sameAttempt = pending?.name === name && JSON.stringify(pending.args) === JSON.stringify(args);
     const mutationFence=lifecycle.request("connection-mutation");
     lifecycle.request("connection-authority"); lifecycle.request("organization-list");
     clearConnectionPoll();
@@ -339,17 +338,34 @@ export function createConnectionController(host:ConnectionServices) {
     connectionState.busy = true;
     renderConnectionPage();
     try {
+      let verifiedProjection:Projection|null = null;
+      if (pending && !sameAttempt) {
+        verifiedProjection=connectionProjection(connectionData(await callTool("loomex_connection_get",{},false,false)));
+        if(!mutationFence.current())return;
+        const cancellation = name === "loomex_auth_cancel" && verifiedProjection.actions.has("auth.cancel")
+          && verifiedProjection.login?.flowId === args.flowId
+          && ["loomex_auth_start","loomex_auth_recover"].includes(pending.name);
+        const logout = name === "loomex_auth_logout" && verifiedProjection.actions.has("auth.logout");
+        if ((!cancellation && !logout) || pending.superseded) {
+          throw new Error("An earlier action still needs to be reconciled. Retry that action first.");
+        }
+      }
+      const attempt:Pending = sameAttempt && pending ? pending : {
+        name, args: structuredClone(args), key: uuid(),
+        ...(pending ? {superseded:{name:pending.name,args:structuredClone(pending.args),key:pending.key}} : {}),
+      };
+      connectionState.pending = attempt;
       await saveConnectionView();
       if(!mutationFence.current())return;
       let reconciled = false;
       if (pending) {
-        const current = normalizedConnection(connectionData(await callTool("loomex_connection_get", {}, false, false)));
+        const current = verifiedProjection ?? normalizedConnection(connectionData(await callTool("loomex_connection_get", {}, false, false)));
         if (!mutationFence.current())return;
         if (!current) throw new Error("The earlier action could not be verified. Try again.");
         reconciled = (name === "loomex_organization_select" && current.organization?.selected?.id === attempt.args.organizationId)
           || (name === "loomex_auth_logout" && current.state === "signed_out")
           || (name === "loomex_auth_cancel" && current.state === "signed_out")
-          || (name === "loomex_auth_recover" && current.state === "authenticated");
+          || (name === "loomex_auth_recover" && ["authenticated","signed_out"].includes(current.state));
       }
       if (!reconciled) connectionData(await callTool(name, { ...attempt.args, idempotencyKey: attempt.key }, false, false));
       if(!mutationFence.current())return;
@@ -578,7 +594,9 @@ export function createConnectionController(host:ConnectionServices) {
       secondaryAction("Connection", () => navigateConnection("connection"), "connection", false);
     } else if (["signed_out", "verification_expired"].includes(p.state)) {
       contentTarget.append(element("p", { className: "ui-caption" }, p.state === "signed_out" ? "Sign in securely in your browser." : "Verification expired. Start again when you are ready."));
-      primaryAction(p.state === "signed_out" ? "Sign in" : "Start again", startBrowserSignIn, !p.actions.has("auth.login"));
+      if(p.state === "verification_expired" && p.login && p.actions.has("auth.cancel")) {
+        primaryAction("Restart sign-in",()=>connectionMutation("loomex_auth_cancel",{flowId:p.login!.flowId}),false,"refresh");
+      } else primaryAction(p.state === "signed_out" ? "Sign in" : "Start again", startBrowserSignIn, !p.actions.has("auth.login"));
     } else if (p.state === "browser_pending" && p.login) {
       const login=p.login;
       if (!stableVerification) {
@@ -607,12 +625,15 @@ export function createConnectionController(host:ConnectionServices) {
       if (p.actions.has("auth.logout")) secondaryAction("Sign out", () => connectionMutation("loomex_auth_logout", {}), "logout");
     } else {
       contentTarget.append(element("p", { className: "ui-caption" }, p.state === "credential_store_unavailable" ? credentialStoreMessage(p.credentialStoreCode) : "A previous credential operation needs to be reconciled before Loomex can connect."));
-      if(p.state==="recovery_pending" && p.login && p.actions.has("auth.cancel"))primaryAction("Restart sign-in",()=>connectionMutation("loomex_auth_cancel",{flowId:p.login!.flowId}),false,"refresh");
+      if(p.state==="recovery_pending" && p.login && p.actions.has("auth.cancel"))secondaryAction("Restart sign-in",()=>connectionMutation("loomex_auth_cancel",{flowId:p.login!.flowId}),"refresh");
       if (p.state === "recovery_pending" && p.actions.has("auth.recover")) primaryAction("Retry connection", () => connectionMutation("loomex_auth_recover", {}), false, "refresh");
       if (p.state === "recovery_pending" && p.actions.has("auth.logout")) secondaryAction("Reconnect", () => connectionMutation("loomex_auth_logout", {}), "logout");
       if (p.state === "logout_pending" && p.actions.has("auth.logout")) primaryAction("Retry sign out", () => connectionMutation("loomex_auth_logout", {}), false, "logout");
     }
     if (connectionState.pending && !connectionState.busy) {
+      if(p.state === "verification_expired" && p.login && p.actions.has("auth.cancel")
+        && ["loomex_auth_start","loomex_auth_recover"].includes(connectionState.pending.name))
+        secondaryAction("Restart sign-in",()=>connectionMutation("loomex_auth_cancel",{flowId:p.login!.flowId}),"refresh");
       primaryAction("Retry previous action", () => connectionState.pending?.name==="loomex_auth_start" ? startBrowserSignIn() : connectionState.pending ? connectionMutation(connectionState.pending.name, connectionState.pending.args) : undefined);
     }
     if (!stableVerification) {
