@@ -52,7 +52,7 @@ Human-question resources treat the runner's `humanRequest.inputSpec` as the auth
 
 After `NETWORK_AMBIGUOUS` or `IDEMPOTENCY_REQUEST_IN_PROGRESS`, the UI retains an immutable copy of the complete tool arguments, including the UUID. It locks the displayed answer controls and offers an explicit server-state refresh. If the request remains pending, retry sends that exact retained argument object even if the DOM was changed outside the UI. If refresh reports an answered or resolved request, the form and retry action are removed.
 
-The browser suite uses the pinned Playwright dependency. A normal `npm test` runs it when a local Chromium browser is available and otherwise records a skip. The release gate is explicit and does not skip:
+The browser suite uses the pinned Playwright dependency and prefers its pinned Chromium executable over an image-provided Chrome installation. `LOOMEX_BROWSER_EXECUTABLE` remains an explicit override; local Chrome is a development fallback when the pinned browser is absent. A normal `npm test` runs the suite when a local Chromium browser is available and otherwise records a skip. CI and immutable release builds install the pinned browser before testing. The release gate is explicit and does not skip:
 
 ```sh
 npx playwright install chromium

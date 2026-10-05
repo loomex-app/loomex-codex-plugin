@@ -41,8 +41,8 @@ async function browserTools(): Promise<{ tools: BrowserTools; executablePath: st
     const tools = await import(pathToFileURL(modulePath).href) as BrowserTools;
     const executablePath = await firstExecutable([
       process.env.LOOMEX_BROWSER_EXECUTABLE,
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       tools.chromium.executablePath(),
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     ]);
     return executablePath ? { tools, executablePath } : undefined;
   } catch {
