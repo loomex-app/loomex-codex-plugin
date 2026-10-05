@@ -8,20 +8,21 @@ owner-checked local socket. The runner handles authentication and job execution;
 the plugin contains no Loomex credentials and makes no backend or provider calls
 itself.
 
-## Version 1.0.0 preview and installation
+## Version 1.0.0 release and installation
 
 Plugin **1.0.0** is paired with runner **1.0.0** in the
 [authoritative paired release](https://github.com/loomex-app/loomex-runner/releases/tag/preview-runner-v1.0.0-plugin-v1.0.0),
 tagged `preview-runner-v1.0.0-plugin-v1.0.0`. The
 [plugin release](https://github.com/loomex-app/loomex-codex-plugin/releases/tag/preview-runner-v1.0.0-plugin-v1.0.0)
 mirrors the identical plugin archive; use the paired installer to select compatible
-components.
+components. The tag, asset names, and `--allow-unsigned-preview` installer flag
+retain their original technical names; they do not describe the release classification.
 
-This is an **unsigned local-development prerelease for macOS Apple Silicon**,
-without Developer ID signing or notarization. It requires explicit development
-consent and an existing compatible backend at **`http://127.0.0.1:28080/`**.
+This is the **1.0.0 release for macOS Apple Silicon**, distributed with an unsigned
+local-development profile without Developer ID signing or notarization. Installation
+requires explicit development consent and an existing compatible backend at **`http://127.0.0.1:28080/`**.
 The release does not include a backend or configured web app, and cannot connect
-to a hosted cloud backend. It has not been promoted to a latest stable release.
+to a hosted cloud backend.
 
 Follow the runner's [verified installation instructions](https://github.com/loomex-app/loomex-runner#install):
 download and inspect `install-preview.sh`, verify its pinned checksum, then run
