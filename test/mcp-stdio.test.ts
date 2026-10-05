@@ -1469,6 +1469,27 @@ test("run result spool hydration refuses an incomplete page without replaying th
   assert.equal(result._meta?.["loomex/uiData"], undefined);
 });
 
+test("readable response pages preserve exact text and checksum verification in both model channels", async () => {
+  const responseRef = "8081f734-5175-492b-b412-b1d88d8e3a7d";
+  const text = '{"prompt":"طراحی🙂","responseSchema":{"type":"object"}}';
+  const page = { responseRef, offset: 0, dataUtf8: text, nextOffset: null,
+    sizeBytes: Buffer.byteLength(text), checksumSha256: createHash("sha256").update(text).digest("hex"),
+    details: { checksumVerified: true } };
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.respond(socket, request, page));
+  const client = await connect(runner);
+  const result = await client.callTool({ name: "loomex_response_read", arguments: { responseRef, format: "utf8", offset: 0 } });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual((result.structuredContent as Record<string, any>).data, page);
+  const content = JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
+  assert.equal(content.dataUtf8, text);
+  assert.deepEqual(content.details, { checksumVerified: true });
+  assert.equal(runner.requests.find(request => request.method === "responses.read")?.params.format, "utf8");
+  for (const invalid of [{ ...page, dataBase64: "e30=" }, Object.fromEntries(Object.entries(page).filter(([key]) => key !== "dataUtf8"))]) {
+    assert.equal(resultSchemaFor("responses.read")!.safeParse(invalid).success, false);
+  }
+});
+
 test("generated v2 End completion result reaches both model channels without private siblings", async () => {
   const runId = "5e06cb51-c39e-485b-83ca-c2f2d12b1eb8";
   const publicResult = { version: 1, summary: "Implemented the requested workflow.",

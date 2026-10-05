@@ -475,8 +475,8 @@ const primarySchemas = {
       details: Details,
     })
     .strict(),
-  "responses.read": z
-    .object({
+  "responses.read": z.union([
+    z.object({
       responseRef: z.string(),
       offset: NonNegativeInteger,
       dataBase64: z.string(),
@@ -484,8 +484,17 @@ const primarySchemas = {
       sizeBytes: NonNegativeInteger,
       checksumSha256: z.string(),
       details: Details,
-    })
-    .strict(),
+    }).strict(),
+    z.object({
+      responseRef: z.string(),
+      offset: NonNegativeInteger,
+      dataUtf8: z.string(),
+      nextOffset: NullableOffset,
+      sizeBytes: NonNegativeInteger,
+      checksumSha256: z.string(),
+      details: Details,
+    }).strict(),
+  ]),
   "responses.delete": z.object({ deleted: z.boolean(), details: Details }).strict(),
   "daemon.drain": z
     .object({

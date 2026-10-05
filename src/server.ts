@@ -237,7 +237,7 @@ function contentFor(output: ToolOutput, preparationReview?: PreparationReview): 
     requestId: output.requestId,
     ...(output.data === undefined
       ? {}
-      : (runSummary(output.method, output.data)
+      : (output.method === "responses.read" && typeof output.data.dataUtf8 === "string" ? output.data : runSummary(output.method, output.data)
         ?? (output.method === "workflows.list" ? workflowPageSummary(output.data) : findStableFields(output.data)))),
     ...(output.method === "preparations.get" && preparationReview !== undefined
       ? { preparationReview }

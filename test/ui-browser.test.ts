@@ -1672,10 +1672,22 @@ test("closing and reopening interaction and authoring cards restores the exact q
   await waitForPersistenceToolCount(interactionPage, "loomex_interaction_draft_get", 2);
   await interaction.getByText("Question 2 of 3", { exact: true }).waitFor();
   await available.tools.expect(interaction.locator("#question-0-value")).toHaveValue("Ada");
-  assert.deepEqual(await interactionPage.evaluate(() => ({
-    sessions: window.__loomexPersistenceCalls.filter((call: any) => call.name === "loomex_view_session_update").length,
-    drafts: window.__loomexPersistenceCalls.filter((call: any) => call.name === "loomex_interaction_draft_update").length,
-  })), writesBeforeReopen, "pre-hydration input and navigation cannot write over the saved session or draft");
+  const restoredWrites = await interactionPage.evaluate(() => ({
+    sessions: window.__loomexPersistenceCalls.filter((call: any) => call.name === "loomex_view_session_update"),
+    drafts: window.__loomexPersistenceCalls.filter((call: any) => call.name === "loomex_interaction_draft_update"),
+  }));
+  assert.equal(restoredWrites.drafts.length, writesBeforeReopen.drafts,
+    "disabled pre-hydration edits cannot write over the authoritative answer draft");
+  // The draft deliberately supersedes the stale presentation position above.
+  // After verification, persisting that canonical navigation is legitimate;
+  // asserting a lifetime write count raced this post-restoration autosave.
+  for (const call of restoredWrites.sessions.slice(writesBeforeReopen.sessions)) {
+    assert.equal(call.arguments.viewSessionId, interactionSession.viewSessionId);
+    assert.equal(call.arguments.state.requestId, requestId);
+    assert.equal(call.arguments.state.currentQuestionId, "notify");
+    assert.equal(call.arguments.state.phase, "answer");
+    assert.equal(call.arguments.operation, undefined, "restoration cannot create a domain mutation");
+  }
   assert.equal(await interaction.locator("#question-1-option-0").isEnabled(), true, "the restored current answer becomes editable after hydration");
   await interactionPage.evaluate(() => { window.__persistenceDelayMs = 0; });
   await interaction.locator("#question-1-option-0").check();

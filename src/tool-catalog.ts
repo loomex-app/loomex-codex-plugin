@@ -1020,7 +1020,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: "loomex_interaction_get",
     rpcMethod: "interactions.get",
     title: "Get Loomex interaction",
-    description: "Read this interaction and its authoritative run identity and complete typed answer schema without opening a UI. A pending batch read includes every question, exact choice IDs and labels, and the submission response schema. Complete headless contracts have a 256 KiB UTF-8 model-response budget; an oversized or deeply nested schema returns an explicit issue with no partial answer contract. Follow authoritative answerChannel for presentation: chat asks the singular long-answer question directly; ui normally uses loomex_interaction_view, while an explicitly headless flow may use this read to collect exact typed user answers, review the proposed response and submit after a fresh schema read. A clear direct user answer may submit after a fresh read; research is not an answer and synthesized answers require review. Do not poll or invent answers while a human response is pending. A verified native-authoring plugin_agent current_chat request instead returns the complete scoped agent task and unchanged response schema; perform that task under host instructions and continue the same execution after responding.",
+    description: "Read this interaction and its authoritative run identity and complete typed answer schema without opening a UI. A pending batch read includes every question, exact choice IDs and labels, and the submission response schema. Complete headless contracts have a 256 KiB UTF-8 model-response budget; an oversized or deeply nested schema returns an explicit issue with no partial answer contract. Follow authoritative answerChannel for presentation: chat asks the singular long-answer question directly; ui normally uses loomex_interaction_view, while an explicitly headless flow may use this read to collect exact typed user answers, review the proposed response and submit after a fresh schema read. A clear direct user answer may submit after a fresh read; research is not an answer and synthesized answers require review. Do not poll or invent answers while a human response is pending. A verified native-authoring plugin_agent current_chat request instead returns the complete scoped agent task and unchanged response schema, directly or through an immutable responseRef. Consume all readable UTF-8 pages with the first-page checksum verification before using a paged task; never respond from a partial schema. Then perform that task under host instructions and continue the same execution after responding.",
     inputSchema: z.object({ requestId: Uuid }).strict(),
     mutating: false,
     destructive: false,
@@ -1138,9 +1138,9 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     rpcMethod: "responses.read",
     title: "Read Loomex response page",
     description:
-      "Read a page from an owner-only immutable response spool when a workflow, run, or catalog result exceeds one local-control frame. Continue from nextOffset and verify checksumSha256.",
+      "Read a page from an owner-only immutable response spool. Native authoring may use bounded UTF-8 pages even below the IPC frame limit. Use format utf8 for readable JSON fragments; offsets count UTF-8 bytes. On the first readable page require details.checksumVerified; consume every page through nextOffset null with matching checksum and complete byte coverage before interpreting or responding. Never replay the originating operation.",
     inputSchema: z
-      .object({ responseRef: Uuid, offset: z.number().int().min(0).optional(), limit: ByteLimit })
+      .object({ responseRef: Uuid, offset: z.number().int().min(0).optional(), limit: ByteLimit, format: z.enum(["base64", "utf8"]).optional() })
       .strict(),
     mutating: false,
     destructive: false,
@@ -1198,6 +1198,7 @@ const SEMANTIC_CAPABILITIES = [
   "auth:browser-pkce/v1",
   "connection.projection/v2",
   "transfer.chunked/v1",
+  "transfer.response-utf8/v1",
   VALIDATION_ERRORS_CAPABILITY,
 ] as const;
 

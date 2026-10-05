@@ -1007,7 +1007,7 @@ const agentRequest = { id: requestId, status: "pending", type: "plugin_agent", i
   responseSchema: { type: "object", properties: { status: { const: "completed" }, output: { $ref: "#/$defs/output" }, nativeAuthoringBinding: { const: nativeTaskBinding } },
     $defs: { output: { type: "object", properties: { prompt: { type: "string", pattern: "^x" } }, required: ["prompt"], additionalProperties: false } }, required: ["status", "output", "nativeAuthoringBinding"] },
   agentTask: { schemaVersion: "loomex.plugin-agent-task/v2", executionStrategy: "current_chat", strategy: "current_chat",
-    prompt: "Perform the scoped authoring task.", promptTemplate: "{{request}}", promptContext: { request: "x" }, input: { request: "x" },
+    prompt: "Perform the scoped authoring task.", promptTemplate: "{{request}}", promptContext: { nodeInput: { request: "x" } }, input: { nodeInput: { request: "x" } },
     schemas: { input: { type: "object" }, output: { type: "object", properties: { prompt: { type: "string", pattern: "^x" } }, required: ["prompt"], additionalProperties: false } },
     outputValidation: { strategy: "schema" }, nativeAuthoringBinding: nativeTaskBinding,
     providerExecution: { model: "fabricated-model" } },
@@ -1053,7 +1053,7 @@ test("native agent read retains complete typed schema and context without provid
   assert.equal(result?.requiresUserInput, undefined);
   assert.deepEqual(result?.responseSchema, agentRequest.responseSchema);
   assert.deepEqual((result?.agentTask as any).schemas, agentRequest.agentTask.schemas);
-  assert.deepEqual((result?.agentTask as any).promptContext, { request: "x" });
+  assert.deepEqual((result?.agentTask as any).promptContext, { nodeInput: { request: "x" } });
   assert.deepEqual((result?.agentTask as any).nativeAuthoringBinding, nativeTaskBinding);
   assert.doesNotMatch(JSON.stringify(result), /fabricated-model|providerExecution|must-not-be-projected/);
   for (const request of [ { ...agentRequest, schemaDigest: "invalid" }, { ...agentRequest, interactionCategory: "human" },
@@ -1069,6 +1069,52 @@ test("native agent read retains complete typed schema and context without provid
     agentTask: { ...agentRequest.agentTask, prompt: "x".repeat(300_000) } } });
   assert.equal(oversized?.headlessSchemaComplete, false);
   assert.equal(oversized?.agentTask, undefined);
+});
+
+test("historical multi-round edits deliver mapped inputs once without changing the pending task", () => {
+  const baseline = { revision: 12, definition: { nodes: Array.from({ length: 21 }, (_, index) => ({
+    key: `node_${index}`, config: { model: "gpt-5.6-sol", prompt: "x".repeat(1300) },
+  })) } };
+  const nodeInput = { activeBaseline: baseline, latestDraft: { ...baseline, revision: 13 }, clarifiedPrompt: "Use gpt-6.1-sol for all three AI nodes" };
+  const task = { ...agentRequest.agentTask, promptContext: { nodeInput }, input: {
+    nodeInput, workflowInput: { baseline }, previousOutputs: { start: baseline, read: baseline },
+    nodeHistory: { start: baseline, read: baseline, designer: Array.from({ length: 5 }, () => baseline) },
+  } };
+  assert.ok(Buffer.byteLength(JSON.stringify(task)) > 262144);
+  const original = structuredClone(task);
+  const projected = runSummary("interactions.get", { humanRequest: { ...agentRequest, agentTask: task } });
+  assert.equal(projected?.headlessSchemaComplete, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(projected)) < 100000);
+  assert.deepEqual((projected?.agentTask as any).promptContext, { nodeInput });
+  assert.equal((projected?.agentTask as any).input, undefined);
+  assert.equal((projected?.agentTask as any).promptTemplate, undefined);
+  assert.deepEqual(projected?.responseSchema, agentRequest.responseSchema);
+  assert.deepEqual(projected?.execution, { id: runId });
+  assert.deepEqual(task, original);
+  const conflict = runSummary("interactions.get", { humanRequest: { ...agentRequest, agentTask: {
+    ...task, input: { ...task.input, nodeInput: { revision: 99 } },
+  } } });
+  assert.equal((conflict?.answerIssue as any).code, "NATIVE_AUTHORING_CONTEXT_INVALID");
+  const tooLarge = runSummary("interactions.get", { humanRequest: { ...agentRequest, agentTask: {
+    ...task, input: undefined, promptContext: { nodeInput: { large: "x".repeat(300000) } },
+  } as any } });
+  assert.equal((tooLarge?.humanRequest as any).id, requestId);
+  assert.equal((tooLarge?.answerIssue as any).limitBytes, 262144);
+  assert.ok((tooLarge?.answerIssue as any).sizeBytes > 300000);
+  assert.equal(tooLarge?.agentTask, undefined);
+});
+
+test("oversized native tasks route to complete scoped UTF-8 delivery without a partial answer contract", () => {
+  const ref = { responseRef: nativeSessionId, sizeBytes: 300000, nextOffset: 0, checksumSha256: "a".repeat(64), encoding: "json",
+    details: { nativeAuthoringTask: { requestId, executionId: runId, schemaDigest: "b".repeat(64), requestStatus: "pending" } } };
+  const result = runSummary("interactions.get", ref);
+  assert.deepEqual(result?.nextAction, { tool: "loomex_response_read", arguments: { responseRef: nativeSessionId, offset: 0, format: "utf8", limit: 32768 } });
+  assert.equal(result?.agentTask, undefined);
+  assert.equal(result?.responseSchema, undefined);
+  assert.equal(result?.doNotReplayOriginatingOperation, true);
+  assert.equal((result?.nativeAuthoringTask as any).requestStatus, "pending");
+  assert.match(String(result?.responseInstruction), /checksumVerified/);
+  assert.match(String(result?.responseInstruction), /fully hydrated task/);
 });
 
 test("native authoring completion requires verified accepted terminal result and exposes exact draft receipt", () => {

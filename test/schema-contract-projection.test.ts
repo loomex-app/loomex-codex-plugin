@@ -137,7 +137,8 @@ function nativeTask(output: JsonValue) {
   return { ...human(responseSchema), humanRequest: { ...human(responseSchema).humanRequest, type: "plugin_agent",
     interactionCategory: "plugin_agent", answerChannel: "current_chat", agentTask: { schemaVersion: "loomex.plugin-agent-task/v2",
       executionStrategy: "current_chat", strategy: "current_chat", prompt: "Bound authoring task",
-      input: { inputSchema: mixedSchema, outputSchema: output },
+      promptContext: { nodeInput: { inputSchema: mixedSchema, outputSchema: output } },
+      input: { nodeInput: { inputSchema: mixedSchema, outputSchema: output } },
       schemas: { input: { $defs: { free: {}, never: false }, properties: { anything: true } }, output },
       outputValidation: { strategy: "schema" }, nativeAuthoringBinding: binding } } };
 }
@@ -148,7 +149,8 @@ test("current-chat input/output contracts preserve syntax and treat valid empty 
     assert.equal(projected?.requiresAgentResponse, true);
     assert.deepEqual(projected?.responseSchema, raw.humanRequest.responseSchema);
     assert.deepEqual((projected?.agentTask as any).schemas, raw.humanRequest.agentTask.schemas);
-    assert.deepEqual((projected?.agentTask as any).input, raw.humanRequest.agentTask.input);
+    assert.deepEqual((projected?.agentTask as any).promptContext, raw.humanRequest.agentTask.promptContext);
+    assert.equal((projected?.agentTask as any).input, undefined);
     assert.deepEqual((projected?.agentTask as any).nativeAuthoringBinding, raw.humanRequest.agentTask.nativeAuthoringBinding);
     assert.equal(projected?.schemaDigest, digest);
     assertParity(schema, (projected?.agentTask as any).schemas.output,
