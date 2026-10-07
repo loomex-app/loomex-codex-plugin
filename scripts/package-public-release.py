@@ -53,16 +53,16 @@ def package(release, output, tag, source_revision, preview, public_key=None, qua
     release, output = Path(release).resolve(), lexical_output.resolve()
     manifest = json.loads((release / 'manifest.json').read_text())
     version = manifest['version']
-    expected_tag = rf'{"preview-" if preview else ""}runner-v[0-9]+\.[0-9]+\.[0-9]+-plugin-v{re.escape(version)}'
+    expected_tag = rf'runner-v[0-9]+\.[0-9]+\.[0-9]+-plugin-v{re.escape(version)}'
     if not re.fullmatch(expected_tag, tag):
-        raise ValueError('paired tag must match plugin envelope version and preview policy')
+        raise ValueError('paired tag must match plugin envelope version')
     if manifest.get('project') != 'loomex-plugin' or manifest.get('platform') != 'darwin-arm64':
         raise ValueError('unsupported plugin envelope identity')
     if not re.fullmatch('[0-9a-f]{40}', source_revision) or manifest.get('sourceRevision') != source_revision:
         raise ValueError('exact full source revision must match envelope')
     if manifest.get('developmentOnly') is not preview:
         raise ValueError('preview policy must match envelope developmentOnly')
-    expected_name = f'loomex-plugin-{version}-darwin-arm64{"-preview" if preview else ""}.tar.gz'
+    expected_name = f'loomex-plugin-{version}-darwin-arm64.tar.gz'
     if output.name != expected_name or output.exists() or output.with_suffix(output.suffix + '.sha256').exists():
         raise ValueError(f'create-only output must be named {expected_name}')
     if qualify_clean_source:
@@ -152,7 +152,7 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True)
     parser.add_argument('--release-tag', required=True)
     parser.add_argument('--source-revision', required=True)
-    parser.add_argument('--unsigned-preview', action='store_true')
+    parser.add_argument('--unsigned-development', '--unsigned-preview', dest='unsigned_preview', action='store_true')
     parser.add_argument('--public-key')
     parser.add_argument('--qualify-clean-source', action='store_true')
     args = parser.parse_args()

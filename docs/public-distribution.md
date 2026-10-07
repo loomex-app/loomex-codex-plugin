@@ -5,16 +5,16 @@ installer are distributed by `loomex-app/loomex-runner`. An explicit release set
 selects one exact runner revision and one exact plugin revision, their versions,
 platform, component manifest hashes, outer archive hashes and sizes, and passing
 compatibility evidence. The initial public channel is an unsigned development
-preview for isolated evaluation; it does not carry production assurance.
+build; it does not carry production assurance.
 
 The release-set schema is `app.loomex.release-set/v2`. Its initial paired tag is
-`preview-runner-v<RUNNER_VERSION>-plugin-v<PLUGIN_VERSION>`. Component URLs use
+`runner-v<RUNNER_VERSION>-plugin-v<PLUGIN_VERSION>`. Component URLs use
 that exact tag in `releases/download`; they never use `latest`. Both component
 assets live on the runner's paired release. A plugin draft may mirror its
 component archive, but is not an independently selected compatible installation.
 
-The release set seals an explicit `deployment` profile. The initial local
-preview uses `{"profile":"local-development","apiOrigin":"http://127.0.0.1:28080/","webAppOrigin":null}`;
+The release set seals an explicit `deployment` profile. The local
+distribution uses `{"profile":"local-development","apiOrigin":"http://127.0.0.1:28080/","webAppOrigin":null}`;
 null preserves the runner’s unset web application origin. Its verified runner
 metadata is `metadata/local-development-origin.json`. The unified installer
 passes the existing `--development-api-origin` option and requires the explicit
@@ -26,7 +26,7 @@ remain identical for these profiles.
 
 ## What is shipped
 
-`loomex-plugin-<VERSION>-darwin-arm64-preview.tar.gz` is a flat archive with:
+`loomex-plugin-<VERSION>-darwin-arm64.tar.gz` is a flat archive with:
 
 - The unchanged existing release envelope: `manifest.json`,
   `source-content.json`, and `payload.tar.gz`; production also includes `manifest.sig`.
@@ -90,11 +90,11 @@ then package with the exact envelope revision:
 ```sh
 ./scripts/build-release.sh --unsigned-development --output /tmp/plugin-envelope
 python3 scripts/package-public-release.py --release /tmp/plugin-envelope \
-  --output /tmp/public/loomex-plugin-1.0.0-darwin-arm64-preview.tar.gz \
-  --release-tag preview-runner-v1.0.0-plugin-v1.0.0 \
-  --source-revision "$(git rev-parse HEAD)" --unsigned-preview
+  --output /tmp/public/loomex-plugin-1.0.0-darwin-arm64.tar.gz \
+  --release-tag runner-v1.0.0-plugin-v1.0.0 \
+  --source-revision "$(git rev-parse HEAD)" --unsigned-development
 python3 scripts/test-public-release.py --release /tmp/plugin-envelope \
-  --release-tag preview-runner-v1.0.0-plugin-v1.0.0
+  --release-tag runner-v1.0.0-plugin-v1.0.0
 ```
 
 These versions are examples; use the frozen versions and commit of the actual
@@ -153,3 +153,17 @@ GitHub's [release-create CLI documentation](https://cli.github.com/manual/gh_rel
 defines the draft, prerelease, and existing-tag flags used here. GitHub's
 [environment documentation](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
 describes required-reviewer protection for the staging checkpoint.
+
+## Release naming and easy installation
+
+New GitHub artifacts use `install.sh`,
+`loomex-runner-<VERSION>-darwin-arm64.tar.gz`,
+`loomex-plugin-<VERSION>-darwin-arm64.tar.gz`, and
+`runner-v<RUNNER>-plugin-v<PLUGIN>-offline.tar.gz`.
+The README uses `/releases/latest/download/install.sh` only to download the
+launcher. That launcher seals one frozen pair and verifies the native helper
+and manifest digests. Release notes provide the version-pinned curl command.
+The filenames do not change signing status, backend requirements or execution authority.
+Previously published preview-tag releases remain immutable and readable; the
+new writer produces only current names. The old unsigned flag is a parser alias
+for existing reviewed invocations, not another installation mechanism.

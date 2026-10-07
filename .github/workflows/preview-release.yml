@@ -35,7 +35,7 @@ jobs:
         run: |
           [[ "$RUNNER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           version="$(node -p 'require("./package.json").version')"
-          echo "release_tag=preview-runner-v${RUNNER_VERSION}-plugin-v${version}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=runner-v${RUNNER_VERSION}-plugin-v${version}" >> "$GITHUB_OUTPUT"
       - name: Build and test compiled unsigned envelope
         run: ./scripts/build-release.sh --unsigned-development --output "$RUNNER_TEMP/envelope"
       - name: Export immutable public preview archive
@@ -44,7 +44,7 @@ jobs:
         run: |
           version="$(node -p 'require("./package.json").version')"
           npm run build
-          python3 scripts/package-public-release.py --release "$RUNNER_TEMP/envelope" --output "$RUNNER_TEMP/public/loomex-plugin-${version}-darwin-arm64-preview.tar.gz" --release-tag "$RELEASE_TAG" --source-revision "$GITHUB_SHA" --unsigned-preview --qualify-clean-source
+          python3 scripts/package-public-release.py --release "$RUNNER_TEMP/envelope" --output "$RUNNER_TEMP/public/loomex-plugin-${version}-darwin-arm64.tar.gz" --release-tag "$RELEASE_TAG" --source-revision "$GITHUB_SHA" --unsigned-development --qualify-clean-source
           python3 scripts/test-public-release.py --release "$RUNNER_TEMP/envelope" --release-tag "$RELEASE_TAG"
       - uses: actions/upload-artifact@v4
         with:
@@ -73,4 +73,4 @@ jobs:
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
         run: |
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
-          gh release create "$RELEASE_TAG" candidate/* --repo loomex-app/loomex-codex-plugin --verify-tag --draft --prerelease --title "Unsigned preview $RELEASE_TAG" --notes "Unsigned development preview. Requires explicit unsafe development opt-in; no Apple signing, notarization, or production assurance. Install the exact paired set from loomex-app/loomex-runner; this draft is a component mirror. Maintainer must attach passing compatibility evidence before separately authorizing publication."
+          gh release create "$RELEASE_TAG" candidate/* --repo loomex-app/loomex-codex-plugin --verify-tag --draft --title "Loomex $RELEASE_TAG" --notes "Unsigned development build. Requires explicit unsafe development opt-in; no Apple signing, notarization, or production assurance. Install the exact paired set from loomex-app/loomex-runner; this draft is a component mirror. Maintainer must attach passing compatibility evidence before separately authorizing publication."

@@ -23,6 +23,21 @@ specify the backend configuration and Codex registration requirements. The plugi
 includes its Node.js runtime. Installation does not force login, organization
 selection, workflow execution, or hook trust.
 
+The installer installs both components. For the current unsigned distribution,
+review the release prerequisites, then run:
+
+```sh
+loomex_installer="$(mktemp)" &&
+curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+  https://github.com/loomex-app/loomex-runner/releases/latest/download/install.sh \
+  -o "$loomex_installer" &&
+LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 /bin/bash "$loomex_installer" --allow-unsigned-development
+```
+
+The downloaded launcher pins one exact release manifest and installer. The paired
+packages remain hash-verified; unsigned builds require the explicit opt-in above.
+Restart Codex afterward. A compatible backend must already be running.
+
 ## Get started in Codex
 
 Open a fresh chat or refresh the skill picker after installation. Select a Loomex

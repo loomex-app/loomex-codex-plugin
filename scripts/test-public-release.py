@@ -24,7 +24,7 @@ class DistributionTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.release = RELEASE
         self.manifest = json.loads((RELEASE / 'manifest.json').read_text())
-        self.name = f'loomex-plugin-{self.manifest["version"]}-darwin-arm64-preview.tar.gz'
+        self.name = f'loomex-plugin-{self.manifest["version"]}-darwin-arm64.tar.gz'
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -62,11 +62,11 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(output.with_suffix('.gz.sha256').read_text(), f'{module.digest(output)}  {self.name}\n')
 
     def test_tag_version_and_preview_policy(self):
-        for tag in ['latest', 'preview-runner-v0.5.1-plugin-v99.99.99', TAG.removeprefix('preview-'), TAG + '/../../escape']:
+        for tag in ['latest', 'preview-runner-v0.5.1-plugin-v99.99.99', 'preview-' + TAG, TAG + '/../../escape']:
             with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, 'paired tag'):
                 self.package(tag=tag)
         with self.assertRaisesRegex(ValueError, 'preview policy'):
-            self.package(preview=False, tag=TAG.removeprefix('preview-'))
+            self.package(preview=False, tag=TAG)
 
     def test_source_identity(self):
         for revision in ['unknown', 'f' * 40, self.manifest['sourceRevision'][:8]]:
@@ -161,7 +161,7 @@ class DistributionTests(unittest.TestCase):
         preview = (module.ROOT / '.github/workflows/preview-release.yml').read_text()
         for gate in ['CERTIFICATE_P12_BASE64', 'APPLE_TEAM_ID', 'MANIFEST_KEY_BASE64', 'build-release.sh --production', '--public-key']:
             self.assertIn(gate, production)
-        for gate in ['build-release.sh --unsigned-development', '--unsigned-preview', 'environment: preview-release-review', '--verify-tag --draft --prerelease', 'node-version: 24.20.0', 'test-public-release.py', '--qualify-clean-source']:
+        for gate in ['build-release.sh --unsigned-development', '--unsigned-development', 'environment: preview-release-review', '--verify-tag --draft', 'node-version: 24.20.0', 'test-public-release.py', '--qualify-clean-source']:
             self.assertIn(gate, preview)
         self.assertLess(preview.index('build-release.sh --unsigned-development'), preview.index('package-public-release.py'))
         self.assertNotIn('gh release publish', preview)
