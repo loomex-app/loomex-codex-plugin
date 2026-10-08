@@ -1,3 +1,4 @@
+import { personaCreatedResult, type PersonaManagementOperation, type PersonaOperationReference } from "./persona-authoring.js";
 import {completePersonaResponse} from "./persona-response.js";
 import { createPersonaController } from "./persona-controller.js";
 import { personaFrontendUrl } from "./persona-frontend.js";
@@ -855,6 +856,32 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     send: text => send("ui/message", {role:"user",content:[{type:"text",text}]}),
   });
 
+  async function personaManagementOperation(reference?:PersonaOperationReference):Promise<PersonaManagementOperation|undefined> {
+    const session=viewPersistence.session;if(!session)return undefined;
+    const fresh=await persistenceTool(VIEW_SESSION_TOOLS.get,{viewSessionId:session.viewSessionId});
+    if(fresh.viewSessionId!==session.viewSessionId||fresh.kind!=="personas"||fresh.entityType!=="catalog"||fresh.entityId!=="00000000-0000-0000-0000-000000000000")throw new Error("The saved Persona card belongs to another session.");
+    const operationId=reference?.operationId??record(fresh.operation)?.operationId;if(!workflowIdValid(operationId))return undefined;
+    const op=await persistenceTool(VIEW_SESSION_TOOLS.operationGet,{viewSessionId:session.viewSessionId,operationId}),args=record(op.params);
+    if(reference&&(op.method!==reference.method||op.idempotencyKey!==reference.key))throw new Error("The saved creation reference changed.");
+    if(op.operationId!==operationId||!args||!workflowIdValid(args.idempotencyKey)||op.idempotencyKey!==args.idempotencyKey)throw new Error("The saved Persona operation could not be verified.");
+    return {operationId,method:safeText(op.method,100)||"",key:args.idempotencyKey,args:jsonObject(args),status:safeText(op.status,40)||"",...(record(op.resultReference)?{resultReference:jsonObject(op.resultReference)}:{})};
+  }
+  async function personaManagementAccess() {
+    const connection=await callTool("loomex_connection_get",{},false,false);if(uiResultFailed(connection))throw new Error("Check the Loomex connection before creating.");
+    const selected=record(record(dataOf(connection).organization)?.selected);if(!workflowIdValid(selected?.id))throw new Error("Choose an organization in the connection card before creating.");
+    const proof=await callTool("loomex_persona_scope_status",{organizationId:selected.id},false,false),data=dataOf(proof);
+    if(uiResultFailed(proof)||data.organizationId!==selected.id||data.status!=="verified"||!Array.isArray(data.scopes)||data.scopes.some(scope=>typeof scope!=="string"))throw new Error("Creation access could not be verified for the selected organization.");
+    return {organizationId:selected.id,organizationName:safeText(selected.name,255)||"the selected organization",scopes:data.scopes as string[]};
+  }
+  async function settlePersonaManagement(operation:PersonaManagementOperation,response:JsonObject):Promise<void> {
+    const session=viewPersistence.session,fresh=await personaManagementOperation(operation);if(!session||!fresh||fresh.operationId!==operation.operationId||fresh.method!==operation.method||fresh.key!==operation.key||JSON.stringify(fresh.args)!==JSON.stringify(operation.args))throw new Error("The saved creation operation changed. Refresh to reconcile its exact result.");
+    const entity=record(response[operation.method==="persona.roles.create"?"role":"person"]),scope=operation.method==="auth.scope_upgrade";
+    if(scope?response.organizationId!==operation.args.organizationId:!entity||entity.organizationId!==operation.args.organizationId||entity.name!==operation.args.name||(operation.method==="personas.create"&&entity.roleId!==operation.args.roleId))throw new Error("The operation result belongs to another organization or request.");
+    if(!scope)personaCreatedResult(entity,operation.method==="persona.roles.create"?"role":"person",operation.args,operation.key);
+    if(fresh.status!=="completed")await persistenceTool(VIEW_SESSION_TOOLS.operationSettle,{viewSessionId:session.viewSessionId,operationId:operation.operationId,status:"completed",resultReference:{ok:true,organizationId:operation.args.organizationId,...(scope?{status:"verified"}:operation.method==="persona.roles.create"?{roleId:entity!.id}:{personId:entity!.id})},idempotencyKey:uuid()});
+    const current=mutationController.current();if(current?.arguments.idempotencyKey===operation.key){unlockUncertainOperation(current);mutationController.clearOperation(current);}
+  }
+
   const personaController = createPersonaController({
     lifecycle,elements:{context,form,summary,primary,secondary,refresh},
     call:async(name,args)=>{const result=await callTool(name,args,false,false);if(uiResultFailed(result))return result;const data=await completePersonaResponse(jsonObject(dataOf(result)),async parameters=>{const page=await callTool("loomex_response_read",parameters,false,false);if(uiResultFailed(page))throw new Error("The Persona response could not be read. Preserve its reference and refresh.");return jsonObject(dataOf(page));});return rpcResult({structuredContent:{ok:true,data},...(result._meta?{_meta:result._meta}:{})});},data:result=>jsonObject(dataOf(result)),failed:uiResultFailed,
@@ -862,10 +889,12 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     configure:session=>{personaViewProjection=requiredViewSession(session);viewPersistence.configure(personaViewProjection);},
     flush:async()=>{await viewPersistence.flush(captureViewState());return !["conflicted","unavailable"].includes(lifecycle.state.persistence);},
     create:async(personId,key)=>{const result=await callMutation("loomex_persona_context_create",`persona:create:${personId}`,{personId,idempotencyKey:key});if(uiResultFailed(result))return result;const data=await completePersonaResponse(jsonObject(dataOf(result)),async args=>jsonObject(dataOf(await callTool("loomex_response_read",args,false,false))));return rpcResult({structuredContent:{ok:true,data}});},
-    restoredCreateKey:async personId=>{const session=viewPersistence.session;if(!session)return undefined;const fresh=await persistenceTool(VIEW_SESSION_TOOLS.get,{viewSessionId:session.viewSessionId});const operationId=record(fresh.operation)?.operationId;if(!workflowIdValid(operationId))return undefined;const op=await persistenceTool(VIEW_SESSION_TOOLS.operationGet,{viewSessionId:session.viewSessionId,operationId});const params=record(op.params);if(op.method!=="personas.chat_context.create")throw new Error("A different saved operation needs reconciliation before choosing a Persona.");if(params?.personId!==personId||!workflowIdValid(params.idempotencyKey)||op.idempotencyKey!==params.idempotencyKey)throw new Error("The saved context creation belongs to a different Persona.");return params.idempotencyKey;},
+    restoredCreateKey:async personId=>{const op=await personaManagementOperation();if(!op)return undefined;if(op.status==="completed"&&(op.method!=="personas.chat_context.create"||op.args.personId!==personId||op.resultReference?.ok===false))return undefined;if(op.method!=="personas.chat_context.create")throw new Error("A different saved operation needs reconciliation before choosing a Persona.");if(op.args.personId!==personId)throw new Error("The saved context creation belongs to a different Persona. Refresh it before choosing another.");return op.key;},
     settleCreate:async response=>{const session=viewPersistence.session,fresh=session?await persistenceTool(VIEW_SESSION_TOOLS.get,{viewSessionId:session.viewSessionId}):undefined,ref=record(fresh?.operation);const operationId=safeText(ref?.operationId,64);if(operationId&&session){const op=await persistenceTool(VIEW_SESSION_TOOLS.operationGet,{viewSessionId:session.viewSessionId,operationId});if(op.method!=="personas.chat_context.create"||record(op.params)?.personId!==record(response.person)?.id)throw new Error("The saved operation does not match this Persona context.");if(op.status!=="completed")await persistenceTool(VIEW_SESSION_TOOLS.operationSettle,{viewSessionId:session.viewSessionId,operationId,status:"completed",resultReference:{ok:true,personId:record(response.person)?.id,conversationId:record(response.conversation)?.conversationId,chatId:record(response.conversation)?.chatId,configDigest:response.configDigest},idempotencyKey:uuid()});}const current=mutationController.current();if(current?.name==="loomex_persona_context_create")mutationController.clearOperation(current);},
     deliver:async(ref,text)=>{personaDeliveryContext=ref;return deliveryController.deliver({identity:`persona:${ref.conversationId}`,purpose:"persona_chat",text});},
     messageAvailable:()=>Boolean(record(hostCapabilities.message)?.text),setPage:runtimeShell.setPagePresentation,changed:markViewDirty,error:setError,uuid,
+    managementAccess:personaManagementAccess,managementOperation:personaManagementOperation,settleManagement:settlePersonaManagement,
+    managementMutate:async(name,args,onJournaled)=>{const outcome=await mutationController.callMutation(name,`persona:manage:${name}:${args.organizationId}`,args,onJournaled?async operation=>{if(!operation.operationId)throw new Error("The creation journal is missing its exact reference.");await onJournaled({operationId:operation.operationId,method:operation.journalAttempt!.operation.method,key:operation.arguments.idempotencyKey,args:jsonObject(operation.arguments),status:operation.journalStatus||"pending"});}:undefined);if(uiResultFailed(outcome.result))return {result:outcome.result,key:outcome.operation.arguments.idempotencyKey};const data=await completePersonaResponse(jsonObject(dataOf(outcome.result)),async parameters=>{const page=await callTool("loomex_response_read",parameters,false,false);if(uiResultFailed(page))throw new Error("The creation response could not be read. Refresh to reconcile its saved operation.");return jsonObject(dataOf(page));});return {result:rpcResult({structuredContent:{ok:true,data}}),key:outcome.operation.arguments.idempotencyKey};},
     managementAvailable:async()=>{const result=await callTool("loomex_connection_get",{},false,false);if(uiResultFailed(result))return false;try{personaFrontendUrl(dataOf(result).webAppUrl,"persons");return Boolean(record(hostCapabilities.message)?.text);}catch{return false;}},
     openManagement:async path=>{const result=await callTool("loomex_connection_get",{},false,false);if(uiResultFailed(result))throw new Error("The Loomex website address could not be loaded. Refresh and try again.");const url=personaFrontendUrl(dataOf(result).webAppUrl,path);const response=await send("ui/message",{role:"user",content:[{type:"text",text:`Open ${url} in the Codex side panel using open_in_codex with target type browser and placement right. This is the configured Loomex management page. Only open this page.`}]});if(record(response)?.isError===true)throw new Error("The management page could not be opened. Try again.");},
   });
@@ -2437,7 +2466,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
         }
       }
       const retainedOperation = currentMutationOperation();
-      if (retainedOperation && retainedOperation.uncertain) {
+      if (retainedOperation && retainedOperation.uncertain && mode !== "personas") {
         lockUncertainOperation(retainedOperation, retainedOperation.reconciled);
       }
       if (button === refresh && browserState.focusReturn && ["browser", "authoring"].includes(mode)) restoreBrowserFocus();

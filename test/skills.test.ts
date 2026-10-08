@@ -13,6 +13,7 @@ const VISUAL_SKILL_NAMES = [
   "loomex-create",
   "loomex-runs",
   "loomex-connect",
+  "loomex-run",
 ] as const;
 
 const VISUAL_TOOL_PAIRS = [
@@ -138,7 +139,7 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
   const rootEntries = await readdir(skillsRoot, { withFileTypes: true });
   const skillFolders = rootEntries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
   assert.ok(skillFolders.length > 0, "packaged skills must contain at least one skill");
-  assert.deepEqual(skillFolders, ["loomex-browse", "loomex-connect", "loomex-create", "loomex-persona", "loomex-runs"]);
+  assert.deepEqual(skillFolders, ["loomex-browse", "loomex-connect", "loomex-create", "loomex-persona", "loomex-run", "loomex-runs"]);
 
   await t.test("skill manifests and optional UI metadata identify their own skill", async () => {
     for (const folderName of skillFolders) {
@@ -217,7 +218,7 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(common, /remote or cloud task/i);
     assert.match(common, /never derive a path from the plugin process working directory/i);
 
-    for (const skill of ["loomex-browse"]) {
+    for (const skill of ["loomex-browse", "loomex-run"]) {
       const source = await readFile(join(skillsRoot, skill, "SKILL.md"), "utf8");
       assert.match(source, /local Codex task cwd/, `${skill} must use the active local task workspace when available`);
     }
@@ -242,6 +243,86 @@ test("packaged Loomex skills are self-contained and match the MCP tool catalog",
     assert.match(authoring, /remain trusted low-level capabilities/);
     assert.match(authoring, /No workspace, provider, model, or execution-binding card/);
 
+  });
+
+  await t.test("direct-run examples route to exported tools with exact task context and selectors", async () => {
+    const source = await readFile(join(skillsRoot, "loomex-run/SKILL.md"), "utf8");
+    type Call = { tool: string; arguments: Record<string, unknown> };
+    type Example = { request: string; taskCwd: string; firstCall: Call; afterUniqueExactMatch?: Call };
+    const examples = [...source.matchAll(/```json\s*\n([\s\S]*?)\n```/g)]
+      .map((match) => JSON.parse(match[1] ?? "") as Example);
+    assert.equal(examples.length, 2, "both ID and exact-name routes need a usable example");
+
+    function parseCall(call: Call): Record<string, unknown> {
+      const tool = TOOL_DEFINITIONS.find(({ name }) => name === call.tool);
+      assert.ok(tool, `${call.tool}: example uses an exported tool`);
+      return tool.inputSchema.parse(call.arguments) as Record<string, unknown>;
+    }
+
+    const direct = examples[0]!;
+    assert.equal(direct.firstCall.tool, "loomex_run_setup");
+    const directArguments = parseCall(direct.firstCall);
+    assert.ok(direct.request.includes(String(directArguments.workflowId)));
+    assert.ok(direct.request.includes(String(directArguments.version)));
+    assert.deepEqual(directArguments.taskContext, { cwd: direct.taskCwd });
+    assert.equal("workspacePath" in directArguments, false);
+    assert.equal("inputs" in directArguments, false, "setup collects inputs instead of inventing an empty object");
+
+    const named = examples[1]!;
+    assert.equal(named.firstCall.tool, "loomex_workflows_list");
+    const query = parseCall(named.firstCall).query;
+    assert.ok(named.request.includes(String(query)));
+    assert.ok(named.afterUniqueExactMatch);
+    assert.equal(named.afterUniqueExactMatch.tool, "loomex_run_setup");
+    const namedArguments = parseCall(named.afterUniqueExactMatch);
+    assert.deepEqual(namedArguments.taskContext, { cwd: named.taskCwd });
+    assert.ok(named.request.includes(String(namedArguments.workspacePath)));
+    assert.notEqual(namedArguments.workspacePath, named.taskCwd, "override must retain calling task context");
+
+    const setup = TOOL_DEFINITIONS.find(({ name }) => name === "loomex_run_setup")!;
+    const versionId = "abcd1234-abcd-4234-8234-abcd12345678";
+    for (const version of [versionId, "7", "v7", "active", "published", "latest", "draft", "0", "v0"]) {
+      assert.equal(setup.inputSchema.parse({ ...directArguments, version }).version, version,
+        `${version}: public schema must preserve the selector for runner resolution`);
+    }
+    const { version: _omitted, ...withoutVersion } = directArguments;
+    assert.equal("version" in setup.inputSchema.parse(withoutVersion), false);
+    assert.equal(setup.inputSchema.safeParse({ workflowId: directArguments.workflowId }).success, false,
+      "missing actual task context cannot open setup");
+    assert.equal(setup.inputSchema.safeParse({ ...directArguments, inputs: {} }).success, false,
+      "typed command cannot bypass setup input collection");
+  });
+
+  await t.test("direct-run guidance preserves target, input, approval and continuation boundaries", async () => {
+    const source = await readFile(join(skillsRoot, "loomex-run/SKILL.md"), "utf8");
+    const browse = await readFile(join(skillsRoot, "loomex-browse/SKILL.md"), "utf8");
+    assert.match(browse, /run entry point.*\.\.\/loomex-run\/SKILL\.md/);
+    assert.match(source, /consume every relevant cursor page/);
+    assert.match(source, /unique exact-name match/);
+    assert.match(source, /Never select the first result/);
+    assert.match(source, /bare invocation asks which workflow/);
+    assert.match(source, /Forward the optional version selector unchanged/);
+    assert.match(source, /cannot execute/);
+    assert.match(source, /call `loomex_run_setup` once directly/);
+    assert.match(source, /Do not first open `loomex_workflows_view` or `loomex_workflow_view`/);
+    assert.match(source, /collects missing authored inputs and any Persona selections/);
+    assert.match(source, /not approval of an unseen prepared binding/);
+    assert.match(source, /collect every required input from its complete schema/);
+    assert.match(source, /Fresh-read `loomex_preparation_get`/);
+    assert.match(source, /explicit instruction to Start that reviewed binding/);
+    assert.match(source, /one retained UUID key/);
+    assert.match(source, /immediately call `loomex_run_get`/);
+    assert.match(source, /serial 30-second `loomex_run_wait`/);
+    assert.match(source, /retrieve every terminal result page/);
+    assert.match(source, /Do not add hooks or fallback schedules/);
+
+    for (const reference of ["common", "execution", "monitoring", "interactions", "recovery", "visual-delivery"]) {
+      assert.equal(
+        await readFile(join(skillsRoot, `loomex-run/references/${reference}.md`), "utf8"),
+        await readFile(join(skillsRoot, `loomex-runs/references/${reference}.md`), "utf8"),
+        `${reference}: direct-run must use the canonical runs contract without drift`,
+      );
+    }
   });
 
   await t.test("all packaged skills retain the same headless Start approval contract", async () => {

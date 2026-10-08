@@ -5,13 +5,20 @@ import {PERSONA_INPUTS,PERSONA_RESULTS} from "../src/persona-contracts.js";
 import {TOOL_DEFINITIONS,APP_CALLABLE_TOOLS} from "../src/tool-catalog.js";
 import {personaSelectionEntries,collectPersonaSelection} from "../src/ui-app/persona-selection.js";
 import {personaFrontendUrl} from "../src/ui-app/persona-frontend.js";
-import {personaContextReference} from "../src/ui-app/persona-controller.js";
+import {personaContextReference,personaDisplayCopy} from "../src/ui-app/persona-controller.js";
+import {personaCreationArguments,personaCreatedResult} from "../src/ui-app/persona-authoring.js";
 import {personaChatMessage} from "../src/ui-app/persona-context.js";
 import {completePersonaResponse} from "../src/ui-app/persona-response.js";
 const personId="11111111-1111-4111-8111-111111111111",roleId="22222222-2222-4222-8222-222222222222",organizationId="33333333-3333-4333-8333-333333333333",conversationId="44444444-4444-4444-8444-444444444444",chatId="55555555-5555-4555-8555-555555555555",key="66666666-6666-4666-8666-666666666666",digest="a".repeat(64);
 const context={personId,conversationId,chatId};
+test("Persona display uses public role descriptions and excludes runtime prompts and identities",()=>{
+ const person={role:"Legacy role",roleSummary:{id:roleId,name:"Reviewer",description:"Checks assumptions and explains tradeoffs."},effectiveConfig:{prompt:"Private prompt"},config:{description:"Private configuration"}};
+ assert.deepEqual(personaDisplayCopy(person),{role:"Reviewer",description:"Checks assumptions and explains tradeoffs."});
+ assert.deepEqual(personaDisplayCopy({role:"Reviewer"},{name:"Fallback",description:"Public role description"}),{role:"Reviewer",description:"Public role description"});
+ assert.deepEqual(personaDisplayCopy({id:personId,config:{prompt:"Private"}}),{role:"AI Persona",description:""});
+});
 test("Persona tools are fixed strict contracts and discovery has no mutation authority",()=>{
-  const tools=TOOL_DEFINITIONS.filter(t=>t.rpcMethod.startsWith("personas.")||t.rpcMethod.startsWith("persona.roles."));assert.equal(tools.length,12);assert.ok(tools.every(t=>t.optionalRunnerMethod===true));
+  const tools=TOOL_DEFINITIONS.filter(t=>t.rpcMethod.startsWith("personas.")||t.rpcMethod.startsWith("persona.roles."));assert.equal(tools.length,14);assert.ok(tools.every(t=>t.optionalRunnerMethod===true));
   assert.equal(TOOL_DEFINITIONS.find(t=>t.name==="loomex_persona_context_create")?.mutating,true);assert.equal(TOOL_DEFINITIONS.find(t=>t.name==="loomex_persona_context_get")?.mutating,false);assert.ok(APP_CALLABLE_TOOLS.has("loomex_personas_view"));
   assert.equal(PERSONA_INPUTS.create.safeParse({personId,idempotencyKey:key,conversationId}).success,false);
   for(const name of ["search","read","write","update"] as const){const args=name==="search"?{query:"project constraint"}:name==="read"||name==="update"?{memoryId:key}:{content:"Stable project constraint"};assert.equal(PERSONA_INPUTS[name].safeParse({...context,arguments:{...args,organizationId},idempotencyKey:key}).success,false);}
@@ -51,4 +58,27 @@ test("Verified Persona scope status preserves empty authority without exposing b
   assert.equal(schema.safeParse(unknown).success,false);
   assert.equal(schema.safeParse({...baseline,scopeContext:{grantedScopes:[],effectiveTokenScopes:[]}}).success,false);
  }
+});
+
+test("Persona creation exposes closed canonical fields and conservative form defaults",()=>{
+ const common={organizationId,name:"Reviewer",idempotencyKey:key};
+ assert.ok(PERSONA_INPUTS.roleCreate.safeParse({...common,config:{promptPolicy:{basePrompt:"Instructions"},skills:["review",{id:"explain",enabled:true,priority:2}]}}).success);
+ for(const config of [{model:"gpt"},{promptPolicy:{prompt:"arbitrary"}},{memoryPolicy:{maxItems:201}},{tools:["execute"]}])assert.equal(PERSONA_INPUTS.personCreate.safeParse({...common,roleId,config}).success,false);
+ assert.equal(PERSONA_INPUTS.roleCreate.safeParse({...common,organizationId:undefined}).success,false);
+ assert.equal(PERSONA_INPUTS.personCreate.safeParse({...common,roleId,status:"disabled"}).success,false);
+ assert.ok(PERSONA_INPUTS.scopeUpgrade.safeParse({organizationId,idempotencyKey:key,requestedScopes:["runner.personas.manage"]}).success);
+ for(const name of ["loomex_persona_role_create","loomex_persona_create"]){const tool=TOOL_DEFINITIONS.find(t=>t.name===name)!;assert.equal(tool.mutating,true);assert.equal(tool.destructive,false);assert.ok(APP_CALLABLE_TOOLS.has(name));}
+ const form={organizationId,name:"  Reviewer  ",description:"Public description",instructions:"Role rules",roleId,personality:"Thoughtful",outputStyle:"Concise",memoryInstruction:"Durable facts only",maxItems:50,writeMemory:false,available:false};
+ const person=personaCreationArguments("person",form);assert.equal(person.status,"draft");assert.deepEqual((person.config as any).memoryPolicy,{maxItems:50,writeMemory:false});assert.equal(person.name,"Reviewer");assert.equal(personaCreationArguments("person",{...form,available:true}).status,"active");assert.deepEqual((personaCreationArguments("role",form).config as any).promptPolicy,{basePrompt:"Role rules"});assert.throws(()=>personaCreationArguments("person",{...form,roleId:""}));
+});
+
+test("Persona accepted entities require exact requested status including creation defaults",()=>{
+ const person={id:personId,organizationId,roleId,name:"Draft",status:"draft"},args={organizationId,roleId,name:"Draft"};
+ assert.equal(personaCreatedResult(person,"person",args,key).status,"draft");
+ assert.throws(()=>personaCreatedResult({...person,status:"active"},"person",args,key),/requested status/);
+ assert.equal(personaCreatedResult({...person,status:"active"},"person",{...args,status:"active"},key).status,"active");
+ assert.throws(()=>personaCreatedResult(person,"person",{...args,status:"active"},key),/requested status/);
+ const role={id:roleId,organizationId,name:"Reviewer",status:"active"};
+ assert.equal(personaCreatedResult(role,"role",{organizationId,name:"Reviewer"},key).status,"active");
+ assert.throws(()=>personaCreatedResult({...role,status:"disabled"},"role",{organizationId,name:"Reviewer"},key),/requested status/);
 });

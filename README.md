@@ -49,11 +49,14 @@ Loomex workflows.” These are chat skills, not shell or native slash commands.
 | `$loomex:loomex-connect` | Check your connection, sign in, and choose an organization |
 | `$loomex:loomex-browse` | Find workflows and inspect run, edit, and publish actions |
 | `$loomex:loomex-create` | Create or edit a workflow through guided review |
+| `$loomex:loomex-run` | Prepare and run a workflow directly by ID or exact name |
 | `$loomex:loomex-runs` | Find runs, follow progress, answer questions, and retrieve results |
 | `$loomex:loomex-persona` | Choose an active Persona for this chat |
 
-Start with `$loomex:loomex-connect`, then `$loomex:loomex-browse`. When running a
-workflow, supply its required inputs and review the exact workspace, provider,
+Start with `$loomex:loomex-connect`. Browse with `$loomex:loomex-browse`, or use
+`$loomex:loomex-run <workflow ID or exact name> [version]` to open run setup
+directly. For example, `$loomex:loomex-run Persona QA Review v2` preserves the
+requested version. Supply required inputs and review the exact workspace, provider,
 and execution policy before choosing **Start**. Your current local Codex task
 directory is the initial workspace suggestion; an explicit path takes precedence.
 Workflow creation and editing include human review and acceptance. Saving a draft,

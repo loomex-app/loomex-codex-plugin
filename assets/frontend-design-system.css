@@ -262,6 +262,9 @@
   .w-32 {
     width: calc(var(--spacing) * 32);
   }
+  .min-w-0 {
+    min-width: calc(var(--spacing) * 0);
+  }
   .resize {
     resize: both;
   }

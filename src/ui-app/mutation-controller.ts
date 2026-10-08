@@ -14,6 +14,8 @@ export const MUTATION_PERSISTENCE_TOOLS = Object.freeze({
 
 export const MUTATION_JOURNAL_METHODS = Object.freeze({
   loomex_persona_context_create:"personas.chat_context.create",
+  loomex_persona_role_create:"persona.roles.create",
+  loomex_persona_create:"personas.create",
   loomex_persona_memory_write:"personas.memory.write",
   loomex_persona_memory_update:"personas.memory.update",
   loomex_persona_scope_upgrade:"auth.scope_upgrade",
@@ -356,6 +358,7 @@ function viewSessionProjection(result: RpcResult): MutationSessionProjection | u
 }
 
 function reconciliationFor(name: MutationToolName, args: Readonly<JsonObject>): MutationReconciliation | undefined {
+  if (name === "loomex_persona_role_create" || name === "loomex_persona_create") return {method:"personas.operations.get",params:{operation:name==="loomex_persona_role_create"?"role.create":"person.create",idempotencyKey:args.idempotencyKey}};
   if (name === "loomex_persona_context_create" || name === "loomex_persona_memory_write" || name === "loomex_persona_memory_update") return {method:"personas.operations.get",params:{operation:name==="loomex_persona_context_create"?"chat_context.create":name==="loomex_persona_memory_write"?"memory.write":"memory.update",idempotencyKey:args.idempotencyKey}};
   if (name === "loomex_workflow_publish") {
     if (typeof args.idempotencyKey !== "string") throw new Error("The publish recovery key is missing.");
@@ -384,6 +387,8 @@ function operationReference(result: RpcResult, operation: MutationOperation, dat
     ? stringValue(data.builderSessionId, 64) || stringValue(data.sessionId, 64)
     : builderSessionId(data);
   return immutableCopy({
+    ...((operation.name==="loomex_persona_create"&&person)?{personId:person.id,organizationId:person.organizationId}:{}),
+    ...((operation.name==="loomex_persona_role_create"&&object(data.role))?{roleId:object(data.role)!.id,organizationId:object(data.role)!.organizationId}:{}),
     ...(conversation&&person?{personId:person.id,conversationId:conversation.conversationId,chatId:conversation.chatId,configDigest:data.configDigest}:{}),
     ok: !resultFailed(result),
     errorCode: errorCodeOf(result) ?? null,
@@ -664,7 +669,7 @@ export class MutationController {
     }
   }
 
-  async callMutation(name: MutationToolName, slot: string, args: Readonly<JsonObject>): Promise<MutationCallOutcome> {
+  async callMutation(name: MutationToolName, slot: string, args: Readonly<JsonObject>, onJournaled?: (operation:Readonly<MutationOperation>)=>Promise<void>): Promise<MutationCallOutcome> {
     this.#requireReady();
     const operation = this.#operation(name, slot, args);
     if (operation.journalStatus === "completed" && operation.targetSession != null) {
@@ -673,6 +678,7 @@ export class MutationController {
       return { result: { structuredContent: { ok: true, data: {} } }, operation, ambiguous: false };
     }
     await this.journal(operation);
+    if(onJournaled)await onJournaled(operation);
     let result = operation.successfulResult !== undefined
       ? immutableCopy(operation.successfulResult)
       : await dispatchJournaledOperation(operation, () => this.callTool(operation.name, operation.arguments, {

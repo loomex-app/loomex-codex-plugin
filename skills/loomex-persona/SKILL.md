@@ -1,6 +1,6 @@
 ---
 name: loomex-persona
-description: Choose and use an active Loomex AI Persona in the current native chat, with owner-bound context and fixed memory tools.
+description: Create roles and Personas, and choose and use an active Loomex AI Persona in the current native chat, with owner-bound context and fixed memory tools.
 ---
 
 # Use a Loomex AI Persona
@@ -10,7 +10,7 @@ Read [the shared visual delivery contract](references/visual-delivery.md) when r
 
 Keep the current host model and chat. Open `loomex_personas_view` once for the user's selection, preserving their search or exact role UUID. Reopen its returned `viewSessionId` when requested. Do not duplicate the card's list in chat. Headless discovery uses `loomex_persona_roles_list`, `loomex_persona_role_get`, `loomex_personas_list` and `loomex_persona_get`; resolve ambiguity with the user and select by UUID, never by a guessed name or key. Only active Persons with an active role are selectable. Search and pagination are reads and create no contexts.
 
-An explicit “Use in this chat” selection creates or resumes one Persona context. The native picker uses the advertised `message.text` capability, `ui/message`, and the exact owner-bound delivery journal. A host acknowledgement proves delivery only. An uncertain delivery must be read and reconciled, never sent again under another identity. A host without that capability uses a direct chat selection; do not invent a task ID, cwd binding, or another conversation UI.
+An explicit “Chat with NAME” or “Use in this chat” selection creates or resumes one Persona context. The native picker uses the advertised `message.text` capability, `ui/message`, and the exact owner-bound delivery journal. A host acknowledgement proves delivery only. An uncertain delivery must be read and reconciled, never sent again under another identity. A host without that capability uses a direct chat selection; do not invent a task ID, cwd binding, or another conversation UI.
 
 For a direct selected Persona, call `loomex_persona_context_create` once with its exact `personId` and a fresh retained UUID `idempotencyKey`. Creation is a mutation. On an ambiguous outcome, read `loomex_persona_operation_get` with operation `chat_context.create` and the original key. Keep the exact arguments and key; do not create a replacement. A response spool is already a completed operation: consume `loomex_response_read` from offset zero through the final page, verifying its checksum, instead of repeating the mutation.
 
@@ -34,3 +34,10 @@ If discovery or the picker returns `AUTHORIZATION_FAILED`, preserve that permiss
 When verified scopes are insufficient, explain the exact selected organization and missing fixed scopes (`runner.personas.read`, `runner.personas.chat`, `runner.personas.memory.read`, `runner.personas.memory.write`, as required by the intended action). Invoke `loomex_persona_scope_upgrade` only after explicit user approval of that exact request, on the eligible existing child grant for the current organization and device. Preserve the current identities and proof binding; inspect scope status after it completes, then reopen the picker once verified. Do not infer approval from an error or recovery hint, request credentials, edit permission tables, automatically upgrade, or silently drop required memory capabilities.
 
 The picker administration actions use the configured frontend base and existing `/persons`, `/persona-roles` and `/memory` routes. Missing frontend configuration affects those optional links; it does not create an invented destination or prevent an otherwise authorized chat.
+
+
+The same Persona card provides Create role and Create Persona forms. Form navigation is read-only; saving requires verified `runner.personas.manage` in the exact selected organization. Discovery and chat retain their existing scopes. If manage is missing, show the organization and precise additional scope, and invoke `loomex_persona_scope_upgrade` only after the user explicitly approves that request. Never expand the four default chat/memory scopes automatically.
+
+For direct creation, use the closed `loomex_persona_role_create` or `loomex_persona_create` tools with the exact organization UUID and one retained mutation UUID. Roles accept name, description and canonical `config.promptPolicy` fields (basePrompt, responsibility, boundaries, safetyRules). Personas require an active role UUID and accept canonical personalityPrompt, outputStyle and memoryUsageInstruction, optional bounded memoryPolicy, and installed skill references. These fields do not grant host authority. Never substitute arbitrary JSON, provider/model settings, credentials or executable tools. Persona status defaults to draft; active status requires the user's explicit choice to make it available in chat. The native form defaults memory writing to false.
+
+A successful `{role}` or `{person}` result proves creation only. It does not create a chat context or send a message. Preserve its exact result and organization; a draft is unavailable for chat. On ambiguous creation, read `loomex_persona_operation_get` using operation `role.create` or `person.create` and the original key. Keep the same immutable arguments and identity; do not create a replacement. Read response spools completely rather than replaying creation. The card saves safe user edits and exact operation references in its existing owner-bound presentation session and rechecks receipts after remount.

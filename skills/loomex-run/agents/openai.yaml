@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run a Loomex Workflow"
+  short_description: "Run a workflow directly by ID or exact name"
+  default_prompt: "Use $loomex:loomex-run to prepare this workflow in my current workspace, review its exact binding, then start and follow it after approval."
