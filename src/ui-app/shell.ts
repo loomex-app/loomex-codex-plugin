@@ -10,6 +10,8 @@ const ICONS: Record<ActionIcon, string> = {
   message: "M21 15a3 3 0 0 1-3 3H8l-5 3V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3Z", next: "m12 5 7 7-7 7 M19 12H4",
   organization: "M5 21V3h14v18 M2 21h20 M9 7h1 m4 0h1 M9 11h1 m4 0h1 M10 21v-6h4v6", play: "m8 5 11 7-11 7Z", publish: "M12 16V3m0 0-5 5m5-5 5 5 M5 14v6h14v-6",
   refresh: "M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-1l2 6 M4 12l2 6a7 7 0 0 0 12-1", search: "M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
+  "role-plus": "M8 3h5l3 3v8 M13 3v4h4 M6 3H4v18h8 M8 11h5 M8 15h3 M18 15v6 M15 18h6",
+  "person-plus": "M15 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M3 21v-2a6 6 0 0 1 6-6h3 M18 14v7 M14.5 17.5h7",
   shield: "m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z m-4 9 3 3 5-6", stop: "M6 6h12v12H6Z",
 };
 
@@ -28,11 +30,13 @@ export interface PagePresentation {
   readonly overflow?: readonly PageAction[];
 }
 
-export type ActionId = "use-version" | "refresh" | "back" | "close" | "edit" | "publish" | "expand" | "start" | "chat" | "results" | "review" | "submit" | "approve" | "reject" | "cancel" | "clear" | "search" | "connection" | "organizations" | "logout" | "grant" | "copy" | "open" | "next";
+export type ActionId = "use-version" | "refresh" | "back" | "close" | "edit" | "publish" | "expand" | "start" | "chat" | "results" | "review" | "submit" | "approve" | "reject" | "cancel" | "clear" | "search" | "connection" | "organizations" | "logout" | "grant" | "copy" | "open" | "next" | "create-role" | "create-persona";
 
 /** Action identity is independent of presentation copy or localization. */
 export const ACTIONS: Readonly<Record<ActionId, ActionMetadata>> = Object.freeze({
   "use-version": { icon: "check", labelVisibility: "text" },
+  "create-role": { icon: "role-plus", labelVisibility: "text" },
+  "create-persona": { icon: "person-plus", labelVisibility: "text" },
   refresh: { icon: "refresh" }, back: { icon: "back" }, close: { icon: "close" }, edit: { icon: "edit" }, publish: { icon: "publish", labelVisibility: "text" }, expand: { icon: "expand" },
   start: { icon: "play", labelVisibility: "text" }, chat: { icon: "message" }, results: { icon: "eye" },
   review: { icon: "eye", labelVisibility: "text" }, submit: { icon: "check", labelVisibility: "text" },

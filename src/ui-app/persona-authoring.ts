@@ -2,7 +2,7 @@ import { createUiElement as element } from "./components.js";
 import type { JsonObject } from "./contracts.js";
 import type { RpcResult } from "./page-models.js";
 import type { ViewRestorationCoordinator } from "./persistence.js";
-import type { PagePresentation } from "./shell.js";
+import { ACTIONS, createIcon, type PagePresentation } from "./shell.js";
 
 export type PersonaCreationKind = "role" | "person";
 export interface PersonaManagementAccess { organizationId:string; organizationName:string; scopes:readonly string[]; }
@@ -111,7 +111,7 @@ export function createPersonaAuthoring(host:PersonaAuthoringServices) {
  }
  function close():void {
   const kind=screen;++generation;busy=false;screen=undefined;host.changed();host.close();
-  const origin=document.querySelector<HTMLButtonElement>(`[data-page-action="${kind==="role"?"edit":"next"}"]`);if(origin&&!origin.disabled)origin.focus({preventScroll:true});
+  const origin=document.querySelector<HTMLButtonElement>(`[data-page-action="${kind==="role"?"create-role":"create-persona"}"]`);if(origin&&!origin.disabled)origin.focus({preventScroll:true});
  }
  async function grant():Promise<void> {
   if(!screen||!access||allowed()||busy||pending||!host.lifecycle.permissions().mutate)return;
@@ -152,11 +152,11 @@ export function createPersonaAuthoring(host:PersonaAuthoringServices) {
  }
  function render():void {
   if(!screen||disposed)return;const kind=screen,editable=!busy&&!pending&&!created;
-  host.setPage({title:created&&verifiedCreated?`${kind==="role"?"Role":"Persona"} created`:kind==="role"?"Create role":"Create Persona",back:{id:"back",label:"Back to Personas",intent:"navigate",execute:close},actions:created?[]:[{id:"submit",label:kind==="role"?"Create role":"Create Persona",labelVisibility:"text",intent:"mutation",disabled:!editable||!allowed()||!matchingOrganization()||!host.lifecycle.permissions().mutate,execute:submit}]});
+  host.setPage({title:created&&verifiedCreated?`${kind==="role"?"Role":"Persona"} created`:kind==="role"?"Create role":"Create Persona",back:{id:"back",label:"Back to Personas",intent:"navigate",execute:close},actions:created?[]:[{id:kind==="role"?"create-role":"create-persona",label:kind==="role"?"Create role":"Create Persona",labelVisibility:"text",intent:"mutation",disabled:!editable||!allowed()||!matchingOrganization()||!host.lifecycle.permissions().mutate,execute:submit}]});
   host.context.setAttribute("aria-busy",String(busy));
   if(created&&verifiedCreated&&access){host.context.replaceChildren(element("p",{className:"ui-value"},created.name),element("p",{className:"ui-caption"},created.kind==="person"?(created.status==="active"?"Available in chat. Return to Personas to choose it.":"Saved as a draft. It is not available in chat yet."):"The role is ready for a new Persona."));return;}
   let root=host.context.querySelector<HTMLElement>("[data-persona-authoring]");if(!root||root.dataset.personaAuthoring!==kind){
-   host.context.replaceChildren();root=element("section",{className:"ui-stack min-w-0",dataset:{personaAuthoring:kind},"aria-label":kind==="role"?"Create role form":"Create Persona form"});root.append(element("p",{id:"persona-authoring-access",className:"ui-callout"}),element("p",{id:"persona-authoring-pending",className:"ui-callout"}),element("p",{id:"persona-authoring-activity",className:"activity",role:"status","aria-live":"polite"}));
+   host.context.replaceChildren();root=element("section",{className:"ui-stack min-w-0",dataset:{personaAuthoring:kind},"aria-label":kind==="role"?"Create role form":"Create Persona form"});root.append(element("div",{id:"persona-authoring-access",className:"ui-callout ui-stack"}),element("p",{id:"persona-authoring-pending",className:"ui-callout"}),element("p",{id:"persona-authoring-activity",className:"activity",role:"status","aria-live":"polite"}));
    const form=element("form",{id:"persona-authoring-form",className:"ui-stack min-w-0"});form.addEventListener("submit",event=>{event.preventDefault();void submit().catch(host.error);},{signal:events.signal});field(form,"Name","name","text",255);field(form,"Description","description","textarea",4096);
    if(kind==="role")field(form,"Instructions","instructions","textarea");else {
     const wrapper=element("div",{className:"field"}),select=element("select",{id:"persona-create-roleId",required:true,className:"min-w-0"});wrapper.append(element("label",{htmlFor:select.id,className:"ui-label"},"Role"),select);select.addEventListener("change",()=>{if(screen&&!busy&&!pending){drafts.person.roleId=select.value;host.changed();}},{signal:events.signal});form.append(wrapper);field(form,"Personality","personality","textarea");field(form,"Output style","outputStyle","textarea");checkbox(form,"Available in chat","available");
@@ -164,10 +164,10 @@ export function createPersonaAuthoring(host:PersonaAuthoringServices) {
    }
    form.append(element("button",{type:"submit",hidden:true,"aria-hidden":"true"},"Create"));root.append(form);host.context.append(root);
   }
-  const accessNode=root.querySelector<HTMLElement>("#persona-authoring-access")!;accessNode.replaceChildren();
-  if(!access)accessNode.textContent=busy?"Checking creation access…":"Creation access could not be verified. Refresh to retry.";
+  const accessNode=root.querySelector<HTMLElement>("#persona-authoring-access")!,permissionDetails=accessNode.querySelector<HTMLDetailsElement>("details"),detailsFocused=permissionDetails?.querySelector("summary")===document.activeElement;accessNode.replaceChildren();
+  if(!access){accessNode.append(element("p",{},busy?"Checking creation access…":"Creation access could not be verified. Refresh to retry."));if(permissionDetails){permissionDetails.hidden=true;accessNode.append(permissionDetails);}}
   else if(!matchingOrganization())accessNode.textContent="This form belongs to another organization. Close it before creating in the selected organization.";
-  else if(!allowed()){accessNode.append(element("p",{},`Creating roles and Personas in ${access.organizationName} needs creation permission. Approving adds the runner.personas.manage scope to this organization; your chat permissions stay unchanged.`));const grantButton=element("button",{type:"button",className:"secondary",disabled:busy||Boolean(pending)||!host.lifecycle.permissions().mutate,dataset:{businessMutation:"true"}},"Grant creation access");grantButton.addEventListener("click",()=>void grant().catch(host.error),{signal:events.signal});accessNode.append(grantButton);}
+  else if(!allowed()){accessNode.append(element("h2",{className:"ui-value"},`Allow creation in ${access.organizationName}`),element("p",{className:"ui-caption"},`Allow Loomex on this Mac to create roles and Personas in ${access.organizationName}. Existing chat access stays unchanged.`));const details=permissionDetails??element("details",{className:"ui-disclosure"});details.hidden=false;if(!permissionDetails)details.append(element("summary",{},"Permission details"),element("p",{className:"ui-caption"}));details.querySelector("p")!.textContent=`Adds runner.personas.manage to the existing Loomex installation grant on this Mac for ${access.organizationName}.`;const grantButton=element("button",{type:"button",className:"secondary action-with-label",disabled:busy||Boolean(pending)||!host.lifecycle.permissions().mutate,dataset:{businessMutation:"true"}});grantButton.append(createIcon(ACTIONS.grant.icon),element("span",{className:"action-label"},"Allow creation"));grantButton.addEventListener("click",()=>void grant().catch(host.error),{signal:events.signal});accessNode.append(grantButton,details);if(detailsFocused)details.querySelector("summary")?.focus({preventScroll:true});}
   else accessNode.textContent=`Creating in ${access.organizationName}.`;
   const pendingNode=root.querySelector<HTMLElement>("#persona-authoring-pending")!;pendingNode.hidden=!pending;pendingNode.textContent="A saved operation needs reconciliation. Refresh checks its exact result; do not create another item.";
   const activity=root.querySelector<HTMLElement>("#persona-authoring-activity")!;activity.hidden=!busy||!access;activity.textContent=busy?"Checking this creation…":"";

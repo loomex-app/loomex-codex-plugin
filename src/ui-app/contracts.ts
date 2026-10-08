@@ -60,4 +60,4 @@ export interface ActionMetadata {
 export type ActionIcon =
   | "back" | "check" | "clock" | "close" | "connection" | "copy" | "edit" | "external"
   | "eye" | "expand" | "info" | "logout" | "message" | "next" | "organization" | "play" | "publish" | "refresh"
-  | "search" | "shield" | "stop";
+  | "search" | "shield" | "stop" | "role-plus" | "person-plus";
