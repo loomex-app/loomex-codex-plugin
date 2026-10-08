@@ -76,10 +76,13 @@ const AbsolutePath = z.string().min(1).refine((value) => value.startsWith("/"), 
 });
 const TaskContext = z
   .object({
+    projectDirectories: z.array(AbsolutePath).optional().describe("Directories verified as belonging to the active Codex project. Never derive these from filesystem permissions or unrelated workspace roots."),
     cwd: AbsolutePath.describe("The actual current working directory of the active local Codex task."),
   })
   .strict();
+const AdditionalWorkspacePaths = z.array(AbsolutePath).optional().describe("Additional directories explicitly selected for this execution. The runner canonicalizes and verifies every root.");
 const TaskWorkspaceInput = {
+  additionalWorkspacePaths: AdditionalWorkspacePaths,
   taskContext: TaskContext.describe(
     "Required context supplied by the calling Codex skill for the active local task. The plugin cannot discover or infer this cwd. It is a workspace suggestion, not execution authority.",
   ),
@@ -87,7 +90,7 @@ const TaskWorkspaceInput = {
     "An explicit workspace chosen by the user for this operation. When present, it overrides taskContext.cwd in setup.",
   ),
 };
-const TASK_WORKSPACE_INPUT_KEYS = ["taskContext", "workspacePath"] as const;
+const TASK_WORKSPACE_INPUT_KEYS = ["taskContext", "workspacePath", "additionalWorkspacePaths"] as const;
 export const TASK_WORKSPACE_TOOL_NAMES = new Set([
   "loomex_workflows_view",
   "loomex_workflow_view",
@@ -431,6 +434,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     inputSchema: z
       .object({
         workspacePath: AbsolutePath,
+        additionalWorkspacePaths: AdditionalWorkspacePaths,
         organizationId: Uuid.optional(),
         idempotencyKey: IdempotencyKey,
       })
@@ -674,6 +678,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         prompt: z.string().min(1),
         model: z.string().min(1).optional(),
         workspacePath: AbsolutePath,
+        additionalWorkspacePaths: AdditionalWorkspacePaths,
         providerConfiguration: ProviderConfiguration.optional(),
         context: JsonObject.optional(),
         idempotencyKey: IdempotencyKey,
@@ -742,6 +747,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         prompt: z.string().min(1),
         model: z.string().min(1).optional(),
         workspacePath: AbsolutePath,
+        additionalWorkspacePaths: AdditionalWorkspacePaths,
         providerConfiguration: ProviderConfiguration.optional(),
         context: JsonObject.optional(),
         idempotencyKey: IdempotencyKey,
@@ -802,6 +808,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         versionId: Uuid,
         inputs: JsonObject.optional(),
         workspacePath: AbsolutePath,
+        additionalWorkspacePaths: AdditionalWorkspacePaths,
         providerConfiguration: ProviderConfiguration.optional(),
         idempotencyKey: IdempotencyKey,
       })

@@ -277,6 +277,7 @@ export class LocalControlClient {
     const requiredCapabilities = OPTIONAL_RUNNER_METHODS.has(method)
       ? [...REQUIRED_RUNNER_CAPABILITIES, `method:${method}`, ...(OPTIONAL_RUNNER_CAPABILITIES_BY_METHOD[method] ?? [])]
       : [...REQUIRED_RUNNER_CAPABILITIES];
+    if (Array.isArray(params.additionalWorkspacePaths) && params.additionalWorkspacePaths.length) requiredCapabilities.push("execution.workspace-set/v1");
     const path = socketPath();
     await verifyOwnerBeforeDeadline(path, deadline, options.signal, () => transportError({
       mutating: options.mutating, sent: false, requestId: negotiationId, params,

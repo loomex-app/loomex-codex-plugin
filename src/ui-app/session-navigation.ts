@@ -244,6 +244,10 @@ export function createSessionNavigationController(host:SessionNavigationServices
       return;
     }
     if (host.flowStore.flow?.stage === "setup" && state.workflowId === host.flowStore.flow.selected?.workflowId && state.versionId === host.flowStore.flow.selected?.versionId) {
+      if(Array.isArray(state.additionalWorkspaceDraft) && state.additionalWorkspaceDraft.every(path=>typeof path==="string" && path.startsWith("/"))) {
+        host.flowStore.flow.additionalWorkspaceDraft=[...state.additionalWorkspaceDraft as string[]];
+        delete host.flowStore.flow.canonicalAdditionalWorkspaces;
+      }
       host.flowStore.flow.workspaceEditing = host.flowStore.flow.workspaceEditing || state.workspaceEditing === true;
       if (workflowIdValid(state.returnBrowserViewSessionId)) activeFlow().returnViewSessionId = state.returnBrowserViewSessionId;
       renderIntegratedRunFlow();

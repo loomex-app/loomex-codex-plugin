@@ -159,7 +159,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "authoring.chat-native/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1"])].sort(),
+    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "authoring.chat-native/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1", "execution.workspace-set/v1"])].sort(),
   );
   const status = catalog.methods.find(method => method.name === "status.get");
   assert.ok(status);
@@ -2526,4 +2526,17 @@ test("native authoring receipt rejects contradictory session identity and unknow
   assert.equal(schema.safeParse({ ...receipt, executionPolicy: "host_user/v1" }).success, false);
   assert.equal(schema.safeParse({ ...receipt, systemWorkflowKey: "workflow_editor" }).success, false);
   assert.equal(schema.safeParse({ ...receipt, systemWorkflowDefinitionChecksum: "wrong" }).success, false);
+});
+
+
+test("workspace-set support is required only for mutations selecting additional roots", async () => {
+ let runner!: FakeRunner;
+ runner = new FakeRunner((request, socket) => runner.respond(socket, request, {}), {capabilities:[...REQUIRED_RUNNER_CAPABILITIES]});
+ const client=await connect(runner);
+ const result=await client.callTool({name:"loomex_workspace_grant",arguments:{workspacePath:"/primary",additionalWorkspacePaths:["/extra"],idempotencyKey:"33937720-ea1a-4c06-adcc-095bb3693f5f"}});
+ assert.equal(result.isError,true);
+ assert.equal((result.structuredContent as {error:{code:string}}).error.code,"COMPATIBILITY_ERROR");
+ assert.equal(runner.requests.length,0);
+ assert.ok((runner.negotiations[0]!.params.requiredCapabilities as string[]).includes("execution.workspace-set/v1"));
+ assert.equal(REQUIRED_RUNNER_CAPABILITIES.includes("execution.workspace-set/v1"),false);
 });

@@ -262,7 +262,7 @@ const primarySchemas = {
     .strict(),
   "workspaces.list": z.object({ workspaces: Objects, details: Details }).strict(),
   "workspaces.grant": z
-    .object({ workspace: JsonObject, executionPolicy: z.string(), details: Details })
+    .object({ workspace: JsonObject, additionalWorkspaces: z.array(JsonObject).optional(), executionPolicy: z.string(), details: Details })
     .strict(),
   "workspaces.revoke": z.object({ revoked: z.boolean(), details: Details }).strict(),
   "workflows.list": z

@@ -1,3 +1,4 @@
+import {parseTaskWorkspace} from "./workspace-context.js";
 import { personaCreatedResult, type PersonaManagementOperation, type PersonaOperationReference } from "./persona-authoring.js";
 import {completePersonaResponse} from "./persona-response.js";
 import { createPersonaController } from "./persona-controller.js";
@@ -1515,6 +1516,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
       versionId: runSetupController.flow.selected?.versionId,
       controls: captureControls(),
       workspaceEditing: Boolean(runSetupController.flow.workspaceEditing),
+      additionalWorkspaceDraft: runSetupController.flow.additionalWorkspaceDraft || [],
       returnBrowserViewSessionId: runSetupController.flow.returnViewSessionId || null,
     };
     if (runSetupController.flow?.stage === "review") return {
@@ -1611,15 +1613,7 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
   const TASK_WORKSPACE_TOOLS = new Set(["loomex_workflows_view", "loomex_workflow_view", "loomex_run_setup"]);
 
   function taskWorkspaceFrom(value: unknown): TaskWorkspace | null {
-    const supplied = record(value);
-    if (supplied === null) return null;
-    const taskContext = record(supplied.taskContext);
-    const cwd = safeText(taskContext?.cwd, 4096);
-    const workspacePath = safeText(supplied.workspacePath, 4096);
-    if ((cwd && !cwd.startsWith("/")) || (workspacePath && !workspacePath.startsWith("/"))) return null;
-    return cwd || workspacePath
-      ? { ...(cwd ? { taskContext: { cwd } } : {}), ...(workspacePath ? { workspacePath } : {}) }
-      : null;
+    return parseTaskWorkspace(value);
   }
 
   function taskWorkspaceArguments(): JsonObject {

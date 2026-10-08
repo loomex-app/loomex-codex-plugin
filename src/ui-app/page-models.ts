@@ -195,6 +195,8 @@ export interface PreparationBinding extends MutableJson {
   organizationId?: string;
   installationId?: string;
   workspacePath?: string;
+  additionalWorkspacePaths?: string[];
+  workspaceSetContract?: string;
   executionPolicy?: string;
   inputs?: JsonObject;
   providerConfiguration?: { requested?: JsonObject } & MutableJson;
@@ -269,7 +271,8 @@ export interface PreparationPresentation extends MutableJson {
 }
 
 export interface TaskWorkspace extends MutableJson {
-  taskContext?: { cwd?: string } & MutableJson;
+  additionalWorkspacePaths?: string[];
+  taskContext?: { cwd?: string; projectDirectories?: string[] } & MutableJson;
   workspacePath?: string;
 }
 
@@ -381,6 +384,9 @@ export interface RunFlow {
   returnToBrowser?: boolean;
   inputDraft?: Record<string, string | number | boolean>;
   workspaceDraft?: string;
+  additionalWorkspaceDraft?: string[];
+  canonicalAdditionalWorkspaces?: string[];
+  setupAdditionalWorkspaces?: string[];
   workspaceEditing?: boolean;
   workspaceSource?: string;
   setupWorkspacePath?: string;

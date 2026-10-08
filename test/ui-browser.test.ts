@@ -6664,3 +6664,33 @@ test("Persona semantic creation actions keep distinct accessible icons and fit n
 test("Persona creation permission appears only after verified missing access and preserves read-only recovery",async(t)=>{
  const available=await browserTools();assert.ok(available);const browser=await available.tools.chromium.launch({executablePath:available.executablePath,headless:true});t.after(()=>browser.close());const page=await browser.newPage();const {app,data,roles}=await mountPersonaCreation(page,[]);assert.equal(await app.getByRole("button",{name:"Allow creation",exact:true}).count(),0);await page.evaluate(()=>window.__workflowDelayMs=300);await app.getByRole("button",{name:"Create Persona",exact:true}).click();await app.getByText("Checking creation access…",{exact:true}).waitFor();assert.equal(await app.getByLabel("Name",{exact:true}).isDisabled(),true);assert.equal(await app.getByRole("button",{name:"Create Persona",exact:true}).isDisabled(),true);assert.equal(await app.getByRole("button",{name:"Allow creation",exact:true}).count(),0);await app.getByRole("button",{name:"Allow creation",exact:true}).waitFor();await page.waitForFunction(()=>document.getElementById("app").contentDocument.querySelector("#context").getAttribute("aria-busy")==="false");await app.getByLabel("Name",{exact:true}).fill("Safe edit without manage");assert.equal(await app.getByRole("button",{name:"Create Persona",exact:true}).isDisabled(),true);await page.evaluate((roles:any)=>{window.__workflowDelayMs=0;window.__personaScopes=null;window.__workflowResponses=[{structuredContent:{ok:true,data:roles}},{isError:true,structuredContent:{ok:false,error:{code:"NETWORK_AMBIGUOUS",message:"Scope proof unavailable"}}}];},roles);await app.getByRole("button",{name:"Refresh",exact:true}).click();await app.getByText("Creation access could not be verified. Refresh to retry.",{exact:true}).waitFor();assert.equal(await app.getByRole("button",{name:"Allow creation",exact:true}).count(),0);assert.equal(await app.getByRole("button",{name:"Create Persona",exact:true}).isDisabled(),true);assert.equal(await app.getByLabel("Name",{exact:true}).inputValue(),"Safe edit without manage");assert.equal(await page.evaluate(()=>window.__loomexCalls.filter((c:any)=>c.name==="loomex_persona_scope_upgrade").length),0);await page.evaluate((data:any)=>window.__workflowResponses=[{structuredContent:{ok:true,data}}],data);await app.getByRole("button",{name:"Back to Personas",exact:true}).click();await app.getByRole("button",{name:"Search",exact:true}).waitFor();assert.equal(await app.getByRole("button",{name:"Search",exact:true}).isDisabled(),false);assert.equal(await app.getByRole("button",{name:"Allow creation",exact:true}).count(),0);
 });
+
+test("multi-directory setup carries the exact reviewed set and an override clears old project roots",async(t)=>{
+ const available=await browserTools();if(!available)assert.fail("Chromium is required for workspace-set preparation");
+ const browser=await available.tools.chromium.launch({executablePath:available.executablePath,headless:true});t.after(()=>browser.close());
+ const page=await browser.newPage({viewport:{width:560,height:900}});
+ const workflowId="ee8e2ea2-cbbc-4a7a-be39-cc7c4924789e", versionId="8b29c880-1c68-4d47-a1ff-477ab28d3c49";
+ const organizationId="67a6e174-b7ae-4f9a-9a68-f0eed80f95f2",installationId="62e9d3fa-097b-46fb-9f87-34b4d8c1b40b";
+ const setup={workflow:{id:workflowId,organizationId,name:"Multi-directory workflow"},
+  inputSchema:{type:"object",properties:{title:{type:"string",title:"Title"}},required:["title"]},
+  selectedVersion:{id:versionId,workflowId,versionNumber:1,definition:{executionPolicy:"host_user/v1",settings:{inputSchema:{type:"object",properties:{title:{type:"string",title:"Title"}},required:["title"]}},nodes:[]}}};
+ const prepared={preparationId:"04e386f9-d91e-4cf0-88b3-99da4ac1e37d",bindingDigest:"3".repeat(64),confirmationKey:"101b9f38-56be-4fbe-8e56-d75f61ab3d08",
+  binding:{workflowId,versionId,organizationId,installationId,workspacePath:"/project/a",additionalWorkspacePaths:["/project/b"],workspaceSetContract:"execution.workspace-set/v1",executionPolicy:"host_user/v1",inputs:{title:"Check both"},providerConfiguration:{}}};
+ const presentation={schemaVersion:"loomex/preparation-review/v1",preparationId:prepared.preparationId,bindingDigest:prepared.bindingDigest,workflowId,versionId,organizationId,workflowName:"Multi-directory workflow",workflowVersion:1,organizationName:"QA",providers:[]};
+ const taskContext={cwd:"/project/a",projectDirectories:["/project/b","/project/a"]};
+ const app=await mountApp(page,"prepare",setup,false,false,null,false,{"loomex/taskWorkspace":{taskContext}},undefined,[
+  {structuredContent:{ok:true,data:{workspace:{path:"/project/a",organizationId,installationId},additionalWorkspaces:[{path:"/project/b",organizationId,installationId}],executionPolicy:"host_user/v1"}}},
+  {structuredContent:{ok:true,data:prepared},_meta:{"loomex/preparationReview":presentation}},
+ ]);
+ await app.getByLabel("Title *",{exact:true}).fill("Check both");
+ await app.getByRole("button",{name:"Review run",exact:true}).click();
+ await app.getByRole("button",{name:"Start run",exact:true}).waitFor();
+ const calls=await page.evaluate(()=>window.__loomexCalls);
+ assert.deepEqual(calls.filter((call:any)=>call.name==="loomex_workspace_grant")[0].arguments.additionalWorkspacePaths,["/project/b"]);
+ assert.deepEqual(calls.filter((call:any)=>call.name==="loomex_run_prepare")[0].arguments.additionalWorkspacePaths,["/project/b"]);
+ await app.getByText("1 additional directory",{exact:true}).waitFor();
+ const overridePage=await browser.newPage();const override=await mountApp(overridePage,"prepare",setup,false,false,null,false,{"loomex/taskWorkspace":{taskContext}});
+ await override.getByRole("button",{name:"Change workspace",exact:true}).click();
+ await override.getByLabel("Workspace directory *",{exact:true}).fill("/override");
+ assert.equal(await override.locator("#run-additional-workspaces").inputValue(),"");
+});

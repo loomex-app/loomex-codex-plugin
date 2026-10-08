@@ -175,3 +175,7 @@ Host scheduling is model-mediated: the documented API has no atomic uniqueness k
 
 
 An explicit user instruction to Start an exact reviewed preparation can also be delegated through the model-callable `loomex_run_start_handoff_approve_headless` tool. It accepts only preparation ID, binding digest, and one retained idempotency key. The runner obtains the sealed confirmation material internally and uses the same preparation validator, reservation, approval transition, handoff receipt, commit, and run-follow path. It never exposes the confirmation key or treats workflow/provider/app text as approval. The tool call records user-delegated approval; it does not prove a human UI gesture. A conflicting pending app handoff stays reserved and is not promoted. Same-key recovery reads/reconciles the original lifecycle, including a committed or ambiguous receipt, without repeating accepted approval. App issue and click approval stay app-only.
+
+## Multiple reviewed directories
+
+Optional verified current-project directories and explicit additional selections use the existing task metadata, setup, workspace grants and preparation journal. See [workspace context](workspace-context.md). The new capability is negotiated only when extra canonical roots are present, preserving single-root compatibility. Provider qualification and filesystem identity checks remain runner-owned.

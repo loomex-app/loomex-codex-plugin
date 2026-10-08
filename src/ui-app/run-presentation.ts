@@ -1,3 +1,4 @@
+import {boundWorkspaceSetValid,additionalWorkspaceLabel} from "./workspace-context.js";
 import {preparedPersonaSummary} from "./persona-preparation.js";
 import { createUiElement as element } from "./components.js";
 import type { HumanRequest, InputSpec, ExecutionProjection, PagedResponse, UiData, JsonSchema, PreparedRun, PreparationPresentation, RpcResult, RunPresentation } from "./page-models.js";
@@ -300,6 +301,12 @@ export function createRunPresentation(host: RunPresentationServices) {
     const path = typeof binding.workspacePath === "string" ? binding.workspacePath : "";
     workspace.append(element("p", { className: "ui-value" }, path.split("/").filter(Boolean).at(-1) || "Workspace unavailable"));
     workspace.append(element("p", { className: "workspace-path" }, path));
+    if (Array.isArray(binding.additionalWorkspacePaths) && binding.additionalWorkspacePaths.length) {
+      const additional=element("details",{className:"ui-disclosure"});
+      additional.append(element("summary",{},additionalWorkspaceLabel(binding.additionalWorkspacePaths.length)));
+      for (const root of binding.additionalWorkspacePaths) additional.append(element("p",{className:"workspace-path"},root));
+      workspace.append(additional);
+    }
     if (binding.executionPolicy === "host_user/v1") {
       workspace.append(element("p", { className: "ui-caption" }, "Runs as your macOS user in this workspace."));
       const authority = element("details", { className: "ui-disclosure" });
@@ -354,7 +361,7 @@ export function createRunPresentation(host: RunPresentationServices) {
 
   function preparationReviewable(output: PreparedRun | UiData): boolean {
     const binding = output.binding;
-    return Boolean(presentationMatches(preparationPresentation, output) && binding && preparedPersonaSummary(binding)!==undefined && ["organizationId", "installationId", "workflowId", "versionId", "workspacePath"]
+    return Boolean(presentationMatches(preparationPresentation, output) && boundWorkspaceSetValid(binding) && binding && preparedPersonaSummary(binding)!==undefined && ["organizationId", "installationId", "workflowId", "versionId", "workspacePath"]
       .every((key) => typeof binding[key] === "string" && binding[key].length) &&
       binding.executionPolicy === "host_user/v1" &&
       binding.inputs && typeof binding.inputs === "object" &&

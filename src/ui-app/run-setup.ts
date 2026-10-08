@@ -1,3 +1,4 @@
+import {selectedAdditionalWorkspaces, boundWorkspaceSetValid, compareWorkspacePaths,additionalWorkspaceLabel} from "./workspace-context.js";
 import {personaSelectionEntries,collectPersonaSelection,createPersonaSelectionPicker} from "./persona-selection.js";
 import { createUiElement as element } from "./components.js";
 import type { JsonObject } from "./contracts.js";
@@ -140,6 +141,8 @@ export function createRunSetupController(host: RunSetupServices) {
       returnToBrowser,
       inputDraft: {},
       workspaceDraft: initialWorkspace,
+      additionalWorkspaceDraft: selectedAdditionalWorkspaces(host.taskWorkspace()),
+      setupAdditionalWorkspaces: selectedAdditionalWorkspaces(host.taskWorkspace()),
       workspaceEditing: !initialWorkspace,
       workspaceSource: host.taskWorkspace()?.workspacePath ? "override" : initialWorkspace ? "task" : "manual",
       setupWorkspacePath: initialWorkspace,
@@ -164,7 +167,7 @@ export function createRunSetupController(host: RunSetupServices) {
       selected.workflowId === flow.selected.workflowId &&
       selected.versionId === flow.selected.versionId &&
       selected.organizationId === flow.selected.organizationId &&
-      (preserveWorkspaceWithoutMetadata ? sameRequest : flow.setupWorkspacePath === suggestedWorkspacePath()) &&
+      (preserveWorkspaceWithoutMetadata ? sameRequest : (flow.setupWorkspacePath === suggestedWorkspacePath() && JSON.stringify(flow.setupAdditionalWorkspaces || []) === JSON.stringify(selectedAdditionalWorkspaces(host.taskWorkspace())))) &&
       (!sourceIdentity || !flow.setupRequestIdentity || sourceIdentity === flow.setupRequestIdentity));
   }
 
@@ -289,6 +292,15 @@ export function createRunSetupController(host: RunSetupServices) {
     }
     runFlow.inputDraft = inputDraft;
     runFlow.workspaceDraft = workspace.value.trim();
+    const extraControl=form.querySelector<HTMLTextAreaElement>("#run-additional-workspaces");
+    if (extraControl) {
+      const extras=extraControl.value.split("\n").map(path=>path.trim()).filter(Boolean);
+      if(extras.some(path=>!path.startsWith("/") || path.includes("\0"))) {
+        setupFieldError(extraControl,"Enter one absolute directory path per line."); extraControl.focus();
+        throw new Error("Check the additional directories before continuing.");
+      }
+      runFlow.additionalWorkspaceDraft=[...new Set(extras)].filter(path=>path!==runFlow.workspaceDraft).sort(compareWorkspacePaths);
+    }
     return inputs;
   }
 
@@ -369,6 +381,10 @@ export function createRunSetupController(host: RunSetupServices) {
     workspace.addEventListener("input", () => {
       runFlow.workspaceDraft = workspace.value;
       runFlow.workspaceSource = "manual";
+      runFlow.additionalWorkspaceDraft=[];
+      const extraControl=form.querySelector<HTMLTextAreaElement>("#run-additional-workspaces");
+      if(extraControl) extraControl.value="";
+      runFlow.canonicalAdditionalWorkspaces=[];
       host.setTaskWorkspace(taskWorkspaceFrom({
         ...(host.taskWorkspace()?.taskContext ? { taskContext: host.taskWorkspace()?.taskContext } : {}),
         workspacePath: workspace.value,
@@ -391,6 +407,17 @@ export function createRunSetupController(host: RunSetupServices) {
     else if (runFlow.workspaceSource === "task") workspaceField.append(element("p", { className: "hint" }, "Suggested from this local Codex task. Change it if this run belongs elsewhere."));
     else if (runFlow.workspaceSource === "override") workspaceField.append(element("p", { className: "hint" }, "Selected for this run. Change it if needed."));
     else workspaceField.append(element("p", { className: "hint" }, safeText(mappedWorkspaceSchema?.description, 500) || "Choose the directory where this workflow may run."));
+    const additional=element("details",{className:"ui-disclosure"});
+    const extraPaths=runFlow.additionalWorkspaceDraft || [];
+    additional.append(element("summary",{},extraPaths.length ? additionalWorkspaceLabel(extraPaths.length) : "Additional directories"));
+    const extraLabel=element("label",{htmlFor:"run-additional-workspaces"},"One absolute directory per line");
+    const extraInput=element("textarea",{id:"run-additional-workspaces",rows:3,disabled:runFlow.busy || runFlow.operations.size>0});
+    extraInput.value=extraPaths.join("\n");
+    extraInput.addEventListener("input",()=>{
+      runFlow.additionalWorkspaceDraft=extraInput.value.split("\n").map(path=>path.trim()).filter(Boolean);
+      delete runFlow.canonicalAdditionalWorkspaces;
+    },{signal:listeners.signal});
+    additional.append(extraLabel,extraInput); workspaceField.append(additional);
     form.append(workspaceField);
     primary.hidden = false;
     const operation = runFlow.operations.values().next().value;
@@ -467,6 +494,7 @@ export function createRunSetupController(host: RunSetupServices) {
         ...(organizationId ? { organizationId } : {}),
       },
       canonicalWorkspace: safeText(binding.workspacePath, 4096) || "",
+      canonicalAdditionalWorkspaces: Array.isArray(binding.additionalWorkspacePaths) ? [...binding.additionalWorkspacePaths] : [],
       ...(installationId ? { installationId } : {}),
       operations: new Map(),
       busy: false,
@@ -479,7 +507,7 @@ export function createRunSetupController(host: RunSetupServices) {
     if (!runFlow) return undefined;
     const binding = runFlow?.prepared?.binding;
     const selected = runFlow?.selected;
-    if (!binding || !selected?.workflowId || !selected?.versionId || !selected?.organizationId ||
+    if (!boundWorkspaceSetValid(binding) || !binding || !selected?.workflowId || !selected?.versionId || !selected?.organizationId ||
       binding.workflowId !== selected.workflowId || binding.versionId !== selected.versionId ||
       binding.organizationId !== selected.organizationId || binding.installationId !== runFlow.installationId ||
       binding.workspacePath !== runFlow.canonicalWorkspace || binding.executionPolicy !== "host_user/v1" ||
@@ -490,6 +518,7 @@ export function createRunSetupController(host: RunSetupServices) {
       versionId: selected.versionId,
       ...(Object.keys(binding.inputs).length ? { inputs: immutableCopy(binding.inputs) } : {}),
       workspacePath: runFlow.canonicalWorkspace,
+      ...(binding.additionalWorkspacePaths?.length ? {additionalWorkspacePaths: [...binding.additionalWorkspacePaths]} : {}),
     };
   }
 

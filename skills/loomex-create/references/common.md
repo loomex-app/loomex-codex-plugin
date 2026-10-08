@@ -31,3 +31,8 @@ Generate one UUID idempotency key per intended mutation and keep its exact argum
 A `responseRef` receipt means the originating operation completed. Read `loomex_response_read` from offset 0 through each nextOffset until null, verify the full SHA-256, and interpret the reconstructed original result. Never replay the originating mutation to obtain its large response. Delete the spool with `loomex_response_delete` only after complete verified consumption when cleanup is requested or part of the operation's agreed scope.
 
 Never ask for credentials, tokens or workflow secret values. Secret-reference mappings are unsupported. Tools, the runner and backend remain the authority for validation, ownership and authorization; skill invocation does not bypass them.
+
+
+### Multiple project directories
+
+Keep `taskContext.cwd` as the actual active task directory. Pass `taskContext.projectDirectories` only when a supported host source verifies membership in this current project; filesystem permission roots, unrelated folders, past chats and private Codex storage are not such sources. Otherwise use cwd alone. Setup automatically includes these verified roots and shows their canonical paths in the existing Start review. An explicit `workspacePath` replaces that project set; include `additionalWorkspacePaths` only for directories the user explicitly selected. Never infer a common ancestor. A new root set requires a new preparation; existing runs retain their sealed roots. Native current-chat create/edit still requires no workspace card.

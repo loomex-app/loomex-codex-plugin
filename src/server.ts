@@ -44,10 +44,12 @@ function taskWorkspaceMeta(
   if (!TASK_WORKSPACE_TOOL_NAMES.has(definition.name)) return undefined;
   const taskContext = input.taskContext;
   const workspacePath = input.workspacePath;
+  const additionalWorkspacePaths = input.additionalWorkspacePaths;
   if (taskContext === undefined && workspacePath === undefined) return undefined;
   return {
     ...(taskContext === undefined ? {} : { taskContext }),
     ...(workspacePath === undefined ? {} : { workspacePath }),
+    ...(additionalWorkspacePaths === undefined ? {} : { additionalWorkspacePaths }),
   };
 }
 
@@ -206,6 +208,7 @@ function preparationSummary(method: string, data: Record<string, JsonValue>): Re
       versionId,
       organizationId,
       workspacePath: binding.workspacePath,
+      ...(binding.additionalWorkspacePaths === undefined ? {} : {additionalWorkspacePaths: binding.additionalWorkspacePaths, workspaceSetContract: binding.workspaceSetContract}),
       executionPolicy: binding.executionPolicy,
       inputs: {
         count: inputKeys.length,
