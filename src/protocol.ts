@@ -274,6 +274,7 @@ const SAFE_MESSAGES: Readonly<Record<string, string>> = {
   FRAME_TOO_LARGE: "The local control message exceeded the transport page size.",
   METHOD_NOT_FOUND: "The installed local runner does not support this operation.",
   RUNNER_UNAVAILABLE: "The owner-checked local Loomex runner is unavailable.",
+  WORKFLOW_DEPLOYMENT_UNAVAILABLE: "Workflow execution requires PostgreSQL, Redis configuration, and the backend workflow service. Repair the deployment before starting new work.",
   RUNNER_RESPONSE_UNAVAILABLE: "The request was sent to the local runner, but no response was received. Read the current state before taking another action.",
   STORE_ACCESS_REQUIRED: "Loomex may need access to the system credential store. Check its access settings, then refresh Connection.",
   STORE_ACCESS_DENIED: "The system credential store denied Loomex access. Review its access settings, then refresh Connection.",

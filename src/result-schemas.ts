@@ -105,6 +105,7 @@ const RunProjection = {
   hasMoreEvents: z.boolean(),
   timedOut: z.boolean(),
   progress: JsonObject.optional(),
+  queueObservation: JsonObject.optional(),
   aiTrace: z.union([JsonObject, z.array(JsonValueSchema), z.null()]).optional(),
   builderSession: JsonObject.optional(),
   editResult: JsonObject.optional(),

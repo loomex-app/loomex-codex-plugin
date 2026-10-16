@@ -1,0 +1,1710 @@
+{
+  "capabilities": [
+    "auth:browser-pkce/v1",
+    "auth:startup-observation/v1",
+    "authoring.chat-native/v1",
+    "authorization.prepare-commit/v1",
+    "connection.projection/v2",
+    "diagnostics.fingerprint/v1",
+    "error.recovery/v1",
+    "error.validation-issues/v1",
+    "execution.host_user/v1",
+    "execution.workspace-set/v1",
+    "follow.session.lifecycle/v1",
+    "interactions.drafts/v1",
+    "method:artifacts.download",
+    "method:artifacts.list",
+    "method:artifacts.read",
+    "method:auth.cancel",
+    "method:auth.login",
+    "method:auth.logout",
+    "method:auth.open_browser",
+    "method:auth.recover",
+    "method:auth.scope_status",
+    "method:auth.scope_upgrade",
+    "method:auth.status",
+    "method:builder.catalog",
+    "method:builder.commit",
+    "method:builder.finalize",
+    "method:builder.get",
+    "method:builder.prepare",
+    "method:builder.respond",
+    "method:builder.start",
+    "method:builder.validate",
+    "method:connection.get",
+    "method:connection.views.create",
+    "method:connection.views.get",
+    "method:connection.views.update",
+    "method:daemon.drain",
+    "method:editor.commit",
+    "method:editor.finalize",
+    "method:editor.prepare",
+    "method:editor.respond",
+    "method:editor.start",
+    "method:follow.session.lifecycle",
+    "method:interactions.decide",
+    "method:interactions.draft.delete",
+    "method:interactions.draft.get",
+    "method:interactions.draft.update",
+    "method:interactions.get",
+    "method:interactions.list",
+    "method:interactions.respond",
+    "method:organizations.list",
+    "method:organizations.select",
+    "method:persona.roles.create",
+    "method:persona.roles.get",
+    "method:persona.roles.list",
+    "method:personas.chat_context.create",
+    "method:personas.chat_context.get",
+    "method:personas.create",
+    "method:personas.get",
+    "method:personas.list",
+    "method:personas.memory.read",
+    "method:personas.memory.search",
+    "method:personas.memory.update",
+    "method:personas.memory.write",
+    "method:personas.operations.get",
+    "method:preparations.get",
+    "method:presentation.delivery.begin",
+    "method:presentation.delivery.get",
+    "method:presentation.delivery.settle",
+    "method:presentation.operations.get",
+    "method:presentation.operations.settle",
+    "method:presentation.sessions.create",
+    "method:presentation.sessions.delete",
+    "method:presentation.sessions.get",
+    "method:presentation.sessions.restore",
+    "method:presentation.sessions.update",
+    "method:recovery.get",
+    "method:recovery.operations.begin",
+    "method:recovery.operations.settle",
+    "method:recovery.update",
+    "method:responses.delete",
+    "method:responses.read",
+    "method:runs.cancel",
+    "method:runs.commit",
+    "method:runs.continuation.requeue",
+    "method:runs.delete",
+    "method:runs.events",
+    "method:runs.get",
+    "method:runs.list",
+    "method:runs.prepare",
+    "method:runs.result",
+    "method:runs.start_handoff.approve",
+    "method:runs.start_handoff.approve_headless",
+    "method:runs.start_handoff.commit",
+    "method:runs.start_handoff.get",
+    "method:runs.start_handoff.issue",
+    "method:runs.start_handoff.restore",
+    "method:runs.wait",
+    "method:status.get",
+    "method:workflow.operations.get",
+    "method:workflows.activate",
+    "method:workflows.create",
+    "method:workflows.get",
+    "method:workflows.list",
+    "method:workflows.patch",
+    "method:workflows.publish",
+    "method:workflows.update",
+    "method:workflows.validate",
+    "method:workspaces.grant",
+    "method:workspaces.list",
+    "method:workspaces.revoke",
+    "presentation.delivery/v2",
+    "presentation.sessions.restore/v1",
+    "presentation.sessions/v1",
+    "recovery.coordination/v1",
+    "transfer.chunked/v1",
+    "transfer.response-utf8/v1",
+    "workflow.queue-observation/v1",
+    "workflows.atomic-draft-create/v1",
+    "workflows.canonical-authoring-contract/v1",
+    "workflows.patch.notes-preserve/v1",
+    "workflows.runtime-draft-mutations/v1"
+  ],
+  "catalogVersion": "0.3.9",
+  "generatedFrom": {
+    "backendRoutes": {
+      "digest": "sha256:2036006aa7fabfe9706842117225af48669e785017c1de85474ea3945c7c8974",
+      "path": "contracts/backend-routes.json"
+    },
+    "methodCatalog": {
+      "digest": "sha256:40fba737c02efe416135c5f7e736e64d4080b576125cce067522005f7894a284",
+      "path": "contracts/method-catalog.json"
+    }
+  },
+  "maxFrameBytes": 1048576,
+  "methods": [
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:1a4aa50fa21e48214a49e5e09671bcd392770e172668da3c6276edc68213190d",
+      "mutating": true,
+      "name": "artifacts.download",
+      "outputSchemaDigest": "sha256:6537798ab0a9ce9421698f615761ad72678e89d06053aa82a06bb37b4711ef54",
+      "routeIds": [
+        "artifact.content"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:3f22b80bf6f149fa321f617fd85d550a69cbf63fb8e197d0262f59606815387f",
+      "mutating": false,
+      "name": "artifacts.list",
+      "outputSchemaDigest": "sha256:bec3b96524f3f748f7daff286c888f9acbfc1011a012d4107f002aca740545c5",
+      "routeIds": [
+        "artifact.list"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:96716a9f9cdec9bb40f3ca7edfef5dfdc7d6f8f4f988b7bcac81fb6adbb7e5d5",
+      "mutating": false,
+      "name": "artifacts.read",
+      "outputSchemaDigest": "sha256:645955b2453d39ea09d5d73ecbe1cb87aea75c748d9f6dcdfde664951ed38eb8",
+      "routeIds": [
+        "artifact.content"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-auth",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:e619dd8797f4b6a473b77df61acb43814c27e87d634709b0bb6412fd8b241a14",
+      "mutating": true,
+      "name": "auth.cancel",
+      "outputSchemaDigest": "sha256:6efa29b1274115f9b6525c2e2ff39ff4c0865682e66e10db6fb346bc828365ac",
+      "routeIds": [
+        "auth.browser.cancel"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-auth",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:6b6c44f755b001b5db2fa135320ad457de75a489709f1c2d041d5b94b28430af",
+      "mutating": true,
+      "name": "auth.login",
+      "outputSchemaDigest": "sha256:5b604a129f5194626a2e0eb21eb5cfc2b1a17d56ab6302c48eb618a302df1555",
+      "routeIds": [
+        "auth.browser.start"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-auth",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:2c7c9cce11a36fbffd45d731f3f9a5a291551262fa927319d499bfb2a275257f",
+      "mutating": true,
+      "name": "auth.logout",
+      "outputSchemaDigest": "sha256:d4c5ae85d2d07022de7acc4d1c2be9722166ef839b985260d3656b56c0090d3e",
+      "routeIds": [
+        "auth.device.logout"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": false,
+      "inputSchemaDigest": "sha256:3e4bc3f223e21b9b68d4443ff2720595309c7d2f2a0961a571c2755035d47742",
+      "mutating": true,
+      "name": "auth.open_browser",
+      "outputSchemaDigest": "sha256:a960d108a0eae0e89ddb650eca851e2a722eca58aa51b80dd2b1bea0bbdebf75",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-auth",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:2c7c9cce11a36fbffd45d731f3f9a5a291551262fa927319d499bfb2a275257f",
+      "mutating": true,
+      "name": "auth.recover",
+      "outputSchemaDigest": "sha256:b4bda815815f548583c48c43753f3f1d9be8fccf265ae3596878874060e637ae",
+      "routeIds": [
+        "auth.browser.exchange",
+        "auth.device.bootstrap",
+        "auth.device.refresh"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:41cbe80ebd1e6126269b1343e7b0db8abab6187cc0965620ba76a732b554134d",
+      "mutating": false,
+      "name": "auth.scope_status",
+      "outputSchemaDigest": "sha256:3c3aca38d835f416a078513c8438115759293afe9aed23efa5982e4b35174a92",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-auth",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:53341429b2acda20ccce27dc3a03d77dfe8c668698271aba07e7bc7daca96a22",
+      "mutating": true,
+      "name": "auth.scope_upgrade",
+      "outputSchemaDigest": "sha256:3c3aca38d835f416a078513c8438115759293afe9aed23efa5982e4b35174a92",
+      "routeIds": [
+        "persona.auth.scope_upgrade"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d791e43ac7fa9693f4d4caa2afe240bce151a30036399fa4164a6ea2ade2f6dd",
+      "mutating": false,
+      "name": "auth.status",
+      "outputSchemaDigest": "sha256:5f9260d8a5d4fb206556d4b2a8a6fca6fb75a3a19b0b39f764ac5e8b4aa0de5d",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d0157ce84790721854763c7480015e84f7cb0c7fde53afb21c3a42908805bf35",
+      "mutating": false,
+      "name": "builder.catalog",
+      "outputSchemaDigest": "sha256:8addef6c93f611f5a897efecb314fb75855f97ffe124e5a5063b4b2c6e0d587b",
+      "routeIds": [
+        "builder.catalog"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:fbe3d5301300ae79feaf7084600a360065f37f31c3cde4ab8e884fcf29580a85",
+      "mutating": true,
+      "name": "builder.commit",
+      "outputSchemaDigest": "sha256:7d209bd6e18f892474ff567137c0873ddb6b96af9afd97799f1ca9b21e7ad167",
+      "routeIds": [
+        "builder.commit"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:6ccc86193644d854cbb60876468eed17d885d8bb34a5f4d3bfdd05e0668dcd57",
+      "mutating": true,
+      "name": "builder.finalize",
+      "outputSchemaDigest": "sha256:e4071c881332b575db817ff94cef673d4ecda3c21305db90ec2aa3c8321a0b57",
+      "routeIds": [
+        "builder.session.finalize"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:0ef99448a2798bc7406fb6f86e952b372eea198cfd713127ee28fbb3e69c54d4",
+      "mutating": false,
+      "name": "builder.get",
+      "outputSchemaDigest": "sha256:54ca290f7afd01215fc90ff62bbae7a3567780c8903673bf456bf3b665354f1e",
+      "routeIds": [
+        "builder.session.get"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:846ef1d4e7e3a90fa27e8aee5662cfe2568b66ce4fc04e515896e6e2c9204177",
+      "mutating": true,
+      "name": "builder.prepare",
+      "outputSchemaDigest": "sha256:3318fe6e16c44fe1b3da3f7950d157888b60251fe6a9560474d18795bda4fa9c",
+      "routeIds": [
+        "builder.prepare"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:5c77850169d49f2497be0ab59c4271503b85b5a0b0a4cf018ae8b51227761ccc",
+      "mutating": true,
+      "name": "builder.respond",
+      "outputSchemaDigest": "sha256:e4071c881332b575db817ff94cef673d4ecda3c21305db90ec2aa3c8321a0b57",
+      "routeIds": [
+        "builder.session.respond"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:159e8716c3a63f439f5ceafb8204bd1e09ad8fa94cfce57493fc57e2bfd0342b",
+      "mutating": true,
+      "name": "builder.start",
+      "outputSchemaDigest": "sha256:885fd6ca1dae6f73b836c085fe5dd8981e813f8d16adc849719f1f9c4244902f",
+      "routeIds": [
+        "builder.start"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d6cc4d915d5ae43565bf864490611b065fd6d48375f469b32289b92407c4f28f",
+      "mutating": false,
+      "name": "builder.validate",
+      "outputSchemaDigest": "sha256:d516c38e3dfe5bf7b4cc062e7d4253d906b09bc8441ce3829e0da92bc7b1ae96",
+      "routeIds": [
+        "workflow.validate"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d0157ce84790721854763c7480015e84f7cb0c7fde53afb21c3a42908805bf35",
+      "mutating": false,
+      "name": "connection.get",
+      "outputSchemaDigest": "sha256:c7d074e5ddd18ca080eaf9b0e4f6abb29ec9edf69a6186cab7f9b807b009b815",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:de96c1aad663b75ec92425ab56dda19db8e8991c6a0b184b2cb5bd0d2e11951f",
+      "mutating": true,
+      "name": "connection.views.create",
+      "outputSchemaDigest": "sha256:7dd4836a3f538015ab0823325ee469c602ca1af417cb93cf59585fc21af54e21",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:15f1361be7813d281b58dcd7ddc437c04a51fea1dc9553a307085b6f039ffc92",
+      "mutating": false,
+      "name": "connection.views.get",
+      "outputSchemaDigest": "sha256:7dd4836a3f538015ab0823325ee469c602ca1af417cb93cf59585fc21af54e21",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:e6cf9a16ef271dec1317ebdb45bb234d9ee5e3646a2954d42b400f1cd43bba7e",
+      "mutating": true,
+      "name": "connection.views.update",
+      "outputSchemaDigest": "sha256:7dd4836a3f538015ab0823325ee469c602ca1af417cb93cf59585fc21af54e21",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "daemon-lifecycle",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:2c7c9cce11a36fbffd45d731f3f9a5a291551262fa927319d499bfb2a275257f",
+      "mutating": true,
+      "name": "daemon.drain",
+      "outputSchemaDigest": "sha256:81354f66875cae0adf657fb9297c57a8645d59dd720dd2e0452418246d783b0f",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:fbe3d5301300ae79feaf7084600a360065f37f31c3cde4ab8e884fcf29580a85",
+      "mutating": true,
+      "name": "editor.commit",
+      "outputSchemaDigest": "sha256:562415272b815c55ea3a7a77e2f955e8b903c183268b15accc539460fff9922f",
+      "routeIds": [
+        "editor.commit"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:6e3250fc7ec3aba7becc2eadc7240530bcd31c132dbb96e15ab5ffaf2e903eba",
+      "mutating": true,
+      "name": "editor.finalize",
+      "outputSchemaDigest": "sha256:e4071c881332b575db817ff94cef673d4ecda3c21305db90ec2aa3c8321a0b57",
+      "routeIds": [
+        "editor.session.finalize"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d2077de3a7d422d13ed20722f3be85f9f159b8e7f3b018d61034d633ce0a7c22",
+      "mutating": true,
+      "name": "editor.prepare",
+      "outputSchemaDigest": "sha256:3318fe6e16c44fe1b3da3f7950d157888b60251fe6a9560474d18795bda4fa9c",
+      "routeIds": [
+        "editor.prepare"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:5c77850169d49f2497be0ab59c4271503b85b5a0b0a4cf018ae8b51227761ccc",
+      "mutating": true,
+      "name": "editor.respond",
+      "outputSchemaDigest": "sha256:e4071c881332b575db817ff94cef673d4ecda3c21305db90ec2aa3c8321a0b57",
+      "routeIds": [
+        "editor.session.respond"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:4d4f54b142b2feb08b715c3833e86a64a1df04196995ba6d134a639110209bcd",
+      "mutating": true,
+      "name": "editor.start",
+      "outputSchemaDigest": "sha256:34973eda68f20877d9609ac8ed4f32e9470df5fa0efb54617cd9fbd8293189a8",
+      "routeIds": [
+        "editor.start"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:9bd97f55a76e4af7cf12ec39f9089735f130d61762a83b8a7dcdebbd479b6040",
+      "mutating": true,
+      "name": "follow.session.lifecycle",
+      "outputSchemaDigest": "sha256:032e756f1902caeac75c90fd03efd4c5c5daebde4fd92dbc78dd42a582857b36",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:ec0bcc8823535545848945db04e6681ca944bc37ed9f940f2fc3453ba671bb1d",
+      "mutating": true,
+      "name": "interactions.decide",
+      "outputSchemaDigest": "sha256:e37066132d7fb6d69e0edf292da03bf0f7eba3bdd56c57fe0698db1ede7b2aa1",
+      "routeIds": [
+        "interaction.resolve"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:a8c648c5f49bc166a1440834c3fd86c47ed73622455f0fa14c51552c8eb97159",
+      "mutating": true,
+      "name": "interactions.draft.delete",
+      "outputSchemaDigest": "sha256:060ba4f402af051a67be325b49d8c70675ae3b53d7c5d8607a6ac2bd340bad51",
+      "routeIds": [
+        "interaction.draft.delete"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:3ca831e619e3ec1d465d19c499c2e092f21d0ca46b787f9c611641a0eab7878a",
+      "mutating": false,
+      "name": "interactions.draft.get",
+      "outputSchemaDigest": "sha256:479b7f00a8de66268bece5658e8c0609b62c4a850f4a68afd3cf002ac8820631",
+      "routeIds": [
+        "interaction.draft"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:8d8156ff0e3577afd22f28786b72d43ff4a296b0fc4903a3441582a3ed23fe96",
+      "mutating": true,
+      "name": "interactions.draft.update",
+      "outputSchemaDigest": "sha256:964c9590ee23f0d70a149e1e32c9b28f86242d9890f0dc240a8c0b7c47708679",
+      "routeIds": [
+        "interaction.draft.update"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:3ca831e619e3ec1d465d19c499c2e092f21d0ca46b787f9c611641a0eab7878a",
+      "mutating": false,
+      "name": "interactions.get",
+      "outputSchemaDigest": "sha256:b09eb7d37c697095ed50c82cc8a1e283a1ed93b11fa7b31f53b65e52b0f192cf",
+      "routeIds": [
+        "interaction.get"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:4f0bbbb21295e1ffdac07b16dce231617066a6c0db00ac6c37468dc190efa5d2",
+      "mutating": false,
+      "name": "interactions.list",
+      "outputSchemaDigest": "sha256:03cd45fe85468f57a969680616c112992435f1e745de4caaf6c0aa377e6660a2",
+      "routeIds": [
+        "execution.interaction.list",
+        "interaction.list"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:1d86901efd4cafa8e2f06148cac6291a672fdee24a4fd05ac77c202d3e92f700",
+      "mutating": true,
+      "name": "interactions.respond",
+      "outputSchemaDigest": "sha256:e37066132d7fb6d69e0edf292da03bf0f7eba3bdd56c57fe0698db1ede7b2aa1",
+      "routeIds": [
+        "interaction.resolve"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-auth",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d0157ce84790721854763c7480015e84f7cb0c7fde53afb21c3a42908805bf35",
+      "mutating": false,
+      "name": "organizations.list",
+      "outputSchemaDigest": "sha256:dd0c787654055c348ede902efc05a18295d9b694b029e7a0642f9f04d970be16",
+      "routeIds": [
+        "auth.organizations.list"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-auth",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:a47ac9f99e37bceacd426e021ec13d2e46d5ee4521a954a011250fdfff8ca18a",
+      "mutating": true,
+      "name": "organizations.select",
+      "outputSchemaDigest": "sha256:561dd9fd8bdc9ac03c4745969e620d14c2461be67c3c63da5bb2cdd6279cd08a",
+      "routeIds": [
+        "auth.organization.enroll"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:241f2d26364e70872e4eff5468511661a98e16c6fb74df0a08e81d286d34d644",
+      "mutating": true,
+      "name": "persona.roles.create",
+      "outputSchemaDigest": "sha256:c8a01c39a5834a4d88351a6668fbbe60756e85209828b435627072d2cef24b57",
+      "routeIds": [
+        "persona.persona.roles.create"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:2b10f7d73b1de2bb3aa0af967e740388127f3f363c46b00a1bf62e263ca3b66c",
+      "mutating": false,
+      "name": "persona.roles.get",
+      "outputSchemaDigest": "sha256:c8a01c39a5834a4d88351a6668fbbe60756e85209828b435627072d2cef24b57",
+      "routeIds": [
+        "persona.persona.roles.get"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:4072f5b60440e81bc5c357163d2b9b5d08476e1625a18ef37eccce3de8ad2ef7",
+      "mutating": false,
+      "name": "persona.roles.list",
+      "outputSchemaDigest": "sha256:54b9f4c33367525c57dd285b430a6546d6ae89b15e3a2b740248326d8e717ab0",
+      "routeIds": [
+        "persona.persona.roles.list"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:9d32ffe1021318849e3487dff89247421383dae6fbd9e87594aeca19f2ed9894",
+      "mutating": true,
+      "name": "personas.chat_context.create",
+      "outputSchemaDigest": "sha256:28c4cbb98e2b9f406b3d7af27899fb79c2d62692264ee5159a1ca37e1c0ce599",
+      "routeIds": [
+        "persona.personas.chat_context.create"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:ef2a416ec3f77e58c9d65ce1cc8ec64fa31137153df44a7e5ec3935f43ff077c",
+      "mutating": false,
+      "name": "personas.chat_context.get",
+      "outputSchemaDigest": "sha256:28c4cbb98e2b9f406b3d7af27899fb79c2d62692264ee5159a1ca37e1c0ce599",
+      "routeIds": [
+        "persona.personas.chat_context.get"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:58246766f1c3e8fdddb6090849b12263acfcd991dfb1764a47183c8f7f99e3a3",
+      "mutating": true,
+      "name": "personas.create",
+      "outputSchemaDigest": "sha256:f0bf0f41b8d5b44ffb9c8590bb81cb9b16b838993e1018c10cf6a967dfdc5f9c",
+      "routeIds": [
+        "persona.personas.create"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:2d1eec287cb73ed856b671fa075b6de1a5605b9b7015ea112fe490f98d259746",
+      "mutating": false,
+      "name": "personas.get",
+      "outputSchemaDigest": "sha256:8653cf070c5e84353dea3ea00fd39a6bc75285d8d4d529635010d3137de0b0cf",
+      "routeIds": [
+        "persona.personas.get"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:6b15c3590efd6ff5223e657ac185f5074fc255050e65bc425f433fe67ab05b0c",
+      "mutating": false,
+      "name": "personas.list",
+      "outputSchemaDigest": "sha256:275f2d540c34432156d9b620618c7f215c892d555665ca4c33f3892cdc7d460e",
+      "routeIds": [
+        "persona.personas.list"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:790d736ff5e872eedd5aa2af2d8d8ecc651dc83b5dac14b3cc962d2f0cbe551d",
+      "mutating": false,
+      "name": "personas.memory.read",
+      "outputSchemaDigest": "sha256:3d41bf32659b317b98a39b9998395745ed6ddbeefff62708d4d6310e71eca164",
+      "routeIds": [
+        "persona.memory.tool"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:033e326947b48278543aa14a46f6e7d2d9754c92cbafea3ab5a4ba8221fde022",
+      "mutating": false,
+      "name": "personas.memory.search",
+      "outputSchemaDigest": "sha256:3d41bf32659b317b98a39b9998395745ed6ddbeefff62708d4d6310e71eca164",
+      "routeIds": [
+        "persona.memory.tool"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:23080a7c3ca1fdf93816523c5876ad577f102f4516cd0517c93e6beb87d3ba6e",
+      "mutating": true,
+      "name": "personas.memory.update",
+      "outputSchemaDigest": "sha256:3d41bf32659b317b98a39b9998395745ed6ddbeefff62708d4d6310e71eca164",
+      "routeIds": [
+        "persona.memory.tool"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:25f632ce8967fefa69b700d95c111970dde47712a256aee2d0acac67da9bad9f",
+      "mutating": true,
+      "name": "personas.memory.write",
+      "outputSchemaDigest": "sha256:3d41bf32659b317b98a39b9998395745ed6ddbeefff62708d4d6310e71eca164",
+      "routeIds": [
+        "persona.memory.tool"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:8b54568836b7d521dfd491211efbe601b99113b8c47490964f550cd0213fae28",
+      "mutating": false,
+      "name": "personas.operations.get",
+      "outputSchemaDigest": "sha256:5e390b805c6e3b706df406c8d91f8014f2da277a6c54add3b8cb25567e978ac3",
+      "routeIds": [
+        "persona.personas.operations.get"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:b1aa131648c27494d0c51a1331b4c5bcba355ea67935293ff424ec893670490a",
+      "mutating": false,
+      "name": "preparations.get",
+      "outputSchemaDigest": "sha256:a9241756d9bdf8561103747fb516de99e983aa547ddf7f819dcedfca64ca7fd4",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:e5f3efa3772df7305d11d0b8acfeac7c0185645b7e11d61a2d243fd4daa19308",
+      "mutating": true,
+      "name": "presentation.delivery.begin",
+      "outputSchemaDigest": "sha256:2ce3a4eedaffe0ef95e0829014ee1865b94a5c41453dc1b7483705e3fb11c818",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:fcc94b18aee592af0b348c5a548060ec8fd2ec3c58846e7cf794c87acce47cbe",
+      "mutating": false,
+      "name": "presentation.delivery.get",
+      "outputSchemaDigest": "sha256:2ce3a4eedaffe0ef95e0829014ee1865b94a5c41453dc1b7483705e3fb11c818",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:88da5a864b6f14cd95ea4468c51a43d108d923198f053d97e35e54dbf0b54fa2",
+      "mutating": true,
+      "name": "presentation.delivery.settle",
+      "outputSchemaDigest": "sha256:2ce3a4eedaffe0ef95e0829014ee1865b94a5c41453dc1b7483705e3fb11c818",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:5d6c700c61ce1b67cbf9b1966d994461881c355f907b89d46d0f19a3e5ab754d",
+      "mutating": false,
+      "name": "presentation.operations.get",
+      "outputSchemaDigest": "sha256:b7953aefd0425d7650dc10c483f2c9cf2cba9cac84e4a2207befa0e37ce65ce7",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:900d41e684501f743811e03f0381f304c4d7032a84cf89135d9760f1b221abfa",
+      "mutating": true,
+      "name": "presentation.operations.settle",
+      "outputSchemaDigest": "sha256:5a550c49e61588f14ea0644e5962baa661e1c25dec7904f97950a0d1ed8637b9",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:c67abff5dd5332b482ff39dba2eb22a03c1d34f5f1db0a0651ff964e814a4ca4",
+      "mutating": true,
+      "name": "presentation.sessions.create",
+      "outputSchemaDigest": "sha256:7dd4836a3f538015ab0823325ee469c602ca1af417cb93cf59585fc21af54e21",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:f04f9afa4415459c932b999431a6bfc99d19fde7d0c4e4c3fdac1e8b29348dbe",
+      "mutating": true,
+      "name": "presentation.sessions.delete",
+      "outputSchemaDigest": "sha256:8e7754d526b8ddb941991e8b7514a4131a70be255418a20cde8961a1b0f146db",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:15f1361be7813d281b58dcd7ddc437c04a51fea1dc9553a307085b6f039ffc92",
+      "mutating": false,
+      "name": "presentation.sessions.get",
+      "outputSchemaDigest": "sha256:7dd4836a3f538015ab0823325ee469c602ca1af417cb93cf59585fc21af54e21",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:15f1361be7813d281b58dcd7ddc437c04a51fea1dc9553a307085b6f039ffc92",
+      "mutating": false,
+      "name": "presentation.sessions.restore",
+      "outputSchemaDigest": "sha256:34cc99acaf095c3cb1d4ab17a24fb5f7c7859950634c9fd543d881e08a54b72a",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:4eb49bf7860a2068207646b4009319f0ec9570bc3c5f9556aa2caa74ffa2001c",
+      "mutating": true,
+      "name": "presentation.sessions.update",
+      "outputSchemaDigest": "sha256:7dd4836a3f538015ab0823325ee469c602ca1af417cb93cf59585fc21af54e21",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:212c47c3c94eda1462a4d60e8f76e8ae53c3a148af666666481df9c873bc06a6",
+      "mutating": false,
+      "name": "protocol.negotiate",
+      "outputSchemaDigest": "sha256:a35e9f7d55fa6ae72e993d515460ed1b4f631568922ffe605891ebe5cd3039ea",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:8acb6c5a7c0dded3150e529dca6c302d4a275e6e900c87a0e1608d1d3bbbbe11",
+      "mutating": false,
+      "name": "recovery.get",
+      "outputSchemaDigest": "sha256:92a0c513c20323f492cf8ed28db0110b8764b4905cbff5135dd6681d6fdcaa41",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:c13d0179f5683b07a46c0679517efdb8d7334227dfdce0120b8360c289a87cca",
+      "mutating": true,
+      "name": "recovery.operations.begin",
+      "outputSchemaDigest": "sha256:0b7a5b99b1aa950e82a6265c244e8600953937a321186f54ff8e293702d19e3e",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:c4939f388ca99b554a56883701fe534575d1e23259c029f6e72335484b96c753",
+      "mutating": true,
+      "name": "recovery.operations.settle",
+      "outputSchemaDigest": "sha256:6dc3a01578c1f6a4799bec46979d129431e05facc99ae702aa6621864e3f9d31",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:6a6784c7bb66545175cafc2c5301bf0b964eda392203514380a976d3d9d2107a",
+      "mutating": true,
+      "name": "recovery.update",
+      "outputSchemaDigest": "sha256:d7e1c12cc7bc34e5d727ddfe051a676a0e5f47c702c83e2aa3ee383a41a2aa31",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:f9fa483b5923c942c80ad4f19a4ac2d7781f70b12c62e5c200340a1affbb607c",
+      "mutating": true,
+      "name": "responses.delete",
+      "outputSchemaDigest": "sha256:fe276c4db58b92886c78c6e6353f2a9caae87153413b2f7cd3e5a32db148280d",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:3f5b22ec7e475bd63b4df49782d48f265e6d7120c9c1a1b340334b8408277120",
+      "mutating": false,
+      "name": "responses.read",
+      "outputSchemaDigest": "sha256:d06da84471cbb93aa14357b5d4309f179903d1fa5060d298aeb7159eedbafc81",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:5031379beb50b86c4de9a11bd1ea0a0e52bed5daf89aa260b59d4754d848ea0f",
+      "mutating": true,
+      "name": "runs.cancel",
+      "outputSchemaDigest": "sha256:78c7bb2db0dc64fbabb1449ce5b3894a8883a7e9512db3afc27e311e384ef718",
+      "routeIds": [
+        "execution.cancel"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:fbe3d5301300ae79feaf7084600a360065f37f31c3cde4ab8e884fcf29580a85",
+      "mutating": true,
+      "name": "runs.commit",
+      "outputSchemaDigest": "sha256:391b3d3e2209e46120c043e2b5a0f06452f4d8175f8221b236434efc9ce422a8",
+      "routeIds": [
+        "execution.commit"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:3d1964243532bb6a113cab7d5597510add5cf31d7f2e310858f7d01cfea5de22",
+      "mutating": true,
+      "name": "runs.continuation.requeue",
+      "outputSchemaDigest": "sha256:9c7f45ecd539c4daf90839d6efccd320ab89856431139293971b8a332eecc0bd",
+      "routeIds": [
+        "execution.continuation.requeue"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d5d85890cb457149415d9934150f0ac26829546cd75672a3138a3cb439a204ec",
+      "mutating": true,
+      "name": "runs.delete",
+      "outputSchemaDigest": "sha256:a872838e29680e144e5cf1e7577a9a28833976e1b04ec90b67175b6da99c38e5",
+      "routeIds": [
+        "execution.delete"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:f63aad9a2dcb72fe66bcb95fba2de4971851b849ed7797adfe45ba425f8df597",
+      "mutating": false,
+      "name": "runs.events",
+      "outputSchemaDigest": "sha256:4cccd862443cb32425983b3d4d5f242dae98cbedec52fefb811f13c293b5c98f",
+      "routeIds": [
+        "execution.detail"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:f63aad9a2dcb72fe66bcb95fba2de4971851b849ed7797adfe45ba425f8df597",
+      "mutating": false,
+      "name": "runs.get",
+      "outputSchemaDigest": "sha256:4cccd862443cb32425983b3d4d5f242dae98cbedec52fefb811f13c293b5c98f",
+      "routeIds": [
+        "execution.detail"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:e5e984cd5fc13509b25ddda4a096be1c45137edd9e1780b7f143e7721de9d3bd",
+      "mutating": false,
+      "name": "runs.list",
+      "outputSchemaDigest": "sha256:8f432cd4b3c5b4d19e1d9b0ff9155541c4a42503a580d9a62663ae38f33ea408",
+      "routeIds": [
+        "execution.list"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:7eebd9755495352a7cf0b9e11c90360584f64c4489af1b4e788754c95446c871",
+      "mutating": true,
+      "name": "runs.prepare",
+      "outputSchemaDigest": "sha256:3318fe6e16c44fe1b3da3f7950d157888b60251fe6a9560474d18795bda4fa9c",
+      "routeIds": [
+        "execution.prepare"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:f63aad9a2dcb72fe66bcb95fba2de4971851b849ed7797adfe45ba425f8df597",
+      "mutating": false,
+      "name": "runs.result",
+      "outputSchemaDigest": "sha256:4cccd862443cb32425983b3d4d5f242dae98cbedec52fefb811f13c293b5c98f",
+      "routeIds": [
+        "execution.detail"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": false,
+      "inputSchemaDigest": "sha256:24184233966a4e73543174839a6cd43284e1b9a28cc2aea3c83afca3a4f60c5a",
+      "mutating": true,
+      "name": "runs.start_handoff.approve",
+      "outputSchemaDigest": "sha256:e68710898cd8a586d130d4a394009d192013271df86d7154f3be9a1cee04359b",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:e6be800e2ad93fecd2198ceb6dd253fddd2fc44876f9899c5b4e48ce3134f0d5",
+      "mutating": true,
+      "name": "runs.start_handoff.approve_headless",
+      "outputSchemaDigest": "sha256:854c728e306e1e975f95c84cf267755b9c559f7814cc0dd22b8ac67e521a32a3",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:42127d623c6043a303e8cf0f36333ce533dcd8efacaaab6f194a817ff221f8da",
+      "mutating": true,
+      "name": "runs.start_handoff.commit",
+      "outputSchemaDigest": "sha256:2a07357e067470fcc5503afff3ce9777c9b42d02c4b237adadbc147634b48169",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:42127d623c6043a303e8cf0f36333ce533dcd8efacaaab6f194a817ff221f8da",
+      "mutating": false,
+      "name": "runs.start_handoff.get",
+      "outputSchemaDigest": "sha256:854c728e306e1e975f95c84cf267755b9c559f7814cc0dd22b8ac67e521a32a3",
+      "routeIds": [
+        "execution.commit.outcome"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": false,
+      "inputSchemaDigest": "sha256:fbe3d5301300ae79feaf7084600a360065f37f31c3cde4ab8e884fcf29580a85",
+      "mutating": true,
+      "name": "runs.start_handoff.issue",
+      "outputSchemaDigest": "sha256:854c728e306e1e975f95c84cf267755b9c559f7814cc0dd22b8ac67e521a32a3",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:2c7c9cce11a36fbffd45d731f3f9a5a291551262fa927319d499bfb2a275257f",
+      "mutating": false,
+      "name": "runs.start_handoff.restore",
+      "outputSchemaDigest": "sha256:854c728e306e1e975f95c84cf267755b9c559f7814cc0dd22b8ac67e521a32a3",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:f63aad9a2dcb72fe66bcb95fba2de4971851b849ed7797adfe45ba425f8df597",
+      "mutating": false,
+      "name": "runs.wait",
+      "outputSchemaDigest": "sha256:4cccd862443cb32425983b3d4d5f242dae98cbedec52fefb811f13c293b5c98f",
+      "routeIds": [
+        "execution.detail"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:826604fe71383c9efdc7d03f43ffcb51937eac8853efa957f85e910725238806",
+      "mutating": false,
+      "name": "status.get",
+      "outputSchemaDigest": "sha256:d6f3e03db2aa71d2bbeb3811989d39751ddfc72c7e6b4d9810710078a1d6f351",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:959b2c504716ce4304c1729bc78e5088f354a70d815fb559f2eaef51cc39ff56",
+      "mutating": false,
+      "name": "workflow.operations.get",
+      "outputSchemaDigest": "sha256:60f8cc2449a329d9b40a1b2c42e4c871bc9c215ca33a406e55857bc20d94d17e",
+      "routeIds": [
+        "workflow.operation.get"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:6a9364f02179717314acc961d6d6fc2716ac82ceabd822ef13511f848fa5c7a9",
+      "mutating": true,
+      "name": "workflows.activate",
+      "outputSchemaDigest": "sha256:f89a661a10c0bcfd74d4dc669c0691faf35fb6d525937a435abd67e9be924a28",
+      "routeIds": [
+        "workflow.activate"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:1e1cd2899bb3fc9c1f9d2687d181ea6774fd26ed18a4263dd1b6aa010ae788eb",
+      "mutating": true,
+      "name": "workflows.create",
+      "outputSchemaDigest": "sha256:eed6edf6ecfeb5c7c785ecc800631bf83776863a53ad4d826cee4cf169d52b2e",
+      "routeIds": [
+        "workflow.create",
+        "workflow.draft.create"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d3f31dc2b4ce4ed18da56f5930ff2a106dd42e66eb46cc0125d434dfb72ec769",
+      "mutating": false,
+      "name": "workflows.get",
+      "outputSchemaDigest": "sha256:641803733cbfda04b525734e25f1c80d7db91a7f4351a2f59ce2d3867c9d8c18",
+      "routeIds": [
+        "workflow.get"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:46913fbbc6090be9adf110f97681645e0502508fdd7f124284acc3d35e5ef7ea",
+      "mutating": false,
+      "name": "workflows.list",
+      "outputSchemaDigest": "sha256:777c13f7f53994651fbf767139e9ccfbbc9947f5cab66aeb34c3dc1f664619d6",
+      "routeIds": [
+        "workflow.list"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:c639a8339c619d306e133d12ddbc30ce1505a529634594d0a9141db7d670a0d5",
+      "mutating": true,
+      "name": "workflows.patch",
+      "outputSchemaDigest": "sha256:fd7d0e50da3831fc2957838b48c40be0fbb1c7e990a6d7732b78ddb4bc25a47b",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:c1bf2fd73b679ac5da7bca86a4c5d76cca68c9903a4dcad8fe3695017c41bf79",
+      "mutating": true,
+      "name": "workflows.publish",
+      "outputSchemaDigest": "sha256:f89a661a10c0bcfd74d4dc669c0691faf35fb6d525937a435abd67e9be924a28",
+      "routeIds": [
+        "workflow.publish"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:98da1e3d95b01e1e73d344c6aaea650daacb607c93a3f55822068353f26c0127",
+      "mutating": true,
+      "name": "workflows.update",
+      "outputSchemaDigest": "sha256:fd7d0e50da3831fc2957838b48c40be0fbb1c7e990a6d7732b78ddb4bc25a47b",
+      "routeIds": [
+        "workflow.update"
+      ],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "backend-proxy",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d6cc4d915d5ae43565bf864490611b065fd6d48375f469b32289b92407c4f28f",
+      "mutating": false,
+      "name": "workflows.validate",
+      "outputSchemaDigest": "sha256:d516c38e3dfe5bf7b4cc062e7d4253d906b09bc8441ce3829e0da92bc7b1ae96",
+      "routeIds": [
+        "workflow.validate"
+      ],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:3f7cc5917474f288e4449c38264af4374ca2fc9d69105482f3fffa70213ed34c",
+      "mutating": true,
+      "name": "workspaces.grant",
+      "outputSchemaDigest": "sha256:59f395b0eb512f60f00a431e8c32ab140ba8210312969b61a165daa2e0b9666b",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:d0157ce84790721854763c7480015e84f7cb0c7fde53afb21c3a42908805bf35",
+      "mutating": false,
+      "name": "workspaces.list",
+      "outputSchemaDigest": "sha256:a78320d1c6b5ba8fc3b8f79598d4a548beca87d8d91d0a7ee235571afec10da0",
+      "routeIds": [],
+      "transportRetry": "before_response_once"
+    },
+    {
+      "classification": "local-control",
+      "idempotent": true,
+      "inputSchemaDigest": "sha256:f780a94ad9bf057a54a7014aae1f3494e7f490004fa16d61e7515d1be0766aaf",
+      "mutating": true,
+      "name": "workspaces.revoke",
+      "outputSchemaDigest": "sha256:f7b29ff4d703df7512045c12ccc3dd54da79a03970f264824b3d69d91e33820b",
+      "routeIds": [],
+      "transportRetry": "never_after_send"
+    }
+  ],
+  "protocol": "loomex.local-control/v2",
+  "routes": [
+    {
+      "id": "artifact.content",
+      "method": "GET",
+      "pathTemplate": "v2/artifacts/{artifactId}/content/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "artifact.list",
+      "method": "GET",
+      "pathTemplate": "v2/executions/{executionId}/artifacts/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "artifact.transfer.append",
+      "method": "PUT",
+      "pathTemplate": "v2/artifact-transfers/{transferId}/",
+      "source": "src/jobs/transfer.rs"
+    },
+    {
+      "id": "artifact.transfer.complete",
+      "method": "POST",
+      "pathTemplate": "v2/artifact-transfers/{transferId}/complete/",
+      "source": "src/jobs/transfer.rs"
+    },
+    {
+      "id": "artifact.transfer.create",
+      "method": "POST",
+      "pathTemplate": "v2/artifact-transfers/",
+      "source": "src/jobs/transfer.rs"
+    },
+    {
+      "id": "auth.browser.cancel",
+      "method": "POST",
+      "pathTemplate": "v2/browser-authorities/cancel/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "auth.browser.exchange",
+      "method": "POST",
+      "pathTemplate": "v2/browser-authorities/exchange/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "auth.browser.start",
+      "method": "POST",
+      "pathTemplate": "v2/browser-authorities/start/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "auth.delegation.refresh",
+      "method": "POST",
+      "pathTemplate": "v1/delegations/refresh/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "auth.device.bootstrap",
+      "method": "POST",
+      "pathTemplate": "v2/device-authorities/bootstrap/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "auth.device.logout",
+      "method": "POST",
+      "pathTemplate": "v2/device-authorities/logout/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "auth.device.refresh",
+      "method": "POST",
+      "pathTemplate": "v2/device-authorities/refresh/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "auth.organization.enroll",
+      "method": "POST",
+      "pathTemplate": "v2/organizations/{organizationId}/enroll/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "auth.organizations.list",
+      "method": "GET",
+      "pathTemplate": "v2/organizations/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "builder.catalog",
+      "method": "GET",
+      "pathTemplate": "v2/builder/catalog/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "builder.commit",
+      "method": "POST",
+      "pathTemplate": "v2/workflow-builder/commit/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "builder.prepare",
+      "method": "POST",
+      "pathTemplate": "v2/workflow-builder/prepare/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "builder.session.finalize",
+      "method": "POST",
+      "pathTemplate": "v1/workflow-builder/sessions/{sessionId}/finalize/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "builder.session.get",
+      "method": "GET",
+      "pathTemplate": "v1/workflow-builder/sessions/{sessionId}/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "builder.session.respond",
+      "method": "POST",
+      "pathTemplate": "v1/workflow-builder/sessions/{sessionId}/responses/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "builder.start",
+      "method": "POST",
+      "pathTemplate": "v2/workflow-builder/start/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "daemon.job.complete",
+      "method": "POST",
+      "pathTemplate": "v1/jobs/{jobId}/complete/",
+      "source": "src/jobs/delivery.rs"
+    },
+    {
+      "id": "daemon.job.events",
+      "method": "POST",
+      "pathTemplate": "v1/jobs/{jobId}/events/",
+      "source": "src/jobs/transfer.rs"
+    },
+    {
+      "id": "daemon.job.fail",
+      "method": "POST",
+      "pathTemplate": "v1/jobs/{jobId}/fail/",
+      "source": "src/jobs/delivery.rs"
+    },
+    {
+      "id": "daemon.job.lease",
+      "method": "POST",
+      "pathTemplate": "v1/jobs/lease/",
+      "source": "src/jobs/supervisor.rs"
+    },
+    {
+      "id": "daemon.job.reclaim",
+      "method": "POST",
+      "pathTemplate": "v1/jobs/{jobId}/reclaim/",
+      "source": "src/jobs/delivery.rs"
+    },
+    {
+      "id": "daemon.job.renew",
+      "method": "POST",
+      "pathTemplate": "v1/jobs/{jobId}/renew/",
+      "source": "src/jobs/execution.rs"
+    },
+    {
+      "id": "daemon.job.start",
+      "method": "POST",
+      "pathTemplate": "v1/jobs/{jobId}/start/",
+      "source": "src/jobs/execution.rs"
+    },
+    {
+      "id": "daemon.session.create",
+      "method": "POST",
+      "pathTemplate": "v1/sessions/",
+      "source": "src/jobs/supervisor.rs"
+    },
+    {
+      "id": "daemon.session.disconnect",
+      "method": "POST",
+      "pathTemplate": "v1/sessions/{sessionId}/disconnect/",
+      "source": "src/jobs/supervisor.rs"
+    },
+    {
+      "id": "daemon.session.heartbeat",
+      "method": "POST",
+      "pathTemplate": "v1/sessions/{sessionId}/heartbeat/",
+      "source": "src/jobs/supervisor.rs"
+    },
+    {
+      "id": "editor.commit",
+      "method": "POST",
+      "pathTemplate": "v2/workflow-edit/commit/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "editor.prepare",
+      "method": "POST",
+      "pathTemplate": "v2/workflow-edit/prepare/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "editor.session.finalize",
+      "method": "POST",
+      "pathTemplate": "v1/workflow-edit/sessions/{sessionId}/finalize/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "editor.session.respond",
+      "method": "POST",
+      "pathTemplate": "v1/workflow-edit/sessions/{sessionId}/responses/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "editor.start",
+      "method": "POST",
+      "pathTemplate": "v2/workflow-edit/start/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "execution.cancel",
+      "method": "POST",
+      "pathTemplate": "v1/executions/{executionId}/cancel/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "execution.commit",
+      "method": "POST",
+      "pathTemplate": "v2/executions/commit/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "execution.commit.outcome",
+      "method": "POST",
+      "pathTemplate": "v2/executions/commit-outcome/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "execution.continuation.requeue",
+      "method": "POST",
+      "pathTemplate": "v2/executions/{executionId}/continuations/{deliveryId}/requeue/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "execution.delete",
+      "method": "POST",
+      "pathTemplate": "v1/executions/{executionId}/delete/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "execution.detail",
+      "method": "GET",
+      "pathTemplate": "v1/executions/{executionId}/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "execution.interaction.list",
+      "method": "GET",
+      "pathTemplate": "v1/executions/{executionId}/human-requests/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "execution.list",
+      "method": "GET",
+      "pathTemplate": "v2/executions/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "execution.prepare",
+      "method": "POST",
+      "pathTemplate": "v2/executions/prepare/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "interaction.draft",
+      "method": "GET",
+      "pathTemplate": "v1/human-requests/{requestId}/draft/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "interaction.draft.delete",
+      "method": "DELETE",
+      "pathTemplate": "v1/human-requests/{requestId}/draft/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "interaction.draft.update",
+      "method": "PUT",
+      "pathTemplate": "v1/human-requests/{requestId}/draft/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "interaction.get",
+      "method": "GET",
+      "pathTemplate": "v1/human-requests/{requestId}/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "interaction.list",
+      "method": "GET",
+      "pathTemplate": "v1/human-requests/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "interaction.resolve",
+      "method": "POST",
+      "pathTemplate": "v1/human-requests/{requestId}/resolve/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "job.persona-memory.operation",
+      "method": "GET",
+      "pathTemplate": "v1/jobs/{jobId}/memory-operations/{operation}/{key}/",
+      "source": "src/jobs/persona_memory.rs"
+    },
+    {
+      "id": "job.persona-memory.tool",
+      "method": "POST",
+      "pathTemplate": "v1/jobs/{jobId}/memory-tools/{operation}/",
+      "source": "src/jobs/persona_memory.rs"
+    },
+    {
+      "id": "persona.auth.scope_upgrade",
+      "method": "POST",
+      "pathTemplate": "v2/device-authorities/organizations/{organizationId}/scope-upgrade/",
+      "source": "src/auth.rs"
+    },
+    {
+      "id": "persona.memory.tool",
+      "method": "POST",
+      "pathTemplate": "v1/personas/{personId}/memory-tools/{operation}/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "persona.persona.roles.create",
+      "method": "POST",
+      "pathTemplate": "v1/persona-roles/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "persona.persona.roles.get",
+      "method": "GET",
+      "pathTemplate": "v1/persona-roles/{roleId}/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "persona.persona.roles.list",
+      "method": "GET",
+      "pathTemplate": "v1/persona-roles/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "persona.personas.chat_context.create",
+      "method": "POST",
+      "pathTemplate": "v1/personas/{personId}/chat-context/create/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "persona.personas.chat_context.get",
+      "method": "POST",
+      "pathTemplate": "v1/personas/{personId}/chat-context/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "persona.personas.create",
+      "method": "POST",
+      "pathTemplate": "v1/personas/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "persona.personas.get",
+      "method": "GET",
+      "pathTemplate": "v1/personas/{personId}/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "persona.personas.list",
+      "method": "GET",
+      "pathTemplate": "v1/personas/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "persona.personas.operations.get",
+      "method": "GET",
+      "pathTemplate": "v1/personas/operations/{operation}/{key}/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "workflow.activate",
+      "method": "POST",
+      "pathTemplate": "v1/workflow-versions/{versionId}/activate/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "workflow.create",
+      "method": "POST",
+      "pathTemplate": "v2/workflows/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "workflow.draft.create",
+      "method": "POST",
+      "pathTemplate": "v2/workflow-drafts/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "workflow.get",
+      "method": "GET",
+      "pathTemplate": "v1/workflows/{workflowId}/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "workflow.list",
+      "method": "GET",
+      "pathTemplate": "v1/workflows/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "workflow.operation.get",
+      "method": "POST",
+      "pathTemplate": "v2/workflow-operations/get/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "workflow.publish",
+      "method": "POST",
+      "pathTemplate": "v1/workflows/{workflowId}/publish/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "workflow.update",
+      "method": "POST",
+      "pathTemplate": "v1/workflows/{workflowId}/draft/",
+      "source": "src/control.rs"
+    },
+    {
+      "id": "workflow.validate",
+      "method": "POST",
+      "pathTemplate": "v1/workflows/validate/",
+      "source": "src/control.rs"
+    }
+  ],
+  "schemaVersion": "loomex.runner.compatibility-manifest/v1",
+  "summary": {
+    "backendRouteCount": 73,
+    "capabilityCount": 121,
+    "methodClassifications": {
+      "backend-auth": 7,
+      "backend-proxy": 55,
+      "daemon-lifecycle": 1,
+      "local-control": 36
+    },
+    "methodCount": 99
+  }
+}

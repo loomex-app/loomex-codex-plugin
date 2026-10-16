@@ -1,6 +1,7 @@
 import { continuationMessage, type ContinuationDeliveryController } from "./continuation-delivery.js";
 import { createUiElement as element } from "./components.js";
 import { formatFollowContinuationMarkdown, formatManualFollowInstruction } from "../monitoring-contract.js";
+import { queueLabel, queueObservation } from "../queue-observation.js";
 import type { JsonObject } from "./contracts.js";
 import type { ActionId } from "./shell.js";
 import type { InteractionFormController } from "./interaction-form.js";
@@ -488,6 +489,9 @@ export function createRunMonitorController(host:RunMonitorServices) {
     summary.classList.remove("error"); summary.setAttribute("role", "status");
     const terminal = terminalRun(flow.result.execution || {});
     const waitingForResponse = Boolean(runHumanRequest());
+    const queued = !waitingForResponse && !flow.result.agentRequest && flow.result.hasMoreEvents === false
+      ? queueObservation(flow.result.queueObservation, flow.result.execution) : undefined;
+    if (queued && !terminal) context.append(element("p", { className: "ui-caption" }, `${queueLabel(queued)} · ${queued.waitSeconds}s queued`));
     summary.textContent = terminal ? `${formatStatus(flow.result.execution?.status)}. Review the result below.`
       : chatHandoff?.status === "sending"
         ? "Run started. Opening monitoring in chat…"
@@ -497,6 +501,8 @@ export function createRunMonitorController(host:RunMonitorServices) {
         ? "Run started. The chat continuation could not be opened automatically."
       : waitingForResponse
         ? "This run needs a response in chat."
+      : queued
+        ? `${queueLabel(queued)}. Its current summary is shown here.`
       : /waiting|queued|pending|paused/i.test(flow.result.execution?.status || "")
         ? "This run is waiting. Its current summary is shown here."
         : "This run is active. Its current summary is shown here.";

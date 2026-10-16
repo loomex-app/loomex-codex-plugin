@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isDeepStrictEqual } from "node:util";
 import type { JsonValue } from "./protocol.js";
 import { monitoringContract } from "./monitoring-contract.js";
+import { queueObservation, WORKFLOW_WORKER_UNAVAILABLE_MESSAGE } from "./queue-observation.js";
 
 type ObjectValue = Record<string, JsonValue>;
 const PAGE_PREVIEW = 8;
@@ -735,7 +736,7 @@ function monitoring(summary: ObjectValue, status: string, identityValid: boolean
     return monitoringContract({ state: "terminal", resultPending: tool === "loomex_run_result" }) as unknown as ObjectValue;
   }
   if (summary.observationIssue !== undefined) {
-    return monitoringContract({ state: "needs_attention", observation: object(summary.observationIssue).code === "WORKFLOW_CONTINUATION_OBSERVATION_LOST"
+    return monitoringContract({ state: "needs_attention", observation: ["WORKFLOW_CONTINUATION_OBSERVATION_LOST", "WORKFLOW_WORKER_UNAVAILABLE"].includes(String(object(summary.observationIssue).code))
       ? "actionable_error" : "runner_observation_lost" }) as unknown as ObjectValue;
   }
   if (tool === "loomex_run_wait") {
@@ -876,6 +877,23 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
     if (projectedFailure !== undefined) summary.failure = projectedFailure;
   }
   const pendingRequest = request.status === "pending";
+  // Queue evidence is additive and only describes an execution awaiting its
+  // first worker claim. Human/agent input, terminal states and event draining
+  // retain their existing priority over this observation.
+  const queued = !data.humanRequest && !data.agentRequest && data.requiresAgentResponse !== true &&
+    (data.waitState == null || data.waitState === "automated_progress") &&
+    (!Array.isArray(progress.activeNodes) || progress.activeNodes.length === 0)
+      ? queueObservation(data.queueObservation, rawExecution) : undefined;
+  if (queued) {
+    summary.queueObservation = { ...queued };
+    summary.queueWaitSeconds = queued.waitSeconds;
+    delete summary.providerCompletionPending;
+    if (summary.progress) {
+      const queuedProgress = object(summary.progress);
+      delete queuedProgress.elapsedSeconds;
+      delete queuedProgress.latestActivity;
+    }
+  }
   // A commit/cancel receipt is not the authoritative monitoring baseline.
   if ((method === "runs.commit" || method === "runs.cancel") && uuid(rawExecution.id)) {
     summary.nextAction = { tool: "loomex_run_get", arguments: { runId: rawExecution.id } };
@@ -946,6 +964,9 @@ export function runSummary(method: string, data: ObjectValue): ObjectValue | und
     } else if (data.humanRequest !== undefined && data.humanRequest !== null ||
         data.waitState === "agent_dispatch_required" || data.waitState === "human_action_required") {
       summary.stateNeedsVerification = true;
+    } else if (queued?.workerState === "unavailable") {
+      if (data.hasMoreEvents !== false) summary.stateNeedsVerification = true;
+      else summary.observationIssue = { code: "WORKFLOW_WORKER_UNAVAILABLE", message: WORKFLOW_WORKER_UNAVAILABLE_MESSAGE };
     } else if (ACTIVE.has(status)) {
       summary.nextAction = { tool: "loomex_run_wait", arguments: { runId: rawExecution.id, timeoutSeconds: 30,
         ...(Number.isSafeInteger(data.latestSequence) && typeof data.latestSequence === "number" && data.latestSequence >= 0

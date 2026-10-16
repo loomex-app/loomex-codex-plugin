@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import { test } from "node:test";
 import { runSummary } from "../src/run-summary.js";
 import { monitoringContract } from "../src/monitoring-contract.js";
+import { readFileSync } from "node:fs";
 
 const runId = "adc7b3ba-1979-47d2-ac14-638ed91c5f82";
 const requestId = "8081f734-5175-492b-b412-b1d88d8e3a7d";
@@ -1137,4 +1138,116 @@ test("native authoring completion requires verified accepted terminal result and
   assert.equal((unverified?.resultIssue as any).code, "NATIVE_AUTHORING_RESULT_UNVERIFIED");
   assert.equal((unverified?.monitoring as any).liveFollow.disposition, "observation_blocked");
   assert.equal(runSummary("runs.get", snapshot)?.nativeAuthoringResult, undefined, "terminal snapshot still requires complete result retrieval");
+});
+
+const queuedObservation = {
+  schemaVersion: "loomex.workflow-queue-observation/v1", executionId: runId, state: "queued",
+  workerState: "unavailable", code: "WORKFLOW_WORKER_UNAVAILABLE",
+  queuedAt: "2026-10-16T00:00:00.000Z", waitSeconds: 60, observedAt: "2026-10-16T00:01:00.000Z",
+};
+const queuedSnapshot = {
+  execution: { id: runId, organizationId, status: "queued" }, latestSequence: 7,
+  hasMoreEvents: false, waitState: "automated_progress", queueObservation: queuedObservation,
+};
+
+test("verified worker unavailability blocks live following only after required pages are drained", () => {
+  for (const method of ["runs.get", "runs.wait", "runs.events"]) {
+    const summary = runSummary(method, queuedSnapshot);
+    assert.deepEqual(summary?.observationIssue, { code: "WORKFLOW_WORKER_UNAVAILABLE",
+      message: "This workflow is queued because the workflow worker is unavailable. Start or restore the workflow worker, then check this run again." });
+    assert.deepEqual(summary?.monitoring, monitoringContract({ state: "needs_attention", observation: "actionable_error" }));
+    assert.equal(summary?.nextAction, undefined);
+    assert.equal(summary?.queueWaitSeconds, 60);
+    assert.equal((summary?.queueObservation as Record<string, unknown>).executionId, undefined);
+    const paged = runSummary(method, { ...queuedSnapshot, hasMoreEvents: true, events: [{ sequence: 3 }] });
+    assert.deepEqual(paged?.nextAction, { tool: "loomex_run_events", arguments: { runId, afterSequence: 3 } });
+    assert.equal(paged?.observationIssue, undefined);
+    assert.deepEqual(paged?.monitoring, monitoringContract({ state: "active", eventPagesPending: true, observation: "event_pages_pending" }));
+  }
+  for (const hasMoreEvents of [undefined, null]) {
+    const summary = runSummary("runs.get", { ...queuedSnapshot, hasMoreEvents } as any);
+    assert.equal(summary?.observationIssue, undefined);
+    assert.equal(summary?.stateNeedsVerification, true);
+  }
+});
+
+test("normal queued observations retain serial bounded waits and separate queue age from provider time", () => {
+  for (const [workerState, code] of [
+    ["available", "WORKFLOW_QUEUED"], ["starting", "WORKFLOW_WORKER_STARTING"],
+    ["busy", "WORKFLOW_WORKER_BUSY"], ["unknown", "WORKFLOW_WORKER_OBSERVATION_UNKNOWN"],
+  ] as const) {
+    const summary = runSummary("runs.wait", { ...queuedSnapshot, timedOut: true,
+      progress: { version: 1, activeNodes: [], elapsedSeconds: 99, latestActivity: { kind: "activity.completed", summary: "private provider content" } },
+      queueObservation: { ...queuedObservation, workerState, code, arbitrary: "private queue context" } });
+    assert.equal(summary?.observationIssue, undefined);
+    assert.deepEqual(summary?.nextAction, { tool: "loomex_run_wait", arguments: { runId, timeoutSeconds: 30, afterSequence: 7 } });
+    assert.deepEqual(summary?.monitoring, monitoringContract({ state: "active", observation: "quiet_timeout" }));
+    assert.equal(summary?.providerCompletionPending, undefined);
+    assert.equal((summary?.progress as Record<string, unknown>).elapsedSeconds, undefined);
+    assert.equal((summary?.progress as Record<string, unknown>).latestActivity, undefined);
+    assert.doesNotMatch(JSON.stringify(summary), /private queue context|private provider content/);
+  }
+});
+
+test("input, terminal and continuation-recovery paths outrank stale queue observations", () => {
+  const human = runSummary("runs.get", { ...queuedSnapshot, ...data, execution: queuedSnapshot.execution });
+  assert.deepEqual(human?.nextAction, { tool: "loomex_interaction_view", arguments: { requestId } });
+  assert.equal(human?.queueObservation, undefined);
+  assert.equal(human?.observationIssue, undefined);
+  const terminal = runSummary("runs.get", { ...queuedSnapshot, execution: { ...queuedSnapshot.execution, status: "completed" } });
+  assert.deepEqual(terminal?.nextAction, { tool: "loomex_run_result", arguments: { runId } });
+  assert.equal(terminal?.queueObservation, undefined);
+  const native = runSummary("runs.get", { ...queuedSnapshot, requiresAgentResponse: true });
+  assert.equal(native?.queueObservation, undefined);
+  assert.equal(native?.stateNeedsVerification, true);
+  const verifiedNative = runSummary("runs.get", { ...queuedSnapshot, requiresAgentResponse: true,
+    waitState: "agent_response_required", nativeAuthoringBinding: nativeBinding,
+    agentRequest: { id: requestId, requestType: "plugin_agent", answerChannel: "current_chat" } });
+  assert.deepEqual(verifiedNative?.nextAction, { tool: "loomex_interaction_get", arguments: { requestId } });
+  assert.equal(verifiedNative?.queueObservation, undefined);
+  assert.equal(verifiedNative?.observationIssue, undefined);
+  const lost = runSummary("runs.get", { ...queuedSnapshot, waitState: "observation_lost",
+    automation: { phase: "observation_lost", retryable: false, code: "WORKFLOW_CONTINUATION_OBSERVATION_LOST" } });
+  assert.equal((lost?.observationIssue as Record<string, unknown>).code, "WORKFLOW_CONTINUATION_OBSERVATION_LOST");
+  assert.equal(lost?.queueObservation, undefined);
+});
+
+test("old, malformed and foreign queue evidence never stops or changes existing bounded follow", () => {
+  const malformed = [undefined, null, {}, { ...queuedObservation, schemaVersion: "loomex.workflow-queue-observation/v2" },
+    { ...queuedObservation, executionId: requestId }, { ...queuedObservation, state: "running" },
+    { ...queuedObservation, code: "private error text" }, { ...queuedObservation, code: "WORKFLOW_QUEUED" },
+    { ...queuedObservation, workerState: "private state" }, { ...queuedObservation, waitSeconds: -1 },
+    { ...queuedObservation, waitSeconds: 1.5 }, { ...queuedObservation, waitSeconds: Infinity },
+    { ...queuedObservation, queuedAt: "private prompt" }, { ...queuedObservation, observedAt: "private stderr" },
+    { ...queuedObservation, observedAt: "2026-10-15T00:00:00Z" },
+    ...["2026-02-30T00:00:00.123456+00:00", "2026-13-01T00:00:00Z", "2026-10-16T24:00:00Z",
+      "2026-10-16T00:00:60Z", "2026-10-16T00:00:00.1234567Z", "2026-10-16T00:00:00+24:00"]
+      .map(queuedAt => ({ ...queuedObservation, queuedAt }))];
+  for (const queueObservation of malformed) {
+    const summary = runSummary("runs.get", { ...queuedSnapshot, queueObservation } as any);
+    assert.equal(summary?.queueObservation, undefined);
+    assert.equal(summary?.observationIssue, undefined);
+    assert.deepEqual(summary?.nextAction, { tool: "loomex_run_wait", arguments: { runId, timeoutSeconds: 30, afterSequence: 7 } });
+    assert.doesNotMatch(JSON.stringify(summary), /private/);
+  }
+  const active = runSummary("runs.get", { ...queuedSnapshot,
+    progress: { version: 1, activeNodes: [{ nodeExecutionId: requestId, status: "running" }] } });
+  assert.equal(active?.queueObservation, undefined);
+});
+
+test("backend-shaped queued envelope preserves Python microseconds and null wait state", () => {
+  // Mirrors runner_execution_payload/execution_to_api and datetime.isoformat().
+  // In particular a queued execution has no human request and waitState=None.
+  const backend = JSON.parse(readFileSync(new URL("../test/fixtures/workflow-queued-backend-envelope.json", import.meta.url), "utf8"));
+  for (const method of ["runs.get", "runs.wait", "runs.events"]) {
+    const summary = runSummary(method, backend);
+    assert.equal(summary?.queueWaitSeconds, 60);
+    assert.equal((summary?.queueObservation as Record<string, unknown>).queuedAt, "2026-10-16T00:00:00.123456+00:00");
+    assert.equal((summary?.observationIssue as Record<string, unknown>).code, "WORKFLOW_WORKER_UNAVAILABLE");
+    assert.deepEqual(summary?.monitoring, monitoringContract({ state: "needs_attention", observation: "actionable_error" }));
+    assert.equal(summary?.nextAction, undefined);
+    const paged = runSummary(method, { ...backend, hasMoreEvents: true, events: [{ sequence: 3 }] });
+    assert.deepEqual(paged?.nextAction, { tool: "loomex_run_events", arguments: { runId, afterSequence: 3 } });
+    assert.equal(paged?.observationIssue, undefined);
+  }
 });

@@ -1194,6 +1194,7 @@ export const APP_CALLABLE_TOOLS = new Set([
 ]);
 
 const SEMANTIC_CAPABILITIES = [
+  "workflow.queue-observation/v1",
   "workflows.atomic-draft-create/v1",
   "workflows.canonical-authoring-contract/v1",
   "workflows.runtime-draft-mutations/v1",

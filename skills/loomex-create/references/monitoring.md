@@ -81,6 +81,19 @@ An accepted receipt does not prove completion or persistence: immediately
 read the exact run and follow its authoritative `nextAction`. Older runners
 may lack this optional capability; report that limitation without replay.
 
+A verified `queueObservation` with schema
+`loomex.workflow-queue-observation/v1` describes an unclaimed queued execution,
+not provider activity. `queueWaitSeconds` is queue age, never node execution time.
+Drain required event pages first; verified human/current-chat input and terminal
+result retrieval keep their priority. Starting, available, busy, and unknown
+worker observations continue the same bounded waits without repeated queue
+messages. Only `WORKFLOW_WORKER_UNAVAILABLE` with `workerState: unavailable`
+after pages are drained is an actionable observation failure: pause known exact
+recovery and report “This workflow is queued because the workflow worker is
+unavailable. Start or restore the workflow worker, then check this run again.”
+Do not replay execution, create another run, infer a provider failure, or add UI
+polling. Older snapshots without the versioned field retain their existing flow.
+
 ## User-facing progress
 
 Monitoring mechanics are internal. Do not narrate each read, event drain,

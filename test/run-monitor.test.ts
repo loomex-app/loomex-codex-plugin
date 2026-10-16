@@ -4,6 +4,7 @@ import {test} from 'node:test';
 import * as assert from 'node:assert/strict';
 import {createRunMonitorController,type RunMonitorServices} from '../src/ui-app/run-monitor.js';
 import type {UiData,RunFlow} from '../src/ui-app/page-models.js';
+import {queueLabel, queueObservation} from '../src/queue-observation.js';
 const runId='cecfb615-af58-48c3-8294-1e6ef4f03256';
 const org='cecfb615-af58-48c3-8294-1e6ef4f03257';
 const requestId='cecfb615-af58-48c3-8294-1e6ef4f03258';
@@ -55,4 +56,24 @@ test('continuation requires matching receipt and accepted request facts',()=>{
  assert.equal(continuation.acceptedInteraction?.requestId,requestId);
  assert.match(view.formatChatContinuationMarkdown(runId,continuation),/^\$loomex-runs follow-existing-run /);
  assert.match(view.formatChatContinuationMarkdown(runId),/^To continue/);
+});
+
+test('monitor queue captions use fixed worker vocabulary and reject foreign evidence',()=>{
+ const execution={id:runId,status:'queued'};
+ const evidence={schemaVersion:'loomex.workflow-queue-observation/v1',executionId:runId,state:'queued',
+  queuedAt:'2026-10-16T00:00:00Z',observedAt:'2026-10-16T00:01:00Z',waitSeconds:60};
+ for(const [workerState,code,label] of [
+  ['available','WORKFLOW_QUEUED','Queued · waiting for workflow worker'],
+  ['starting','WORKFLOW_WORKER_STARTING','Queued · workflow worker starting'],
+  ['busy','WORKFLOW_WORKER_BUSY','Queued · waiting for workflow worker capacity'],
+  ['unavailable','WORKFLOW_WORKER_UNAVAILABLE','Queued · workflow worker unavailable'],
+  ['unknown','WORKFLOW_WORKER_OBSERVATION_UNKNOWN','Queued · waiting for workflow worker'],
+ ] as const){
+  const observation=queueObservation({...evidence,workerState,code,message:'private provider text'},execution);
+  assert.ok(observation);
+  assert.equal(queueLabel(observation),label);
+  assert.doesNotMatch(JSON.stringify(observation),/private|executionId/);
+ }
+ assert.equal(queueObservation({...evidence,workerState:'unavailable',code:'WORKFLOW_WORKER_UNAVAILABLE',executionId:nextId},execution),undefined);
+ assert.equal(queueObservation({...evidence,workerState:'unavailable',code:'WORKFLOW_WORKER_UNAVAILABLE'},{...execution,status:'completed'}),undefined);
 });
