@@ -4,7 +4,7 @@
  */
 import { createHash, randomUUID, verify as verifySignature } from "node:crypto";
 import { collectInstalledDiagnostics } from "./diagnostics.js";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync, fsyncSync, openSync, closeSync, copyFileSync, chmodSync, mkdtempSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync, fsyncSync, openSync, closeSync, copyFileSync, chmodSync, mkdtempSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
@@ -308,37 +308,59 @@ function archiveMember(name: string): string {
   return normalized;
 }
 function octal(bytes: Buffer): number { const raw = bytes.toString("utf8").replace(/\0.*$/, "").trim(); return raw ? Number.parseInt(raw, 8) : 0; }
-function extractVerified(release: string, target: string, publicKey: string | undefined, allowDevelopment: boolean): { version: string; developmentOnly: boolean; manifestSha256: string; payloadSha256: string; inventorySha256: string; inventory: Json[] } {
+function extractVerified(release: string, target: string, publicKey: string | undefined, allowDevelopment: boolean, readOnly = false): { version: string; developmentOnly: boolean; manifestSha256: string; payloadSha256: string; inventorySha256: string; inventory: Json[] } {
   const manifestPath = join(release, "manifest.json"); regular(manifestPath, "release manifest missing"); const manifestBytes = readFileSync(manifestPath); const manifest = json(manifestPath);
   if (!manifestBytes.equals(canonical(manifest as Json)) || manifest.schema !== "app.loomex.release/v1" || manifest.project !== "loomex-plugin" || manifest.platform !== "darwin-arm64") fail("release manifest provenance mismatch");
   const version = validateVersion(text(manifest.version)); const development = manifest.developmentOnly === true;
   if (development) { if (!allowDevelopment || process.env.LOOMEX_ALLOW_UNSAFE_DEV_INSTALL !== "1") fail("set LOOMEX_ALLOW_UNSAFE_DEV_INSTALL=1 for isolated development installs"); }
   else { if (!publicKey) fail("signed artifact and trusted public key are required"); regular(join(release, "manifest.sig"), "signed artifact and trusted public key are required"); if (!verifySignature("RSA-SHA256", manifestBytes, readFileSync(publicKey), readFileSync(join(release, "manifest.sig")))) fail("release manifest signature mismatch"); }
-  const payload = object(manifest.payload); const archiveName = archiveMember(text(payload.file)); const archive = join(release, archiveName); regular(archive, "release payload missing"); if (sha(archive) !== text(payload.sha256)) fail("payload digest mismatch");
+  const payload = object(manifest.payload); const archiveName = archiveMember(text(payload.file)); const archive = join(release, archiveName); regular(archive, "release payload missing"); const archiveBytes = readFileSync(archive); if (createHash("sha256").update(archiveBytes).digest("hex") !== text(payload.sha256)) fail("payload digest mismatch");
   const provenance = object(manifest.sourceContent); const sourceFile = join(release, archiveMember(text(provenance.file))); regular(sourceFile, "source content manifest missing"); if (sha(sourceFile) !== text(provenance.sha256)) fail("source content manifest digest mismatch");
   const source = json(sourceFile); if (!readFileSync(sourceFile).equals(canonical(source as Json)) || source.schema !== "app.loomex.source-content/v1" || source.sourceRevision !== manifest.sourceRevision || !Array.isArray(source.files) || source.files.length !== provenance.files) fail("source content manifest is invalid");
-  if (existsSync(target)) fail("extraction destination already exists"); mkdirSync(target, { recursive: true, mode: 0o700 });
-  const bytes = gunzipSync(readFileSync(archive)); let offset = 0;
+  if (!readOnly) { if (existsSync(target)) fail("extraction destination already exists"); mkdirSync(target, { recursive: true, mode: 0o700 }); }
+  const members = new Map<string, { body: Buffer; mode: number; directory: boolean }>();
+  const bytes = gunzipSync(archiveBytes); let offset = 0;
   while (offset + 512 <= bytes.length) {
     const header = bytes.subarray(offset, offset + 512); if (header.every(byte => byte === 0)) break;
     const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, ""); const prefix = header.subarray(345, 500).toString("utf8").replace(/\0.*$/, ""); const member = archiveMember(prefix ? `${prefix}/${name}` : name); const size = octal(header.subarray(124, 136)); const type = header.subarray(156, 157).toString("utf8") || "0"; const destination = join(target, member);
     if (!inside(target, destination)) fail(`unsafe archive member: ${member}`);
+    if (!Number.isSafeInteger(size) || size < 0) fail("invalid archive member size");
     const body = bytes.subarray(offset + 512, offset + 512 + size); if (body.length !== size) fail("truncated release archive");
-    if (type === "5") { mkdirSync(destination, { recursive: true, mode: octal(header.subarray(100, 108)) || 0o755 }); }
-    else if (type === "0" || type === "\0") { mkdirSync(dirname(destination), { recursive: true, mode: 0o700 }); writeFileSync(destination, body, { flag: "wx", mode: octal(header.subarray(100, 108)) || 0o644 }); }
+    if (members.has(member)) fail(`duplicate archive member: ${member}`);
+    const mode = octal(header.subarray(100, 108)) || (type === "5" ? 0o755 : 0o644);
+    members.set(member, { body, mode, directory: type === "5" });
+    if (type === "5") { if (!readOnly) mkdirSync(destination, { recursive: true, mode }); }
+    else if (type === "0" || type === "\0") { if (!readOnly) { mkdirSync(dirname(destination), { recursive: true, mode: 0o700 }); writeFileSync(destination, body, { flag: "wx", mode }); } }
     else fail(`unsupported archive member: ${member}`);
     offset += 512 + Math.ceil(size / 512) * 512;
   }
   const expected = payload.files; if (!Array.isArray(expected)) fail("payload inventory is invalid");
   const actual: Array<Record<string, Json>> = [];
   const walk = (dir: string): void => { for (const name of readdirSync(dir).sort()) { const file = join(dir, name); const stat = lstatSync(file); if (stat.isSymbolicLink()) fail("release payload may not contain symlinks"); if (stat.isDirectory()) walk(file); else if (stat.isFile()) actual.push({ path: relative(target, file).split(sep).join("/"), sha256: sha(file), size: stat.size, mode: stat.mode & 0o7777 }); else fail("unsupported release payload entry"); } };
-  walk(target); actual.sort((a, b) => String(a.path) < String(b.path) ? -1 : String(a.path) > String(b.path) ? 1 : 0);
+  if (readOnly) {
+    for (const [path, entry] of members) {
+      if (path === "plugin/.mcp.json") fail("release payload must contain only the MCP template");
+      const parts = path.split("/");
+      if (parts.some(part => [".git", "node_modules", ".test-dist", ".cache", ".npm", "coverage", "__pycache__", ".DS_Store"].includes(part) || part.startsWith(".env") || /credential|secret/i.test(part))) fail(`forbidden packaged path: ${path}`);
+      for (let index = 1; index < parts.length; index += 1) if (members.get(parts.slice(0, index).join("/"))?.directory === false) fail("archive file used as a directory");
+      if (!entry.directory) actual.push({ path, sha256: createHash("sha256").update(entry.body).digest("hex"), size: entry.body.length, mode: entry.mode });
+    }
+    const memberJson = (path: string): Record<string, unknown> => { const entry = members.get(path); if (!entry || entry.directory) fail(`plugin package is missing ${path}`); return object(JSON.parse(entry.body.toString("utf8"))); };
+    const identity = memberJson("plugin/.codex-plugin/plugin.json");
+    if (identity.name !== "loomex" || identity.version !== version) fail("unexpected plugin identity");
+    for (const path of ["plugin/runtime/bin/node", "plugin/dist/server.js", "plugin/dist/lifecycle.mjs", "plugin/dist/compatibility-export.mjs", "plugin/dist/compatibility-check.mjs", "plugin/hooks/lifecycle-adapter.mjs", "plugin/.mcp.template.json"]) if (!members.has(path) || members.get(path)?.directory) fail(`plugin package is missing ${path}`);
+    const market = memberJson(".agents/plugins/marketplace.json"); const entries = market.plugins;
+    if (market.name !== "loomex-private" || !Array.isArray(entries) || entries.length !== 1) fail("verified marketplace template has an unexpected identity or source");
+    const entry = object(entries[0]); const source = object(entry.source);
+    if (entry.name !== "loomex" || entry.version !== version || source.source !== "local" || source.path !== "./plugin") fail("verified marketplace template has an unexpected identity or source");
+  } else walk(target);
+  actual.sort((a, b) => String(a.path) < String(b.path) ? -1 : String(a.path) > String(b.path) ? 1 : 0);
   if (!canonical(actual as Json).equals(canonical(expected as Json))) {
     const expectedList = expected as Json[];
     const index = actual.findIndex((entry, position) => !equalJson(entry, expectedList[position] as Json));
     fail(`payload inventory mismatch at ${index < 0 ? "unknown entry" : String(actual[index]?.path)}: actual=${JSON.stringify(actual[index])} expected=${JSON.stringify(expectedList[index])}`);
   }
-  return { version, developmentOnly: development, manifestSha256: sha(manifestPath), payloadSha256: sha(archive), inventorySha256: createHash("sha256").update(canonical(expected as Json)).digest("hex"), inventory: expected as Json[] };
+  return { version, developmentOnly: development, manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"), payloadSha256: createHash("sha256").update(archiveBytes).digest("hex"), inventorySha256: createHash("sha256").update(canonical(expected as Json)).digest("hex"), inventory: expected as Json[] };
 }
 
 function installedInventory(root: string): Json[] {
@@ -534,8 +556,113 @@ function verifyCompletedInstall(args: Arguments, p: ReturnType<typeof paths>, re
   console.log(`Private marketplace root: ${dirname(p.current)}`);
 }
 
+// This observation deliberately acquires no lock and creates no temporary files.
+// The install action repeats it under its existing owner lock before journaling.
+function installPreflight(args: Arguments, allowJournalAuthority = false): Json {
+  if (!args.release) fail("preflight requires --release");
+  const release = resolve(args.release); const base = safeBase(args.installBase); const p = paths(base);
+  for (let ancestor = base; ; ancestor = dirname(ancestor)) {
+    if (present(ancestor)) {
+      // macOS exposes these system directories through fixed /private aliases.
+      // They are not installation-controlled namespace redirects.
+      const systemAlias = process.platform === "darwin" && ["/var", "/tmp", "/etc"].includes(ancestor) && lstatSync(ancestor).isSymbolicLink() && realpathSync(ancestor) === `/private${ancestor}`;
+      if (!systemAlias) directory(ancestor, "install path ancestors must be regular directories");
+    }
+    if (dirname(ancestor) === ancestor) break;
+  }
+  for (const path of [p.versions, dirname(dirname(p.marketplace)), dirname(p.marketplace), p.helper]) if (present(path)) directory(path, "owned plugin paths must be regular directories");
+  for (const path of [p.receipt, p.marketplace, p.lifecycle, p.terminal]) if (present(path)) regular(path, "plugin ownership metadata must be regular files");
+  if (present(p.terminal)) fail("terminal plugin lifecycle cleanup must be resumed first");
+  let state: Lifecycle | null = null;
+  if (present(p.lifecycle)) { state = loadLifecycle(p.lifecycle); validateLifecycleBinding(state, p); }
+  const journalAuthority = allowJournalAuthority && state?.operation === "install" && state.release === release && state.phase !== "prepared";
+  let candidate: ReturnType<typeof extractVerified>;
+  if (journalAuthority) {
+    if (![state!.releaseManifestSha256, state!.payloadSha256, state!.payloadInventorySha256].every(value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)) || !Array.isArray(state!.inventory)) fail("verified install metadata is missing");
+    candidate = { version: validateVersion(text(state!.version)), developmentOnly: false, manifestSha256: state!.releaseManifestSha256!, payloadSha256: state!.payloadSha256!, inventorySha256: state!.payloadInventorySha256!, inventory: state!.inventory! };
+  } else {
+    directory(release, "release directory missing");
+    candidate = extractVerified(release, join(base, ".preflight-unused"), args.publicKey, args.allowDevelopment, true);
+  }
+  const installRoot = join(p.versions, candidate.version);
+  if (state) {
+    if (state.operation !== "install" || state.release !== release || state.version !== candidate.version || state.releaseManifestSha256 !== candidate.manifestSha256) fail("unfinished plugin lifecycle is not this exact install");
+    if (state.stage !== join(base, `.stage-${candidate.version}`) || state.installRoot !== installRoot || !["prepared", "extracted", "bytes", "current", "marketplace", "receipt", "complete"].includes(state.phase)) fail("invalid install lifecycle phase or stage");
+    if (state.phase !== "prepared" && (state.payloadSha256 !== candidate.payloadSha256 || state.payloadInventorySha256 !== candidate.inventorySha256 || !equalJson(state.inventory as Json, candidate.inventory as Json))) fail("pending install belongs to different release bytes");
+    if (present(state.stage as string)) directory(state.stage as string, "install stage must be a regular directory");
+    if (state.phase === "extracted") {
+      const payload = present(installRoot) ? installRoot : join(state.stage as string, "payload");
+      directory(payload, "pending install payload is missing"); verifyJournaledInstallBytes(state, payload);
+    } else if (state.phase !== "prepared") { directory(installRoot, "pending install payload is missing"); verifyJournaledInstallBytes(state, installRoot); }
+  }
+  const records = receiptVersions(p);
+  for (const [version] of Object.entries(records)) {
+    validateVersion(version); const target = join(p.versions, version);
+    directory(target, "owned plugin version is missing"); verifyRecordedVersion(p, target);
+  }
+  // Published checkpoints must retain every record that later phases no
+  // longer recreate. Earlier checkpoints may legitimately lag publication.
+  if (state && ["marketplace", "receipt", "complete"].includes(state.phase)) {
+    regular(p.marketplace, "published install marketplace is missing");
+    if (!equalJson(json(p.marketplace) as Json, marketplaceData(join(installRoot, ".agents/plugins/marketplace.json"), candidate.version))) fail("published install marketplace differs from verified candidate");
+  }
+  if (state && ["receipt", "complete"].includes(state.phase)) {
+    regular(p.receipt, "published install ownership receipt is missing");
+    const record = object(records[candidate.version]);
+    if (record.releaseManifestSha256 !== candidate.manifestSha256 || record.payloadSha256 !== candidate.payloadSha256 || record.payloadInventorySha256 !== candidate.inventorySha256 || !equalJson(record.inventory as Json, candidate.inventory as Json)) fail("published install receipt differs from verified candidate");
+  }
+  let current: string | null = null;
+  if (state && ["current", "marketplace", "receipt", "complete"].includes(state.phase) && !present(p.current)) fail("pending install current target is missing");
+  if (present(p.current)) {
+    current = currentTarget(p.current, p.versions);
+    if (state && ["current", "marketplace", "receipt", "complete"].includes(state.phase) && current !== installRoot) fail("pending install current target differs");
+    const journalCurrent = state && ["bytes", "current", "marketplace", "receipt", "complete"].includes(state.phase) && current === installRoot;
+    if (!journalCurrent) verifyOwnership(p);
+    else if (state && present(p.marketplace)) {
+      const metadataTargets = [installRoot];
+      if (["bytes", "current"].includes(state.phase) && state.oldTarget && state.oldTarget !== installRoot) { if (dirname(state.oldTarget) !== p.versions || !VERSION.test(basename(state.oldTarget))) fail("previous install target is invalid"); directory(state.oldTarget, "previous install target is missing"); verifyRecordedVersion(p, state.oldTarget); metadataTargets.push(state.oldTarget); }
+      if (!metadataTargets.some(target => equalJson(json(p.marketplace) as Json, marketplaceData(join(target, ".agents/plugins/marketplace.json"), basename(target))))) fail("unexpected installed marketplace metadata");
+    }
+    validatePayload(current, basename(current), p.current);
+    const helperPayloads = [current];
+    if (state && state.phase === "extracted") helperPayloads.push(present(installRoot) ? installRoot : join(state.stage as string, "payload"));
+    else if (state && state.phase === "bytes") helperPayloads.splice(0, helperPayloads.length, installRoot);
+    verifyHelper(p, helperPayloads, state?.phase === "extracted");
+  } else if (state && present(p.helper)) {
+    if (state.phase === "prepared") fail("pending install has an unverified lifecycle helper");
+    verifyHelper(p, [present(installRoot) ? installRoot : join(state.stage as string, "payload")], state.phase === "extracted", state.phase === "extracted");
+  } else if (!state) {
+    for (const path of [p.marketplace, `${p.marketplace}.new`, p.receipt, `${p.receipt}.new`, p.helper]) if (present(path)) fail(`unowned plugin metadata already exists: ${path}`);
+  }
+  if (present(p.versions)) for (const version of readdirSync(p.versions)) {
+    if (!VERSION.test(version) || (!Object.hasOwn(records, version) && !(state && version === candidate.version))) fail("unowned plugin version already exists");
+  }
+  if (present(installRoot) && !state) {
+    const record = object(records[candidate.version]);
+    if (current !== installRoot) fail("installed version is retained but not current; explicit rollback is required");
+    if (candidate.manifestSha256 !== record.releaseManifestSha256 || candidate.payloadSha256 !== record.payloadSha256 || candidate.inventorySha256 !== record.payloadInventorySha256 || !equalJson(candidate.inventory as Json, record.inventory as Json)) fail("installed version belongs to a different release; refusing same-version replacement");
+  }
+  if (!state && present(join(base, `.stage-${candidate.version}`))) fail("unowned install stage already exists");
+  return { schema: "app.loomex.plugin.install-preflight/v1", artifact: { eligible: true, version: candidate.version, releaseManifestSha256: candidate.manifestSha256 }, pendingRecovery: { required: state !== null, operation: state?.operation ?? null, phase: state?.phase ?? null }, activation: { eligible: true, state: state ? "resume" : current === installRoot ? "already-installed" : current ? "upgrade" : "fresh" }, hostRegistration: { verified: false } };
+}
+function verifyHelper(p: ReturnType<typeof paths>, payloads: string[], allowPartial = false, allowMissing = false): void {
+  if (!allowPartial) lifecycleRuntime(p.helper);
+  else {
+    directory(p.helper, "lifecycle recovery helper is invalid");
+    for (const [name, suffix, mode] of [["node", "plugin/runtime/bin/node", 0o755], ["lifecycle.mjs", "plugin/dist/lifecycle.mjs", 0o600]] as const) {
+      const helper = join(p.helper, name);
+      if (!present(helper) && allowMissing) continue;
+      regular(helper, "lifecycle recovery helper is invalid");
+      if ((lstatSync(helper).mode & 0o7777) !== mode || !payloads.some(payload => sha(helper) === sha(join(payload, suffix)))) fail("partial lifecycle helper differs from verified payload");
+    }
+  }
+  if (typeof process.getuid === "function" && lstatSync(p.helper).uid !== process.getuid()) fail("installed lifecycle helper ownership differs; explicit repair is required");
+  if (!allowPartial && !payloads.some(payload => [["node", join(payload, "plugin/runtime/bin/node"), 0o755], ["lifecycle.mjs", join(payload, "plugin/dist/lifecycle.mjs"), 0o600]].every(([name, source, mode]) => sha(join(p.helper, String(name))) === sha(String(source)) && (lstatSync(join(p.helper, String(name))).mode & 0o7777) === mode))) fail("installed lifecycle helper differs from verified current payload; explicit repair is required");
+}
+
 function install(args: Arguments): void {
   if (!args.release) fail("usage: install RELEASE_DIR [--public-key FILE | --allow-unsigned-development] [--install-base DIR]");
+  installPreflight(args, true);
   const release = resolve(args.release); const p = paths(safeBase(args.installBase)); mkdirSync(dirname(p.current), { recursive: true, mode: 0o700 }); noLink(p.versions, "versions directory may not be a symlink"); if (!existsSync(p.versions)) mkdirSync(p.versions, { mode: 0o700 }); directory(p.versions, "versions directory may not be a symlink");
   let state: Lifecycle; if (existsSync(p.lifecycle)) { state = loadLifecycle(p.lifecycle); validateLifecycleBinding(state, p); if (state.operation !== "install" || state.release !== release || !state.version) fail("unfinished plugin lifecycle is not this install"); } else {
     if (present(p.current)) verifyOwnership(p);
@@ -660,6 +787,7 @@ function parse(argv: string[]): Arguments {
 }
 async function main(): Promise<void> {
   const args = parse(process.argv.slice(2)); const p = paths(safeBase(args.installBase)); if (args.action === "status") return status(args);
+  if (args.action === "preflight") { console.log(JSON.stringify(installPreflight(args))); return; }
   if (args.action === "diagnostics") {
     const report = await collectInstalledDiagnostics({
       installBase: dirname(p.current), currentTarget: () => currentTarget(p.current, p.versions),
@@ -675,6 +803,7 @@ async function main(): Promise<void> {
   if (present(p.terminal) && !["uninstall", "resume"].includes(args.action)) fail("terminal plugin lifecycle cleanup must be resumed first");
   let bootstrap: Lock | null = null;
   if (args.action === "install") {
+    installPreflight(args, true);
     // Before the install root exists, serialize on a narrowly named sibling
     // anchor.  We only create its parent, never the installation root, until
     // this guard is held; then the regular in-root lifecycle lock takes over.

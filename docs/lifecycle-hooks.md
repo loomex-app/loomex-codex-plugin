@@ -159,3 +159,18 @@ definition through Codex's hook management UI. Installing or enabling the
 plugin does not grant that trust. If hooks are disabled by host policy or not
 trusted, normal MCP follow operations remain available; the plugin never edits
 Codex trust configuration itself.
+
+The paired installer first invokes the candidate's pinned runtime and lifecycle
+manager with `preflight --release RELEASE_DIR --install-base PLUGIN_BASE` and the
+same signature/development flags used for install. This owner check is read-only:
+it does not create locks, temporary extraction trees, journals, helpers, or
+installation directories. The candidate archive is checked in memory, alongside
+installed inventory, helper bytes, and any exact pending install binding. A
+conflicting lifecycle operation requires recovery before activation.
+
+Successful stdout uses `app.loomex.plugin.install-preflight/v1` with separate
+`artifact.eligible`, `pendingRecovery.required`, `activation.eligible` and
+`hostRegistration.verified` fields. Host registration remains unverified by this
+file ownership check. A matching pending install remains recovery-required until
+the existing operation finishes. Install repeats the owner checks under its lock
+before writing its journal or changing payload/current metadata.

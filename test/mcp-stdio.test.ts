@@ -2418,7 +2418,7 @@ test("a read's earlier sent observation survives a safe retry that cannot send i
 });
 
 test("credential-store error envelopes remain categorical and preserve exact mutation intent", async () => {
-  for (const mutating of [false, true]) for (const code of ["STORE_ACCESS_REQUIRED", "STORE_ACCESS_DENIED", "STORE_UNAVAILABLE", "STORE_OPERATION_PENDING"]) {
+  for (const mutating of [false, true]) for (const code of ["STORE_ACCESS_REQUIRED", "STORE_ACCESS_DENIED", "STORE_UNAVAILABLE", "STORE_OPERATION_PENDING", "AUTH_CLEANUP_OUTCOME_PENDING"]) {
     let runner!: FakeRunner;
     runner = new FakeRunner((request, socket) => runner.error(socket, request, code,
       "Bearer private-token /private/keychain item ACL errSec private error", false));
@@ -2432,8 +2432,10 @@ test("credential-store error envelopes remain categorical and preserve exact mut
         assert.ok(error instanceof LocalControlError);
         const output = toolErrorOutput(mutating ? "auth.recover" : "status.get", error);
         assert.equal(output.error?.code, code);
-        assert.equal(output.error?.outcome, code === "STORE_OPERATION_PENDING" ? "unknown" : "not_dispatched");
-        assert.equal(output.error?.recovery, code === "STORE_OPERATION_PENDING" ? "reconcile_outcome" : "unavailable");
+        // A code alone cannot establish whether remote revocation preceded a
+        // native-store failure. Retain the exact operation and reconcile.
+        assert.equal(output.error?.outcome, "unknown");
+        assert.equal(output.error?.recovery, "reconcile_outcome");
         assert.equal(output.idempotencyKey, mutating ? key : undefined);
         assert.doesNotMatch(JSON.stringify(output), /private-token|private\/keychain|ACL|errSec|private error/);
       }

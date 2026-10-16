@@ -1,7 +1,7 @@
 {
   "schema": "loomex/frontend-design-system/v3",
   "consumerSourcesSha256": "d5201e1a1aa40eb5061ef207c336eacf3825992abf9a09f6c9464945b4c049fa",
-  "frontendRevision": "aac96c99e8c089980420483fb9c9e5be6db9a836",
+  "frontendRevision": "9a453b99ace8087353fe4c0d7f1a0b780c83398f",
   "compiler": {
     "name": "@tailwindcss/node",
     "version": "4.3.0"
