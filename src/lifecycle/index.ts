@@ -29,7 +29,7 @@ type Lifecycle = {
   pruneRemove?: string[]; pruneRetain?: string[]; pruneRecords?: Record<string, Json>;
   pruneReceiptBefore?: string; pruneReceiptAfter?: string; prunePlanSha256?: string; pruneIndex?: number;
 };
-type Arguments = { action: string; release?: string; installBase?: string; publicKey?: string; allowDevelopment: boolean; version?: string; remove: string[]; retain: string[] };
+type Arguments = { action: string; release?: string; expectedReleasePath?: string; installBase?: string; publicKey?: string; allowDevelopment: boolean; version?: string; remove: string[]; retain: string[] };
 
 function fail(message: string): never { throw new Error(message); }
 function text(value: unknown): string { return typeof value === "string" ? value : fail("expected text"); }
@@ -561,7 +561,12 @@ function verifyCompletedInstall(args: Arguments, p: ReturnType<typeof paths>, re
 function installPreflight(args: Arguments, allowJournalAuthority = false): Json {
   if (!args.release) fail("preflight requires --release");
   const release = resolve(args.release); const base = safeBase(args.installBase); const p = paths(base);
-  for (let ancestor = base; ; ancestor = dirname(ancestor)) {
+  // This path only observes the immutable source recorded by an interrupted
+  // install. It never changes the journal or grants a mutating action an alias.
+  const expectedRelease = args.expectedReleasePath;
+  if (expectedRelease !== undefined && (!isAbsolute(expectedRelease) || resolve(expectedRelease) !== expectedRelease)) fail("expected release path must be an exact absolute path");
+  const observedPaths = expectedRelease === undefined ? [base] : [base, release, expectedRelease];
+  for (const observed of observedPaths) for (let ancestor = observed; ; ancestor = dirname(ancestor)) {
     if (present(ancestor)) {
       // macOS exposes these system directories through fixed /private aliases.
       // They are not installation-controlled namespace redirects.
@@ -573,6 +578,7 @@ function installPreflight(args: Arguments, allowJournalAuthority = false): Json 
   for (const path of [p.versions, dirname(dirname(p.marketplace)), dirname(p.marketplace), p.helper]) if (present(path)) directory(path, "owned plugin paths must be regular directories");
   for (const path of [p.receipt, p.marketplace, p.lifecycle, p.terminal]) if (present(path)) regular(path, "plugin ownership metadata must be regular files");
   if (present(p.terminal)) fail("terminal plugin lifecycle cleanup must be resumed first");
+  if (expectedRelease !== undefined && (present(join(base, ".lifecycle.lock")) || present(join(dirname(base), `.${basename(base)}.lifecycle.bootstrap.lock`)))) fail("plugin lifecycle operation already in progress");
   let state: Lifecycle | null = null;
   if (present(p.lifecycle)) { state = loadLifecycle(p.lifecycle); validateLifecycleBinding(state, p); }
   const journalAuthority = allowJournalAuthority && state?.operation === "install" && state.release === release && state.phase !== "prepared";
@@ -586,7 +592,7 @@ function installPreflight(args: Arguments, allowJournalAuthority = false): Json 
   }
   const installRoot = join(p.versions, candidate.version);
   if (state) {
-    if (state.operation !== "install" || state.release !== release || state.version !== candidate.version || state.releaseManifestSha256 !== candidate.manifestSha256) fail("unfinished plugin lifecycle is not this exact install");
+    if (state.operation !== "install" || state.release !== (expectedRelease ?? release) || state.version !== candidate.version || state.releaseManifestSha256 !== candidate.manifestSha256) fail("unfinished plugin lifecycle is not this exact install");
     if (state.stage !== join(base, `.stage-${candidate.version}`) || state.installRoot !== installRoot || !["prepared", "extracted", "bytes", "current", "marketplace", "receipt", "complete"].includes(state.phase)) fail("invalid install lifecycle phase or stage");
     if (state.phase !== "prepared" && (state.payloadSha256 !== candidate.payloadSha256 || state.payloadInventorySha256 !== candidate.inventorySha256 || !equalJson(state.inventory as Json, candidate.inventory as Json))) fail("pending install belongs to different release bytes");
     if (present(state.stage as string)) directory(state.stage as string, "install stage must be a regular directory");
@@ -643,7 +649,14 @@ function installPreflight(args: Arguments, allowJournalAuthority = false): Json 
     if (candidate.manifestSha256 !== record.releaseManifestSha256 || candidate.payloadSha256 !== record.payloadSha256 || candidate.inventorySha256 !== record.payloadInventorySha256 || !equalJson(candidate.inventory as Json, record.inventory as Json)) fail("installed version belongs to a different release; refusing same-version replacement");
   }
   if (!state && present(join(base, `.stage-${candidate.version}`))) fail("unowned install stage already exists");
-  return { schema: "app.loomex.plugin.install-preflight/v1", artifact: { eligible: true, version: candidate.version, releaseManifestSha256: candidate.manifestSha256 }, pendingRecovery: { required: state !== null, operation: state?.operation ?? null, phase: state?.phase ?? null }, activation: { eligible: true, state: state ? "resume" : current === installRoot ? "already-installed" : current ? "upgrade" : "fresh" }, hostRegistration: { verified: false } };
+  if (expectedRelease !== undefined) {
+    // Reject a changed owner observed while checking the staged envelope. This
+    // remains an observation; installation repeats its checks under its lock.
+    if (present(join(base, ".lifecycle.lock")) || present(join(dirname(base), `.${basename(base)}.lifecycle.bootstrap.lock`))) fail("plugin lifecycle operation already in progress");
+    if (present(p.terminal) || present(p.lifecycle) !== (state !== null)) fail("plugin lifecycle owner changed during preflight");
+    if (state) { regular(p.lifecycle, "plugin ownership metadata must be regular files"); if (!equalJson(state as unknown as Json, loadLifecycle(p.lifecycle) as unknown as Json)) fail("plugin lifecycle owner changed during preflight"); }
+  }
+  return { schema: "app.loomex.plugin.install-preflight/v1", artifact: { eligible: true, version: candidate.version, releaseManifestSha256: candidate.manifestSha256 }, pendingRecovery: { required: state !== null, operation: state?.operation ?? null, phase: state?.phase ?? null, cacheRestoreRequired: expectedRelease !== undefined && state !== null }, activation: { eligible: true, state: state ? "resume" : current === installRoot ? "already-installed" : current ? "upgrade" : "fresh" }, hostRegistration: { verified: false } };
 }
 function verifyHelper(p: ReturnType<typeof paths>, payloads: string[], allowPartial = false, allowMissing = false): void {
   if (!allowPartial) lifecycleRuntime(p.helper);
@@ -783,7 +796,7 @@ function status(args: Arguments): void {
   console.log(JSON.stringify({ schema: "app.loomex.plugin.lifecycle-status/v1", installBase: dirname(p.current), current, versions, operation }, null, 2));
 }
 function parse(argv: string[]): Arguments {
-  const [action, ...rest] = argv; if (!action) fail("usage: lifecycle ACTION [options]"); const result: Arguments = { action, allowDevelopment: false, remove: [], retain: [] }; for (let index = 0; index < rest.length; index += 1) { const value = rest[index]; if (value === "--release") result.release = rest[++index] ?? fail("--release requires a value"); else if (value === "--install-base") result.installBase = rest[++index] ?? fail("--install-base requires a value"); else if (value === "--public-key") result.publicKey = rest[++index] ?? fail("--public-key requires a value"); else if (value === "--allow-unsigned-development") result.allowDevelopment = true; else if (value === "--version") result.version = rest[++index] ?? fail("--version requires a value"); else if (value === "--remove" && action === "prune") result.remove.push(rest[++index] ?? fail("--remove requires a value")); else if (value === "--retain" && action === "prune") result.retain.push(rest[++index] ?? fail("--retain requires a value")); else fail(`unknown argument: ${value}`); } return result;
+  const [action, ...rest] = argv; if (!action) fail("usage: lifecycle ACTION [options]"); const result: Arguments = { action, allowDevelopment: false, remove: [], retain: [] }; for (let index = 0; index < rest.length; index += 1) { const value = rest[index]; if (value === "--release") result.release = rest[++index] ?? fail("--release requires a value"); else if (value === "--expected-release-path" && action === "preflight") result.expectedReleasePath = rest[++index] ?? fail("--expected-release-path requires a value"); else if (value === "--install-base") result.installBase = rest[++index] ?? fail("--install-base requires a value"); else if (value === "--public-key") result.publicKey = rest[++index] ?? fail("--public-key requires a value"); else if (value === "--allow-unsigned-development") result.allowDevelopment = true; else if (value === "--version") result.version = rest[++index] ?? fail("--version requires a value"); else if (value === "--remove" && action === "prune") result.remove.push(rest[++index] ?? fail("--remove requires a value")); else if (value === "--retain" && action === "prune") result.retain.push(rest[++index] ?? fail("--retain requires a value")); else fail(`unknown argument: ${value}`); } return result;
 }
 async function main(): Promise<void> {
   const args = parse(process.argv.slice(2)); const p = paths(safeBase(args.installBase)); if (args.action === "status") return status(args);

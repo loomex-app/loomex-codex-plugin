@@ -128,3 +128,47 @@ for (const phase of ["marketplace", "receipt", "complete"]) test(`published chec
     const before = snapshot(fixture); assert.notEqual(run("preflight", base, candidate).status, 0); assert.deepEqual(snapshot(fixture), before); assert.notEqual(run("resume", base, candidate).status, 0); assert.deepEqual(snapshot(fixture), before);
   } finally { rmSync(fixture, { recursive: true, force: true }); }
 });
+
+for (const phase of ["prepared", "moved", "receipt"]) for (const missing of ["partial", "missing"]) test(`staged preflight verifies exact pending cache restoration ${phase}/${missing}`, () => {
+  const fixture = realpathSync(mkdtempSync(join(tmpdir(), "loomex-cache-preflight-")));
+  try {
+    const stable = join(fixture, "stable"); release(stable); const staged = join(fixture, "staged"); release(staged); const base = join(fixture, "install");
+    assert.notEqual(run("install", base, stable, [], { LOOMEX_PLUGIN_INSTALL_FAIL_PHASE: phase }).status, 0);
+    if (missing === "missing") rmSync(stable, { recursive: true }); else rmSync(join(stable, "payload.tar.gz"));
+    const before = snapshot(fixture); const checked = run("preflight", base, staged, ["--expected-release-path", stable]);
+    assert.equal(checked.status, 0, checked.stderr); assert.equal(JSON.parse(checked.stdout).pendingRecovery.cacheRestoreRequired, true); assert.deepEqual(snapshot(fixture), before);
+    assert.notEqual(run("preflight", base, staged, ["--expected-release-path", join(fixture, "other")]).status, 0); assert.deepEqual(snapshot(fixture), before);
+    for (const action of ["install", "resume", "repair", "uninstall", "status"]) { assert.notEqual(run(action, base, staged, ["--expected-release-path", stable]).status, 0); assert.deepEqual(snapshot(fixture), before); }
+    const changed = join(fixture, "changed"); release(changed, "different"); const changedBefore = snapshot(fixture);
+    assert.notEqual(run("preflight", base, changed, ["--expected-release-path", stable]).status, 0); assert.deepEqual(snapshot(fixture), changedBefore);
+    const journal = join(base, "lifecycle.json"); const original = readFileSync(journal); const data = JSON.parse(original.toString()); data.releaseManifestSha256 = "0".repeat(64); writeFileSync(journal, canonical(data));
+    const invalid = snapshot(fixture); assert.notEqual(run("preflight", base, staged, ["--expected-release-path", stable]).status, 0); assert.deepEqual(snapshot(fixture), invalid); writeFileSync(journal, original);
+    const linked = join(fixture, "linked"); symlinkSync(staged, linked); const linkBefore = snapshot(fixture); assert.notEqual(run("preflight", base, linked, ["--expected-release-path", stable]).status, 0); assert.deepEqual(snapshot(fixture), linkBefore);
+    mkdirSync(join(base, ".lifecycle.lock")); const locked = snapshot(fixture); assert.notEqual(run("preflight", base, staged, ["--expected-release-path", stable]).status, 0); assert.deepEqual(snapshot(fixture), locked);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+test("staged cache preflight reports no restoration authority without pending owner and rejects journal schema", () => {
+  const fixture = realpathSync(mkdtempSync(join(tmpdir(), "loomex-cache-authority-")));
+  try {
+    const staged = join(fixture, "staged"); release(staged); const stable = join(fixture, "stable"); const base = join(fixture, "install");
+    const before = snapshot(fixture); const fresh = run("preflight", base, staged, ["--expected-release-path", stable]); assert.equal(fresh.status, 0, fresh.stderr); assert.equal(JSON.parse(fresh.stdout).pendingRecovery.cacheRestoreRequired, false); assert.deepEqual(snapshot(fixture), before);
+    assert.notEqual(run("install", base, staged, [], { LOOMEX_PLUGIN_INSTALL_FAIL_PHASE: "prepared" }).status, 0);
+    const journal = join(base, "lifecycle.json"); const original = readFileSync(journal); const data = JSON.parse(original.toString());
+    data.operation = "uninstall"; data.target = data.installRoot; data.targets = [data.installRoot]; writeFileSync(journal, canonical(data));
+    const competing = snapshot(fixture); assert.notEqual(run("preflight", base, staged, ["--expected-release-path", staged]).status, 0); assert.deepEqual(snapshot(fixture), competing);
+    writeFileSync(journal, original); data.operation = "install"; data.schema = "unknown"; writeFileSync(journal, canonical(data)); const invalid = snapshot(fixture);
+    assert.notEqual(run("preflight", base, staged, ["--expected-release-path", staged]).status, 0); assert.deepEqual(snapshot(fixture), invalid);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("staged preflight preserves installed immutable receipt checks without pending authority", () => {
+  const fixture = realpathSync(mkdtempSync(join(tmpdir(), "loomex-cache-receipt-")));
+  try {
+    const stable = join(fixture, "stable"); release(stable); const base = join(fixture, "install");
+    assert.equal(run("install", base, stable).status, 0); rmSync(stable, { recursive: true });
+    const staged = join(fixture, "staged"); release(staged); const before = snapshot(fixture);
+    const checked = run("preflight", base, staged, ["--expected-release-path", stable]); assert.equal(checked.status, 0, checked.stderr); assert.equal(JSON.parse(checked.stdout).pendingRecovery.cacheRestoreRequired, false); assert.deepEqual(snapshot(fixture), before);
+    const manifest = join(staged, "manifest.json"); const original = readFileSync(manifest); writeFileSync(manifest, canonical({ ...JSON.parse(original.toString()), bootstrap: { lifecycle: { sha256: "0".repeat(64) } } }));
+    const changed = snapshot(fixture); assert.notEqual(run("preflight", base, staged, ["--expected-release-path", stable]).status, 0); assert.deepEqual(snapshot(fixture), changed);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
