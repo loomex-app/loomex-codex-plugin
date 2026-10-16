@@ -6,3 +6,9 @@ exports into this directory and an update to `contract-pin.json`. Release
 packaging includes only these checked-in copies; it does not read or regenerate
 contracts from another repository. The plugin test suite verifies their SHA-256
 digests and rejects method or top-level schema drift.
+
+Authoring issues preserve optional `reasonCode` and strict `location` fields
+from the runner-owned schema. Locations use one-based line/column and a
+zero-based Unicode character offset. These are diagnostic data, never repair or
+execution instructions. The backend remains the only definition parser and
+semantic validator. The plugin validates and transports the issue envelope.

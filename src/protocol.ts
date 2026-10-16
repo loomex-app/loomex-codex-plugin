@@ -112,6 +112,12 @@ export const AuthoringIssueSchema = z
     code: z.string().min(1).max(120),
     path: z.string().min(1).max(512),
     message: z.string().min(1).max(4096),
+    reasonCode: z.string().min(1).max(120).regex(/^[A-Z0-9_]+$/).optional(),
+    location: z.object({
+      line: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+      column: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+      offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    }).strict().optional(),
   })
   .strict();
 export type AuthoringIssue = z.infer<typeof AuthoringIssueSchema>;

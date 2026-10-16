@@ -1121,6 +1121,8 @@ test("definitive workflow authoring rejection remains definitive across local co
           code: "WORKFLOW_DEFINITION_INVALID",
           path: "$.nodes[1].inputs.answer",
           message: "The source field is not defined.",
+          reasonCode: "SEMANTIC_MAPPING_INVALID",
+          location: { line: 2, column: 3, offset: 17 },
         },
       ],
     });
@@ -1142,6 +1144,8 @@ test("definitive workflow authoring rejection remains definitive across local co
     code: "WORKFLOW_DEFINITION_INVALID",
     path: "$.nodes[1].inputs.answer",
     message: "The source field is not defined.",
+          reasonCode: "SEMANTIC_MAPPING_INVALID",
+          location: { line: 2, column: 3, offset: 17 },
   }]);
   assert.doesNotMatch(String(error.message), /network|unknown/i);
 });
