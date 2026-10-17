@@ -833,4 +833,25 @@ async function main(): Promise<void> {
     if (["resume", "rollback", "repair", "prune"].includes(args.action)) lifecycleResult(p, args.action, "completed");
   } finally { lock.release(); }
 }
-void main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
+// Preflight is consumed by the paired installer even when the child exits 1.
+// Keep exception text (including paths and archive contents) off that wire.
+function preflightFailure(error: unknown): Json {
+  const message = error instanceof Error ? error.message : "";
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+  const category = /unsupported.*schema|unsupported plugin lifecycle journal/.test(message) ? "OWNER_SCHEMA_UNSUPPORTED"
+    : /signature mismatch/.test(message) ? "OWNER_SIGNATURE_REJECTED"
+    : /trusted public key|required.*development|UNSAFE_DEV_INSTALL/.test(message) ? "OWNER_AUTHORIZATION_REQUIRED"
+    : /unfinished plugin lifecycle|different installation|not this exact install|different release|target mismatch/.test(message) ? "OWNER_BINDING_MISMATCH"
+    : /symlink|regular director|regular files|unsafe|unowned|already in progress/.test(message) ? "OWNER_STATE_UNSAFE"
+    : /changed|differs|digest mismatch|inventory mismatch|does not match|missing recorded/.test(message) ? "OWNER_STATE_DRIFT"
+    : /^(EACCES|EPERM|EIO|ENOENT|ENOTDIR|ELOOP)$/.test(code) || /missing|invalid JSON/.test(message) ? "OWNER_STATE_UNREADABLE"
+    : "OWNER_STATE_INVALID";
+  return { schema: "app.loomex.plugin.install-preflight/v1", artifact: { eligible: false }, activation: { eligible: false }, hostRegistration: { verified: false }, owner: { kind: "plugin_lifecycle", schemaVersion: LIFECYCLE_SCHEMA }, error: { category }, reasonCode: category, nextAction: /terminal plugin lifecycle cleanup/.test(message) ? "resume_plugin_operation" : "inspect_lifecycle_status" };
+}
+void main().catch(error => {
+  if (process.argv[2] === "preflight") {
+    const report = preflightFailure(error); console.log(JSON.stringify(report));
+    console.error("Plugin install preflight refused; inspect the structured result.");
+  } else console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

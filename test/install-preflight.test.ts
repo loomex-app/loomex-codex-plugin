@@ -22,7 +22,7 @@ function release(root: string, suffix = "", version = "0.1.0") {
   writeFileSync(join(root, "manifest.json"), canonical({ schema: "app.loomex.release/v1", project: "loomex-plugin", platform: "darwin-arm64", version, sourceRevision: "test", developmentOnly: true, sourceContent: { file: "source.json", sha256: digest(source), files: 0 }, payload: { file: "payload.tar.gz", sha256: digest(archive), files: inventory } }));
 }
 function snapshot(root: string): unknown { return readdirSync(root).sort().map(name => { const path = join(root, name); const st = lstatSync(path); return [name, st.mode, st.isSymbolicLink() ? readlinkSync(path) : st.isDirectory() ? snapshot(path) : digest(readFileSync(path))]; }); }
-const manager = resolve("dist/lifecycle.mjs");
+const manager = process.env.LOOMEX_TEST_LIFECYCLE_MANAGER ?? resolve("dist/lifecycle.mjs");
 function run(action: string, base: string, candidate: string, extra: string[] = [], env: Record<string, string> = {}) { return spawnSync(process.execPath, [manager, action, "--release", candidate, "--install-base", base, "--allow-unsigned-development", ...extra], { encoding: "utf8", env: { ...process.env, LOOMEX_ALLOW_UNSAFE_DEV_INSTALL: "1", ...env } }); }
 test("install preflight is read-only for fresh, pending, unsafe and conflicting states", () => {
   const fixture = realpathSync(mkdtempSync(join(tmpdir(), "loomex-preflight-")));
@@ -45,7 +45,7 @@ test("preflight validates installed inventory/helper and same-version immutable 
     const candidate = join(fixture, "release"); release(candidate); const base = join(fixture, "install");
     const installed = run("install", base, candidate); assert.equal(installed.status, 0, installed.stderr);
     const goodBefore = snapshot(fixture); const good = run("preflight", base, candidate); assert.equal(good.status, 0, good.stderr); assert.equal(JSON.parse(good.stdout).activation.state, "already-installed"); assert.deepEqual(snapshot(fixture), goodBefore);
-    const changed = join(fixture, "changed"); release(changed, "different"); const mismatch = snapshot(fixture); const refused = run("preflight", base, changed); assert.notEqual(refused.status, 0); assert.match(refused.stderr, /different release/); assert.deepEqual(snapshot(fixture), mismatch);
+    const changed = join(fixture, "changed"); release(changed, "different"); const mismatch = snapshot(fixture); const refused = run("preflight", base, changed); assert.notEqual(refused.status, 0); assert.equal(JSON.parse(refused.stdout).error.category, "OWNER_BINDING_MISMATCH"); assert.deepEqual(snapshot(fixture), mismatch);
     writeFileSync(join(base, ".lifecycle-runtime/lifecycle.mjs"), "modified helper"); const helper = snapshot(fixture); assert.notEqual(run("preflight", base, candidate).status, 0); assert.notEqual(run("install", base, candidate).status, 0); assert.deepEqual(snapshot(fixture), helper);
     writeFileSync(join(base, "versions/0.1.0/plugin/dist/server.js"), "modified inventory"); const inventory = snapshot(fixture); assert.notEqual(run("preflight", base, candidate).status, 0); assert.deepEqual(snapshot(fixture), inventory);
   } finally { rmSync(fixture, { recursive: true, force: true }); }
@@ -171,4 +171,16 @@ test("staged preflight preserves installed immutable receipt checks without pend
     const manifest = join(staged, "manifest.json"); const original = readFileSync(manifest); writeFileSync(manifest, canonical({ ...JSON.parse(original.toString()), bootstrap: { lifecycle: { sha256: "0".repeat(64) } } }));
     const changed = snapshot(fixture); assert.notEqual(run("preflight", base, staged, ["--expected-release-path", stable]).status, 0); assert.deepEqual(snapshot(fixture), changed);
   } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("preflight failures preserve fixed typed categories without outputting exception bodies or mutating files", () => {
+ const fixture=realpathSync(mkdtempSync(join(tmpdir(),"loomex-preflight-failure-")));
+ try {
+  const candidate=join(fixture,"private-release-sentinel");release(candidate);const base=join(fixture,"install");mkdirSync(base);symlinkSync(candidate,join(base,"versions"));
+  const before=snapshot(fixture);const unsafe=run("preflight",base,candidate);assert.equal(unsafe.status,1);assert.deepEqual(snapshot(fixture),before);
+  const report=JSON.parse(unsafe.stdout);assert.equal(report.schema,"app.loomex.plugin.install-preflight/v1");assert.equal(report.artifact.eligible,false);assert.equal(report.activation.eligible,false);assert.equal(report.error.category,"OWNER_STATE_UNSAFE");assert.equal(report.reasonCode,"OWNER_STATE_UNSAFE");assert.equal(report.nextAction,"inspect_lifecycle_status");assert.deepEqual(report.owner,{kind:"plugin_lifecycle",schemaVersion:"app.loomex.plugin.lifecycle/v2"});assert.ok(!unsafe.stdout.includes(fixture));assert.ok(!unsafe.stderr.includes(fixture));
+  rmSync(join(base,"versions"));writeFileSync(join(base,"lifecycle.json"),canonical({schema:"future-schema",operation:"install",operationId:"x",phase:"prepared"}));
+  const invalid=snapshot(fixture);const unsupported=run("preflight",base,candidate);assert.equal(unsupported.status,1);assert.equal(JSON.parse(unsupported.stdout).error.category,"OWNER_SCHEMA_UNSUPPORTED");assert.deepEqual(snapshot(fixture),invalid);
+  const missing=run("preflight",join(fixture,"fresh"),join(fixture,"missing-secret-sentinel"));assert.equal(missing.status,1);assert.equal(JSON.parse(missing.stdout).error.category,"OWNER_STATE_UNREADABLE");assert.ok(!missing.stdout.includes("sentinel"));assert.ok(!missing.stderr.includes("sentinel"));
+ } finally {rmSync(fixture,{recursive:true,force:true});}
 });

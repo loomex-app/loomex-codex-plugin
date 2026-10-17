@@ -159,7 +159,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "authoring.chat-native/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1", "execution.workspace-set/v1"])].sort(),
+    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "authoring.chat-native/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1", "execution.workspace-set/v1", "presentation.continuation-resolution/v1"])].sort(),
   );
   const status = catalog.methods.find(method => method.name === "status.get");
   assert.ok(status);
@@ -2545,4 +2545,116 @@ test("workspace-set support is required only for mutations selecting additional 
  assert.equal(runner.requests.length,0);
  assert.ok((runner.negotiations[0]!.params.requiredCapabilities as string[]).includes("execution.workspace-set/v1"));
  assert.equal(REQUIRED_RUNNER_CAPABILITIES.includes("execution.workspace-set/v1"),false);
+});
+
+test("delivery transport preserves legacy and strict continuation closure projections", async () => {
+  const runId = "adc7b3ba-1979-47d2-ac14-638ed91c5f82";
+  const attemptId = "22222222-2222-4222-8222-222222222222";
+  const identity = `follow:${runId}:run_started`;
+  const legacy = {schemaVersion:2, identity, continuation:{kind:"follow",
+    schemaVersion:"loomex.follow-session.continuation/v1", runId, receipt:"abcdefghijklmnop",
+    trigger:"run_started", requestId:null, requestStatus:null}, revision:2, status:"unknown", attemptId};
+  const unresolved = {...legacy, resolution:{state:"unresolved"}, continuationEligible:true};
+  const backendObservation = {schemaVersion:"loomex.continuation-observation/v1", runId,
+    recordDigest:"a".repeat(64), status:"completed", terminal:true,
+    observationDigest:"b".repeat(64), observedAt:1};
+  // Full candidate shape emitted by PresentationStore, including the pre-close
+  // resolution and reconciled backend observation captured in the receipt.
+  const candidate = {kind:"presentation_delivery", retirementEligible:true, organizationId:"org-a",
+    accountSubject:"user-a", installationId:"", recordId:identity, runId, revision:2,
+    generation:null, attemptId, status:"unknown", recordDigest:"a".repeat(64),
+    resolution:{state:"unresolved"}, backendObservation};
+  const receipt = {schemaVersion:"loomex.continuation-resolution/v1", state:"retired_by_owner",
+    receiptId:attemptId, idempotencyKey:"33333333-3333-4333-8333-333333333333",
+    candidate, evidence:{reasonCode:"OWNER_RETIRED_LOCAL_CONTINUATION"}, resolvedAt:1};
+  const retired = {...legacy, resolution:receipt, continuationEligible:false};
+  const terminal = {...retired, resolution:{...receipt, state:"verified_terminal",
+    evidence:{runId, observationDigest:"b".repeat(64)}}};
+  const valid = [legacy, unresolved, retired, terminal];
+  const malformed = [
+    {...retired, resolution:{state:"retired_by_owner"}},
+    {...retired, resolution:{...receipt, receiptId:"invalid"}},
+    {...retired, resolution:{...receipt, idempotencyKey:"invalid"}},
+    {...retired, resolution:{...receipt, resolvedAt:-1}},
+    {...retired, resolution:{...receipt, state:"superseded_by_verified_successor"}},
+    {...retired, resolution:{...receipt, evidence:{reasonCode:"invalid"}}},
+    {...retired, resolution:{...receipt, evidence:{reasonCode:"OWNER_RETIRED_LOCAL_CONTINUATION", extra:true}}},
+    {...retired, resolution:{...receipt, candidate:{...candidate, generation:1}}},
+    {...retired, resolution:{...receipt, candidate:{...candidate, recordDigest:"invalid"}}},
+    {...retired, resolution:{...receipt, candidate:{...candidate, backendObservation:{...backendObservation, terminal:"true"}}}},
+    {...unresolved, resolution:{state:"unresolved", receiptId:attemptId}},
+    {...terminal, resolution:{...terminal.resolution, evidence:{runId, observationDigest:"invalid"}}},
+    {...retired, continuationEligible:"false"},
+    {...retired, unexpected:true},
+  ];
+  const methods = ["presentation.delivery.get", "presentation.delivery.begin", "presentation.delivery.settle"];
+  for (const method of methods) {
+    const schema = resultSchemaFor(method)!;
+    for (const projection of valid) assert.equal(schema.safeParse(projection).success, true, method);
+    for (const projection of malformed) assert.equal(schema.safeParse(projection).success, false, method);
+  }
+  for (const projection of [...valid, ...malformed]) {
+    let runner!: FakeRunner;
+    runner = new FakeRunner((request, socket) => runner.respond(socket, request, projection));
+    await withDirectRunner(runner, async () => {
+      const client = new LocalControlClient();
+      if (valid.includes(projection as typeof legacy)) {
+        const result = await client.call("presentation.delivery.get", {identity}, {mutating:false, timeoutMs:500});
+        assert.deepEqual(result.data, projection);
+      } else {
+        await assert.rejects(client.call("presentation.delivery.get", {identity}, {mutating:false, timeoutMs:500}),
+          (error:unknown) => error instanceof LocalControlError && error.code === "INVALID_RESPONSE");
+      }
+    });
+  }
+});
+
+test("delivery closure capability is requested only after advertisement and before actions", async () => {
+  const capability = "presentation.continuation-resolution/v1";
+  assert.equal(REQUIRED_RUNNER_CAPABILITIES.includes(capability), false);
+  const identity = "follow:adc7b3ba-1979-47d2-ac14-638ed91c5f82:run_started";
+  const legacy = {schemaVersion:2, identity, continuation:{kind:"follow",
+    schemaVersion:"loomex.follow-session.continuation/v1", runId:"adc7b3ba-1979-47d2-ac14-638ed91c5f82",
+    receipt:"abcdefghijklmnop", trigger:"run_started", requestId:null, requestStatus:null},
+    revision:0, status:"ready", attemptId:null};
+  for (const advertised of [false, true]) {
+    let runner!: FakeRunner;
+    runner = new FakeRunner((request, socket) => {
+      const negotiated = runner.negotiations.at(-1)!.params.requiredCapabilities as string[];
+      assert.equal(negotiated.includes(capability), advertised);
+      runner.respond(socket, request, advertised
+        ? {...legacy, resolution:{state:"unresolved"}, continuationEligible:true} : legacy);
+    }, {capabilities:[...REQUIRED_RUNNER_CAPABILITIES, ...(advertised ? [capability] : [])]});
+    await withDirectRunner(runner, async () => {
+      const result = await new LocalControlClient().call("presentation.delivery.get", {identity}, {mutating:false, timeoutMs:500});
+      assert.ok(result.data);
+      assert.equal(result.data.continuationEligible, advertised ? true : undefined);
+    });
+    assert.equal(runner.negotiations.length, advertised ? 2 : 1);
+    assert.equal(runner.requests.length, 1);
+    assert.equal((runner.negotiations[0]!.params.requiredCapabilities as string[]).includes(capability), false);
+    assert.equal(runner.negotiations.every(n => n.connectionId === runner.requests[0]!.connectionId), true);
+  }
+  let handshakes = 0;
+  let withdrawing!: FakeRunner;
+  withdrawing = new FakeRunner(() => assert.fail("action must not precede the capability agreement"), {
+    get capabilities() { return [...REQUIRED_RUNNER_CAPABILITIES, ...(handshakes++ === 0 ? [capability] : [])]; },
+  });
+  await withDirectRunner(withdrawing, async () => {
+    await assert.rejects(new LocalControlClient().call("presentation.delivery.begin", {
+      identity, expectedRevision:0, attemptId:"22222222-2222-4222-8222-222222222222",
+      idempotencyKey:"33333333-3333-4333-8333-333333333333",
+    }, {mutating:true, timeoutMs:500}),
+    (error:unknown) => error instanceof LocalControlError && error.code === "COMPATIBILITY_ERROR");
+  });
+  assert.equal(withdrawing.negotiations.length, 2);
+  assert.equal(withdrawing.requests.length, 0);
+  // The extended runner refuses an old caller's closed record before returning
+  // a sendable legacy status; categorical failure is preserved by the client.
+  let runner!: FakeRunner;
+  runner = new FakeRunner((request, socket) => runner.error(socket, request, "COMPATIBILITY_ERROR", "The local runner is not compatible."));
+  await withDirectRunner(runner, async () => {
+    await assert.rejects(new LocalControlClient().call("presentation.delivery.get", {identity}, {mutating:false, timeoutMs:500}),
+      (error:unknown) => error instanceof LocalControlError && error.code === "COMPATIBILITY_ERROR");
+  });
 });

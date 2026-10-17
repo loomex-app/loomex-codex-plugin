@@ -922,12 +922,16 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     deliveryRecoveryListeners = new AbortController();
     context.querySelector('[data-delivery-recovery]')?.remove();
     const delivery = deliveryController.record;
-    if (!delivery || !["ready", "sending", "not_sent", "rejected", "unknown", "unsupported"].includes(delivery.status)) return;
+    if (!delivery || !["ready", "sending", "not_sent", "rejected", "unknown", "unsupported", "retired", "completed"].includes(delivery.status)) return;
     const box = document.createElement("section");
     box.dataset.deliveryRecovery = "true";
     box.className = "ui-callout";
     box.setAttribute("role", "status");
     const copy = document.createElement("p");
+    if (delivery.status === "retired" || delivery.status === "completed") {
+      copy.textContent = delivery.status === "completed" ? "This continuation is closed after verified run completion. This saved card is read-only." : "The owner retired this local continuation. This saved card is read-only.";
+      box.append(copy); context.append(box); context.hidden = false; return;
+    }
     copy.textContent = delivery.status === "sending" ? "Continuing in chat…" : delivery.status === "unsupported" ? "This card’s host did not advertise chat messaging. Use the chat instructions below." : delivery.status === "not_sent" ? "Your action was accepted, but chat continuation has not been sent." : delivery.status === "unknown" ? "Chat delivery could not be confirmed. Your completed action will not be repeated." : "Continue in chat using the instructions below. Your completed action will not be repeated.";
     const details = document.createElement("details"); details.className = "ui-disclosure";
     const label = document.createElement("summary"); label.textContent = "Chat instructions";

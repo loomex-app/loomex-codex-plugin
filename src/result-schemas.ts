@@ -17,7 +17,36 @@ const DeliveryContinuation = z.discriminatedUnion("kind", [
   z.object({kind:z.literal("question"),schemaVersion:z.literal("loomex.question-continuation/v1"),requestId:z.uuid(),schemaDigest:z.string().length(64)}).strict(),
   z.object({kind:z.literal("follow"),schemaVersion:z.literal("loomex.follow-session.continuation/v1"),runId:z.uuid(),receipt:z.string().min(16).max(2048),trigger:z.string().min(1).max(64),requestId:z.string().nullable(),requestStatus:z.string().min(1).max(32).nullable()}).strict(),
 ]);
-const DeliveryProjection = z.object({schemaVersion:z.literal(2),identity:z.string().min(1).max(384),continuation:DeliveryContinuation,revision:NonNegativeInteger,status:z.enum(["ready","sending","not_sent","acknowledged","rejected","unknown"]),attemptId:z.uuid().nullable()}).strict();
+const DeliveryStatus = z.enum(["ready", "sending", "not_sent", "acknowledged", "rejected", "unknown"]);
+const ContinuationDigest = z.string().regex(/^[a-f0-9]{64}$/);
+const ContinuationBoundedString = z.string().min(1).max(512);
+const UnresolvedContinuation = z.object({state:z.literal("unresolved")}).strict();
+const ContinuationObservation = z.object({
+  schemaVersion:z.literal("loomex.continuation-observation/v1"), runId:ContinuationBoundedString,
+  recordDigest:ContinuationDigest,
+  status:z.enum(["queued", "running", "waiting_for_human", "waiting", "pending", "active", "paused", "completed", "failed", "cancelled", "canceled", "deleted", "succeeded", "error"]),
+  terminal:z.boolean(), observationDigest:ContinuationDigest, observedAt:NonNegativeInteger,
+}).strict();
+const DeliveryResolutionCandidate = z.object({
+  kind:z.literal("presentation_delivery"), retirementEligible:z.boolean(),
+  organizationId:ContinuationBoundedString, accountSubject:ContinuationBoundedString,
+  installationId:z.literal(""), recordId:z.string().min(1).max(384), runId:ContinuationBoundedString.nullable(),
+  revision:NonNegativeInteger, generation:z.null(), attemptId:NullableString, status:DeliveryStatus,
+  recordDigest:ContinuationDigest, resolution:UnresolvedContinuation,
+  backendObservation:ContinuationObservation.nullable(),
+}).strict();
+const ClosedDeliveryResolution = {
+  schemaVersion:z.literal("loomex.continuation-resolution/v1"), receiptId:z.uuid(), idempotencyKey:z.uuid(),
+  candidate:DeliveryResolutionCandidate, resolvedAt:NonNegativeInteger,
+};
+const DeliveryResolution = z.union([
+  UnresolvedContinuation,
+  z.object({...ClosedDeliveryResolution, state:z.literal("retired_by_owner"),
+    evidence:z.object({reasonCode:z.literal("OWNER_RETIRED_LOCAL_CONTINUATION")}).strict()}).strict(),
+  z.object({...ClosedDeliveryResolution, state:z.literal("verified_terminal"),
+    evidence:z.object({runId:ContinuationBoundedString, observationDigest:ContinuationDigest}).strict()}).strict(),
+]);
+const DeliveryProjection = z.object({schemaVersion:z.literal(2),identity:z.string().min(1).max(384),continuation:DeliveryContinuation,revision:NonNegativeInteger,status:DeliveryStatus,attemptId:z.uuid().nullable(),resolution:DeliveryResolution.optional(),continuationEligible:z.boolean().optional()}).strict();
 const StartHandoffLifecycle = z.enum(["prepared", "approved", "committing", "committed", "ambiguous", "expired"]);
 const StartHandoffNextAction = z.enum(["approve", "commit", "reconcile", "none"]);
 const StartHandoffStatus = {

@@ -114,7 +114,7 @@ export function createPersonaController(host:PersonaControllerServices) {
       const status=await host.deliver(contextRef,personaChatMessage(contextRef));
       if(disposed||generation!==epoch)return;
       clearOwnedError();
-      summary.textContent=status==="acknowledged"?"Persona selection sent to this chat.":status==="unknown"?"Chat delivery is uncertain. Refresh checks the saved delivery; do not select again.":"Persona context is ready. Chat delivery needs attention.";
+      summary.textContent=status==="retired"||status==="completed"?"This saved continuation is closed. The Persona context is read-only.":status==="acknowledged"?"Persona selection sent to this chat.":status==="unknown"?"Chat delivery is uncertain. Refresh checks the saved delivery; do not select again.":"Persona context is ready. Chat delivery needs attention.";
     }catch(error){if(generation===epoch)reportError(error);}finally{if(generation===epoch){busy=false;render();}}
   }
   async function chatFromRow(person:Person):Promise<void>{if(busy||readStale||!host.messageAvailable()||!host.lifecycle.permissions().mutate)return;await detail(person.id,undefined,true,person.organizationId);if(selected?.id!==person.id||selected.organizationId!==person.organizationId||readStale)return;await use();}

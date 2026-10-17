@@ -3,7 +3,7 @@ import { formatFollowContinuationMarkdown } from "../monitoring-contract.js";
 import type { JsonObject } from "./contracts.js";
 import { UiTransportError, UiResultDecodeError } from "./result-decoder.js";
 
-export type DeliveryStatus = "ready" | "sending" | "not_sent" | "acknowledged" | "rejected" | "unknown" | "unsupported";
+export type DeliveryStatus = "ready" | "sending" | "not_sent" | "acknowledged" | "rejected" | "unknown" | "unsupported" | "retired" | "completed";
 export type ContinuationPurpose = "reviewed_start" | "accepted_interaction" | "follow_run" | "long_answer" | "persona_chat";
 export interface ContinuationDeliveryRecord {
   schemaVersion: 1 | 2;
@@ -12,17 +12,29 @@ export interface ContinuationDeliveryRecord {
   text: string;
   status: DeliveryStatus;
   attemptId: string;
+  continuationEligible?: boolean;
+  resolution?: DeliveryResolution;
   failureCode?: string;
   failureStage?: "reconcile" | "read" | "begin" | "send" | "settle";
   /** Transient, value-free shape of a failed host projection. */
   failureDiagnostic?: string;
 }
+export type DeliveryResolution = {state: "unresolved"} | {
+  schemaVersion: "loomex.continuation-resolution/v1";
+  state: "retired_by_owner" | "verified_terminal";
+  receiptId: string; idempotencyKey: string;
+  candidate: {kind: "presentation_delivery"; organizationId: string; accountSubject: string; installationId: ""; recordId: string; runId: string | null; revision: number; generation: null; attemptId: string | null; recordDigest: string; status: string};
+  evidence: {reasonCode: "OWNER_RETIRED_LOCAL_CONTINUATION"} | {runId: string; observationDigest: string};
+  resolvedAt: number;
+};
 export interface DeliveryProjection {
   schemaVersion: 2;
   identity: string;
   continuation: JsonObject;
   revision: number;
-  status: Exclude<DeliveryStatus, "unsupported">;
+  continuationEligible?: boolean;
+  resolution?: DeliveryResolution;
+  status: Exclude<DeliveryStatus, "unsupported" | "retired" | "completed">;
   attemptId: string | null;
 }
 export interface DeliveryProjectionContext {
@@ -57,6 +69,29 @@ export class DeliveryProjectionError extends UiTransportError {
     this.projectionDiagnostic = projectionDiagnostic(value, context);
   }
 }
+function validResolution(v: Partial<DeliveryProjection>): boolean {
+  const r = v.resolution;
+  // Old runners have neither additive field. A partially present contract is
+  // never evidence that a continuation is still eligible.
+  if (r === undefined && v.continuationEligible === undefined) return true;
+  if (!r || typeof r !== "object" || Array.isArray(r)) return false;
+  if (r.state === "unresolved") return v.continuationEligible === true;
+  if (!["retired_by_owner", "verified_terminal"].includes(r.state) || v.continuationEligible !== false) return false;
+  const closed = r as Exclude<DeliveryResolution, {state: "unresolved"}>;
+  const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
+  const bounded = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= 512;
+  const digest = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  const c = closed.candidate, e = closed.evidence;
+  if (closed.schemaVersion !== "loomex.continuation-resolution/v1" || !uuid(closed.receiptId) || !uuid(closed.idempotencyKey) || !Number.isSafeInteger(closed.resolvedAt) || closed.resolvedAt < 0 ||
+      !c || c.kind !== "presentation_delivery" || !bounded(c.organizationId) || !bounded(c.accountSubject) || c.installationId !== "" ||
+      c.recordId !== v.identity || c.revision !== v.revision || c.generation !== null || c.attemptId !== (v.attemptId ?? null) || c.status !== v.status ||
+      !(c.runId === null || bounded(c.runId)) || c.runId !== (v.continuation?.runId ?? null) || !digest(c.recordDigest) || !e || typeof e !== "object") return false;
+  // A receipt for a matching recordId still cannot authorize a continuation
+  // whose embedded run, request, handoff, or Persona identity differs.
+  try { deliveryMessage(v as DeliveryProjection); } catch { return false; }
+  return closed.state === "retired_by_owner" ? "reasonCode" in e && e.reasonCode === "OWNER_RETIRED_LOCAL_CONTINUATION"
+    : "runId" in e && typeof c.runId === "string" && e.runId === c.runId && digest(e.observationDigest);
+}
 export function decodeDeliveryProjection(value: unknown, context: DeliveryProjectionContext = {channel:"unknown",method:"unknown"}): DeliveryProjection {
   const v = value as Partial<DeliveryProjection> | null;
   // The installed host can omit null-valued metadata properties. Only the
@@ -69,7 +104,7 @@ export function decodeDeliveryProjection(value: unknown, context: DeliveryProjec
       !Number.isSafeInteger(v.revision) || v.revision! < 0 || !v.status ||
       !deliveryStatuses.includes(v.status) ||
       !(elidedInitialAttempt || v.attemptId === null || typeof v.attemptId === "string") ||
-      !v.continuation || typeof v.continuation !== "object" || Array.isArray(v.continuation)) {
+      !v.continuation || typeof v.continuation !== "object" || Array.isArray(v.continuation) || !validResolution(v)) {
     throw new DeliveryProjectionError(value, context);
   }
   return elidedInitialAttempt ? { ...v, attemptId: null } as DeliveryProjection : v as DeliveryProjection;
@@ -87,7 +122,7 @@ export interface DeliveryServices {
   journal: DeliveryJournal;
   send(text: string): Promise<unknown>;
 }
-const statuses = new Set<DeliveryStatus>(["ready", "sending", "not_sent", "acknowledged", "rejected", "unknown", "unsupported"]);
+const statuses = new Set<DeliveryStatus>(["ready", "sending", "not_sent", "acknowledged", "rejected", "unknown", "unsupported", "retired", "completed"]);
 export function decodeDelivery(value: unknown): ContinuationDeliveryRecord | undefined {
   if (!value || typeof value !== "object") return;
   const r = value as Partial<ContinuationDeliveryRecord>;
@@ -137,7 +172,7 @@ export function deliveryMessage(projection: DeliveryProjection): string {
   });
 }
 function projectedStatus(value: DeliveryProjection): DeliveryStatus {
-  return value.status === "sending" ? "unknown" : value.status;
+  return value.continuationEligible === false ? value.resolution?.state === "verified_terminal" ? "completed" : "retired" : value.status === "sending" ? "unknown" : value.status;
 }
 function failureCode(error: unknown, fallback: string): string {
   const code = error instanceof UiResultDecodeError ? error.diagnostic.code : error instanceof UiTransportError ? error.code : undefined;
@@ -168,25 +203,53 @@ export class ContinuationDeliveryController {
     // Rendering an accepted result must not invalidate its in-flight continuation.
     if (this.#active) return;
     const restored = decodeDelivery(value);
+    if (this.record?.continuationEligible === false && (!restored || restored.identity === this.record.identity)) return;
     if (!restored && this.record) return;
     ++this.#generation;
     this.record = restored;
     this.host.changed?.();
   }
+  #applyClosed(record: ContinuationDeliveryRecord, projection: DeliveryProjection): boolean {
+    if (projection.continuationEligible !== false) return false;
+    record.continuationEligible = false;
+    if (projection.resolution) record.resolution = projection.resolution;
+    record.status = projectedStatus(projection);
+    record.text = "";
+    delete record.failureCode; delete record.failureStage; delete record.failureDiagnostic;
+    return true;
+  }
   async reconcile(input: Pick<ContinuationDeliveryRecord, "identity" | "purpose" | "text">): Promise<void> {
     if (this.#disposed) return;
     if (this.#active) {
       if (this.record?.identity !== input.identity) this.#pendingReconciliation = {input, scope:this.host.scope?.()};
+      else {
+        const activeRecord = this.record, scope = this.host.scope?.();
+        try {
+          const saved = decodeDeliveryProjection(await this.host.journal.get(input.identity));
+          if (!this.#disposed && this.record === activeRecord && scope === this.host.scope?.() && saved.identity === input.identity && this.#applyClosed(activeRecord, saved)) this.host.changed?.();
+        } catch (error) {
+          // A malformed closure observation cannot be converted into a fresh
+          // acknowledgement when an older host callback arrives afterward.
+          if (error instanceof DeliveryProjectionError && !this.#disposed && this.record === activeRecord && scope === this.host.scope?.()) {
+            activeRecord.continuationEligible = false; activeRecord.status = "unknown"; activeRecord.text = "";
+            activeRecord.failureStage = "reconcile"; activeRecord.failureCode = "DELIVERY_PROJECTION_INVALID";
+            retainProjectionDiagnostic(activeRecord, error); this.host.changed?.();
+          }
+        }
+      }
       return;
     }
-    const generation = ++this.#generation, scope = this.host.scope?.();
+    const generation = ++this.#generation, scope = this.host.scope?.(), previous = this.record;
     try {
-      const saved = await this.host.journal.get(input.identity);
+      const saved = decodeDeliveryProjection(await this.host.journal.get(input.identity));
       if (this.#disposed || this.#active || generation !== this.#generation || scope !== this.host.scope?.()) return;
       if (saved.identity !== input.identity) throw new Error("DELIVERY_IDENTITY_MISMATCH");
-      this.record = {...input, text:deliveryMessage(saved), schemaVersion:2, attemptId:saved.attemptId || this.host.uuid(), status:projectedStatus(saved)};
+      if (previous?.identity === input.identity && previous.continuationEligible === false && saved.continuationEligible !== false) return;
+      const record: ContinuationDeliveryRecord = {...input, text:saved.continuationEligible === false ? "" : deliveryMessage(saved), schemaVersion:2, attemptId:saved.attemptId || this.host.uuid(), status:projectedStatus(saved)};
+      this.#applyClosed(record, saved); this.record = record;
     } catch (error) {
       if (generation !== this.#generation || this.#disposed || scope !== this.host.scope?.()) return;
+      if (previous?.identity === input.identity && previous.continuationEligible === false) return;
       const record: ContinuationDeliveryRecord = {...input, schemaVersion:2, attemptId:this.host.uuid(), status:"unknown", failureStage:"reconcile", failureCode:failureCode(error,"DELIVERY_RECONCILIATION_UNAVAILABLE")};
       retainProjectionDiagnostic(record, error);
       this.record = record;
@@ -207,22 +270,25 @@ export class ContinuationDeliveryController {
     // Local uncertainty may only describe a failed read, not a send. Always
     // consult durable authority before deciding whether an attempt exists.
     // Preserve an observed host acknowledgement if its settlement was lost.
-    if (previous?.identity === input.identity && previous.status === "acknowledged") return previous.status;
+    if (previous?.identity === input.identity && (previous.status === "acknowledged" || previous.continuationEligible === false)) return previous.status;
     const generation = ++this.#generation, scope = this.host.scope?.();
     const record: ContinuationDeliveryRecord = { ...input, schemaVersion: 2, attemptId: this.host.uuid(), status: "ready" };
     this.record = record;
     this.#active = true;
+    const closed = () => record.continuationEligible === false;
     const current = () => !this.#disposed && generation === this.#generation && this.record === record && this.host.scope?.() === scope;
     let projection: DeliveryProjection | undefined;
     let dispatched = false, beginning = false;
     const settle = async (status: "not_sent" | "acknowledged" | "rejected" | "unknown") => {
-      if (!projection || projection.attemptId !== record.attemptId) return;
+      if (!projection || projection.continuationEligible === false || record.continuationEligible === false || projection.attemptId !== record.attemptId) return;
       await this.host.journal.settle({identity:input.identity, expectedRevision:projection.revision, attemptId:record.attemptId, idempotencyKey:this.host.uuid(), status});
     };
     try {
-      projection = await this.host.journal.get(input.identity);
+      projection = decodeDeliveryProjection(await this.host.journal.get(input.identity));
       if (!current()) return "unknown";
+      if (closed()) return record.status;
       if (projection.identity !== input.identity) throw new Error("DELIVERY_IDENTITY_MISMATCH");
+      if (this.#applyClosed(record, projection)) return record.status;
       record.text = deliveryMessage(projection);
       if (!["ready", "not_sent", "rejected"].includes(projection.status)) {
         record.status = projectedStatus(projection); return record.status;
@@ -230,15 +296,19 @@ export class ContinuationDeliveryController {
       if (projection.status !== "ready" && !retry) { record.status = projection.status; return record.status; }
       if (!automatic || !this.host.available()) { record.status = "unsupported"; record.failureCode = "HOST_MESSAGE_UNAVAILABLE"; return record.status; }
       beginning = true;
-      projection = await this.host.journal.begin({identity:input.identity, expectedRevision:projection.revision, attemptId:record.attemptId, idempotencyKey:this.host.uuid()});
-      if (projection.identity !== input.identity || projection.attemptId !== record.attemptId || projection.status !== "sending") throw new Error("DELIVERY_ATTEMPT_MISMATCH");
+      projection = decodeDeliveryProjection(await this.host.journal.begin({identity:input.identity, expectedRevision:projection.revision, attemptId:record.attemptId, idempotencyKey:this.host.uuid()}));
+      if (projection.identity !== input.identity) throw new Error("DELIVERY_IDENTITY_MISMATCH");
+      if (this.#applyClosed(record, projection) || record.continuationEligible === false) return record.status;
+      if (projection.attemptId !== record.attemptId || projection.status !== "sending") throw new Error("DELIVERY_ATTEMPT_MISMATCH");
       if (!current()) { await settle("not_sent").catch(() => undefined); return "unknown"; }
       record.status = "sending"; this.host.changed?.();
       dispatched = true;
       try {
         const result = await this.host.send(record.text);
+        if (closed()) return record.status;
         record.status = result && typeof result === "object" && (result as {isError?:unknown}).isError === true ? "rejected" : "acknowledged";
       } catch (error) {
+        if (closed()) return record.status;
         record.status = error instanceof UiTransportError && !["HOST_TIMEOUT", "HOST_BRIDGE_DISPOSED"].includes(error.code || "") ? "rejected" : "unknown";
         record.failureStage = "send";
         record.failureCode = failureCode(error,"DELIVERY_HOST_RESPONSE_UNCONFIRMED");
@@ -247,6 +317,7 @@ export class ContinuationDeliveryController {
       await settle(record.status as "acknowledged" | "rejected" | "unknown").catch(error => { record.failureStage = "settle"; record.failureCode = failureCode(error,"DELIVERY_SETTLEMENT_UNAVAILABLE"); });
       return record.status;
     } catch (error) {
+      if (closed()) return record.status;
       record.status = dispatched || beginning ? "unknown" : "not_sent";
       record.failureStage = beginning ? "begin" : "read";
       record.failureCode = failureCode(error, beginning ? "DELIVERY_BEGIN_UNCONFIRMED" : "DELIVERY_PREPARATION_UNAVAILABLE");

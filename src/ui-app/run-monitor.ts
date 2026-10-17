@@ -14,7 +14,7 @@ export interface Continuation extends JsonObject { schema: string; intent: strin
  * not prove that a model turn began. Unknown delivery is deliberately not
  * retryable because the host might already have posted the continuation.
  */
-export interface RunChatHandoff {runId:string;status:"not_sent"|"sending"|"acknowledged"|"manual"|"rejected"|"unknown";continuation:Continuation;}
+export interface RunChatHandoff {runId:string;status:"not_sent"|"sending"|"acknowledged"|"manual"|"rejected"|"unknown"|"retired"|"completed";continuation:Continuation;}
 export interface RunMonitorServices {
   deliveryChanged?():void;
   readonly delivery: ContinuationDeliveryController;
@@ -493,6 +493,8 @@ export function createRunMonitorController(host:RunMonitorServices) {
       ? queueObservation(flow.result.queueObservation, flow.result.execution) : undefined;
     if (queued && !terminal) context.append(element("p", { className: "ui-caption" }, `${queueLabel(queued)} · ${queued.waitSeconds}s queued`));
     summary.textContent = terminal ? `${formatStatus(flow.result.execution?.status)}. Review the result below.`
+      : chatHandoff?.status === "retired" || chatHandoff?.status === "completed"
+        ? "This saved continuation is closed. Its current summary is shown here."
       : chatHandoff?.status === "sending"
         ? "Run started. Opening monitoring in chat…"
       : chatHandoff?.status === "acknowledged"

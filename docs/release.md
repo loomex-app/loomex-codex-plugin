@@ -34,3 +34,25 @@ The package allowlist excludes Git metadata, environment files, credentials, sec
 CI runs `npm ci`, `npm run typecheck`, `npm test`, `scripts/test-packaging.sh`, and `scripts/test-node-runtime.sh`. Packaging tests use an explicit temporary install root, accept only an explicitly marked unsigned fixture, prove deterministic output and payload-tamper rejection, reject development/cache paths, validate absolute launcher binding, launch the MCP server and lifecycle hook from the plugin-only cached layout, keep a base marketplace registration valid across an upgrade, reject unowned marketplace metadata, and remove only receipted files. The runtime test downloads the official pinned archive, verifies its digest and reported version, and starts the compiled MCP server with that exact Node binary. An independent parallel CI job rebuilds and tests its captured source snapshot, then installs Codex CLI 0.146.0 on its disposable host, registers the stable installation base, installs the plugin through the real Codex command, checks discovery, and removes both entries.
 
 The standalone production builder installs locked plugin tooling before checking the committed offline UI export. It requires no sibling frontend checkout. Regenerate and verify that export against the intended frontend revision before cutting the clean release commit. All packaged UI assets come from the immutable source snapshot; copied-package validation independently rejects retired UI implementations even when their asset digests are self-consistent.
+
+
+Plugin install preflight failures also emit a bounded JSON result on stdout and
+exit with status 1. They retain `app.loomex.plugin.install-preflight/v1`, set
+artifact and activation eligibility to false, and identify the fixed
+`plugin_lifecycle` owner with its lifecycle schema. `error.category` and
+`reasonCode` use only `OWNER_SCHEMA_UNSUPPORTED`, `OWNER_STATE_UNSAFE`,
+`OWNER_STATE_UNREADABLE`, `OWNER_STATE_DRIFT`, `OWNER_SIGNATURE_REJECTED`,
+`OWNER_AUTHORIZATION_REQUIRED`, `OWNER_BINDING_MISMATCH`, or
+`OWNER_STATE_INVALID`. The next action is `inspect_lifecycle_status` or
+`resume_plugin_operation`. Exception bodies, archive values, and filesystem
+paths are excluded from failure output. Successful preflight output retains its
+existing contract; preflight itself remains read-only.
+
+Saved chat continuation projections may include `continuationEligible` and a
+runner-owned `loomex.continuation-resolution/v1` receipt. The card verifies the
+receipt identity, original delivery status, revision, attempt, and evidence
+before displaying an owner retirement or verified terminal closure. Closed
+continuations render fixed read-only copy without a resume command or retry
+control, and never reserve, send, or settle another delivery. Retirement does
+not claim host acknowledgement or stop a provider run. Older runner projections
+without either additive field retain their existing delivery behavior.

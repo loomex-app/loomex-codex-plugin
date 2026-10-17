@@ -470,6 +470,17 @@ export class LocalControlClient {
               failNonDefinitiveResponse("INVALID_RESPONSE");
               return;
             }
+            // Older runners retain their six-field delivery projection. Only
+            // request the additive closure projection after it is advertised;
+            // the second handshake still precedes every action on this socket.
+            if (method.startsWith("presentation.delivery.") &&
+                capabilities?.has("presentation.continuation-resolution/v1") &&
+                !requiredCapabilities.includes("presentation.continuation-resolution/v1")) {
+              requiredCapabilities.push("presentation.continuation-resolution/v1");
+              const extension = {...negotiation, params:{...negotiation.params, requiredCapabilities}};
+              socket?.write(`${JSON.stringify(extension)}\n`);
+              continue;
+            }
             // Internal operator diagnostics is additive. Ordinary readiness stays
             // {}, and an older daemon never receives an unsupported opt-in field.
             if (method === "status.get" && params.includeFingerprintDiagnostics === true &&

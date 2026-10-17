@@ -201,3 +201,63 @@ test("reviewed Start delivery and recovery share commit-then-follow instructions
  assert.equal(context.handoffRef,ref);
  assert.equal(context.runId,undefined,"a prompt cannot invent the not-yet-committed run ID");
 });
+
+function closedProjection(status: DeliveryProjection["status"] = "ready", terminal = false): DeliveryProjection {
+ const runId = "11111111-1111-4111-8111-111111111111";
+ const value: DeliveryProjection = {schemaVersion:2,identity:`follow:${runId}:selected`,continuation:{runId,receipt:"abcdefghijklmnop"},revision:4,status,attemptId:status === "ready" ? null : "owned-attempt",continuationEligible:false};
+ value.resolution = {schemaVersion:"loomex.continuation-resolution/v1",state:terminal ? "verified_terminal" : "retired_by_owner",receiptId:"22222222-2222-4222-8222-222222222222",idempotencyKey:"33333333-3333-4333-8333-333333333333",candidate:{kind:"presentation_delivery",organizationId:"org",accountSubject:"owner",installationId:"",recordId:value.identity,runId,revision:value.revision,generation:null,attemptId:value.attemptId,recordDigest:"a".repeat(64),status},evidence:terminal ? {runId,observationDigest:"b".repeat(64)} : {reasonCode:"OWNER_RETIRED_LOCAL_CONTINUATION"},resolvedAt:1};
+ return value;
+}
+for (const status of ["ready", "unknown", "acknowledged"] as const) test(`retired ${status} delivery stays read-only after remount and explicit retry`, async () => {
+ const projection = closedProjection(status); let begin=0,send=0,settle=0;
+ const api:DeliveryJournal={get:async()=>projection,begin:async()=>{begin++;return projection;},settle:async()=>{settle++;return projection;}};
+ const request = {identity:projection.identity,purpose:"follow_run" as const,text:"old continuation"};
+ for(let remount=0;remount<2;remount++) {
+  const c = new ContinuationDeliveryController({available:()=>true,uuid:()=>"new",journal:api,send:async()=>{send++;return {};}});
+  await c.reconcile(request); assert.equal(c.record?.status,"retired"); assert.equal(c.record?.text,"");
+  assert.equal(await c.deliver(request,true),"retired");
+ }
+ assert.deepEqual({begin,send,settle},{begin:0,send:0,settle:0});
+});
+test("closure proof validates exact identity and receipt, and incomplete projection fails closed", () => {
+ const good = closedProjection(); assert.equal(decodeDeliveryProjection(good).status,"ready");
+ const wrongIdentity=structuredClone(good);wrongIdentity.identity="follow:different-run:selected";(wrongIdentity.resolution as any).candidate.recordId=wrongIdentity.identity;
+ const bad: unknown[] = [ wrongIdentity, {...good,resolution:undefined}, {...good,continuationEligible:true}, {...good,resolution:{state:"retired_by_owner"}}, {...good,resolution:{...good.resolution,receiptId:""}} ];
+ for(const field of ["recordId","runId","revision","attemptId","status","recordDigest","installationId","generation"]) {
+  const value=structuredClone(good); (value.resolution as any).candidate[field]="invalid"; bad.push(value);
+ }
+ for(const value of bad) assert.throws(()=>decodeDeliveryProjection(value),DeliveryProjectionError);
+ assert.equal(decodeDeliveryProjection({...good,continuationEligible:true,resolution:{state:"unresolved"}}).continuationEligible,true);
+});
+test("verified terminal projection uses completed display without claiming delivery acknowledgement", async () => {
+ const projection=closedProjection("unknown",true);let effects=0;
+ const c=new ContinuationDeliveryController({available:()=>true,uuid:()=>"new",journal:{get:async()=>projection,begin:async()=>{effects++;return projection;},settle:async()=>{effects++;return projection;}},send:async()=>{effects++;return {};}});
+ assert.equal(await c.deliver({identity:projection.identity,purpose:"follow_run",text:"old"}),"completed");assert.equal(effects,0);
+});
+test("retirement returned by reservation prevents dispatch or settlement", async () => {
+ const projection=closedProjection();const open={...projection,continuationEligible:true,resolution:{state:"unresolved" as const}};let effects=0;
+ const c=new ContinuationDeliveryController({available:()=>true,uuid:()=>"new",journal:{get:async()=>open,begin:async()=>projection,settle:async()=>{effects++;return projection;}},send:async()=>{effects++;return {};}});
+ assert.equal(await c.deliver({identity:projection.identity,purpose:"follow_run",text:"old"}),"retired");assert.equal(effects,0);
+});
+test("a late host callback cannot acknowledge or settle an observed retired continuation", async () => {
+ const projection=closedProjection("sending");let closed=false,finish!:(value:unknown)=>void,settles=0;
+ const open={...projection,continuationEligible:true,resolution:{state:"unresolved" as const},status:"ready" as const,attemptId:null};
+ const c=new ContinuationDeliveryController({available:()=>true,uuid:()=>"owned-attempt",journal:{get:async()=>closed ? projection : open,begin:async()=>({...open,status:"sending",attemptId:"owned-attempt"}),settle:async()=>{settles++;return open;}},send:()=>new Promise(resolve=>{finish=resolve;})});
+ const request={identity:projection.identity,purpose:"follow_run" as const,text:"old"};
+ const pending=c.deliver(request);while(!finish)await Promise.resolve();closed=true;await c.reconcile(request);
+ assert.equal(c.record?.status,"retired");finish({});assert.equal(await pending,"retired");assert.equal(c.record?.status,"retired");assert.equal(settles,0);
+});
+test("an older open read cannot reactivate an observed retirement", async () => {
+ const projection=closedProjection();let saved=projection, effects=0;
+ const c=new ContinuationDeliveryController({available:()=>true,uuid:()=>"new",journal:{get:async()=>saved,begin:async()=>{effects++;return saved;},settle:async()=>{effects++;return saved;}},send:async()=>{effects++;return {};}});
+ const request={identity:projection.identity,purpose:"follow_run" as const,text:"old"};
+ await c.reconcile(request);saved={...projection,continuationEligible:true,resolution:{state:"unresolved"}};await c.reconcile(request);
+ c.restore({...request,text:continuationMessage("old",{runId:projection.continuation.runId,trigger:"selected"}),schemaVersion:2,status:"ready",attemptId:"old"});
+ assert.equal(c.record?.status,"retired");assert.equal(await c.deliver(request,true),"retired");assert.equal(effects,0);
+});
+test("retirement observed while the initial read waits prevents reservation", async () => {
+ const projection=closedProjection();let release!:(value:DeliveryProjection)=>void, reads=0,effects=0;
+ const c=new ContinuationDeliveryController({available:()=>true,uuid:()=>"new",journal:{get:async()=>++reads===1 ? new Promise(resolve=>{release=resolve;}) : projection,begin:async()=>{effects++;return projection;},settle:async()=>{effects++;return projection;}},send:async()=>{effects++;return {};}});
+ const request={identity:projection.identity,purpose:"follow_run" as const,text:"old"};const pending=c.deliver(request);await c.reconcile(request);
+ release({...projection,continuationEligible:true,resolution:{state:"unresolved"}});assert.equal(await pending,"retired");assert.equal(effects,0);
+});
