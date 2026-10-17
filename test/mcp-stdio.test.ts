@@ -159,7 +159,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "authoring.chat-native/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1", "execution.workspace-set/v1", "presentation.continuation-resolution/v1", "auth.recovery-binding/v1", "operation-cache.retirement-fence/v1", "uninstall-work.generations/v1"])].sort(),
+    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "authoring.chat-native/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1", "execution.workspace-set/v1", "presentation.continuation-resolution/v1", "auth.recovery-binding/v1", "operation-cache.retirement-fence/v1", "uninstall-work.generations/v1", "uninstall-work.inactive-failed-reconcile/v1"])].sort(),
   );
   const status = catalog.methods.find(method => method.name === "status.get");
   assert.ok(status);
