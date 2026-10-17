@@ -246,6 +246,13 @@ export const ToolOutputSchema = z
 export type ToolOutput = z.infer<typeof ToolOutputSchema>;
 
 const SAFE_MESSAGES: Readonly<Record<string, string>> = {
+  OPERATION_RECONCILIATION_REQUIRED: "This operation has an uncertain outcome. Reconcile the original attempt before continuing.",
+  OPERATION_RETIRED: "This local operation was retired and cannot be resumed.",
+  OPERATION_CACHE_RETIRED: "This local operation was retired and cannot be resumed.",
+  AUTH_RECOVERY_BINDING_REQUIRED: "Refresh Connection to identify the pending authentication operation before recovering it.",
+  AUTH_RECOVERY_TARGET_CHANGED: "This authentication recovery belongs to an earlier operation. Refresh Connection before continuing.",
+  AUTH_RECOVERY_REFERENCE_MISMATCH: "This authentication recovery belongs to an earlier operation. Refresh Connection before continuing.",
+  AUTH_RECOVERY_REJECTED: "The original authentication recovery was rejected. Refresh Connection to review the current operation.",
   AUTHORIZATION_FAILED: "The current Loomex grant does not authorize this operation. Review the required scopes before continuing.",
   AUTH_SCOPE_VERIFICATION_REQUIRED: "Persona scope verification is required for the selected organization. Inspect the existing grant first; obtain explicit approval for verified missing scopes before upgrading it.",
   PERSONA_CONFIG_CHANGED: "The Persona configuration changed. Read the exact context again before continuing.",

@@ -360,7 +360,7 @@ test("dispose fences scheduled and in-flight persistence", async () => {
   assert.equal(subject.controller.state.draft, null);
 });
 
-test("accepted cleanup keeps its captured deletion tuple and preserves a replacement draft", async () => {
+test("accepted cleanup detaches locally without a remote deletion and preserves a replacement draft", async () => {
   const subject = fixture();
   subject.controller.scheduleInteractionDraft();
   assert.equal(await subject.controller.flushInteractionDraft(), true);
@@ -372,15 +372,22 @@ test("accepted cleanup keeps its captured deletion tuple and preserves a replace
   assert.equal(await subject.controller.flushInteractionDraft(), true);
   assert.equal(subject.controller.state.draft?.requestId, requestB);
   assert.equal(await subject.controller.deleteAcceptedDraft(cleanup), true);
-  const deletion = subject.calls.at(-1);
-  assert.equal(deletion?.name, "loomex_interaction_draft_delete");
-  assert.deepEqual(deletion?.args, {
-    requestId: requestA,
-    expectedRevision: 1,
-    expectedSchemaDigest: digest,
-    idempotencyKey: cleanup.idempotencyKey,
-  });
+  assert.equal(subject.calls.some(call => call.name === "loomex_interaction_draft_delete"), false);
   assert.equal(subject.controller.state.draft?.requestId, requestB);
+});
+
+test("accepted cleanup quiesces the exact local draft without generating another mutation", async () => {
+  const subject = fixture();
+  subject.controller.scheduleInteractionDraft();
+  assert.equal(await subject.controller.flushInteractionDraft(), true);
+  const count = subject.calls.length;
+  const cleanup = subject.controller.captureAcceptedDraft(requestA);
+  assert.ok(cleanup);
+  assert.equal(await subject.controller.deleteAcceptedDraft(cleanup), true);
+  assert.equal(subject.controller.state.scope, null);
+  assert.equal(subject.controller.state.draft, null);
+  assert.equal(subject.controller.state.dirty, false);
+  assert.equal(subject.calls.length, count);
 });
 
 test("restore retains the original failure and clears it after successful recovery", async () => {

@@ -90,12 +90,6 @@ test("accepted mutation presentation cannot erase its cleanup tuple or detach a 
   assert.deepEqual(calls.map(({ name, args }) => ({ name, requestId: args.requestId })), [
     { name: "loomex_interaction_draft_update", requestId: requestA },
     { name: "loomex_interaction_draft_update", requestId: requestB },
-    { name: "loomex_interaction_draft_delete", requestId: requestA },
   ]);
-  assert.deepEqual(calls.at(-1)?.args, {
-    requestId: requestA,
-    expectedRevision: 1,
-    expectedSchemaDigest: digest,
-    idempotencyKey: cleanup.idempotencyKey,
-  });
+  assert.equal(calls.some(call => call.name === "loomex_interaction_draft_delete"), false);
 });

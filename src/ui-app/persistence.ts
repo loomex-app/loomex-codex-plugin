@@ -462,16 +462,18 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
     if (!validIdentity(session)) return false;
     const changed = this.session?.viewSessionId !== session.viewSessionId;
     if (changed) {
-      this.session = { viewSessionId: session.viewSessionId, revision: session.revision };
+      this.session = { viewSessionId: session.viewSessionId, revision: session.revision, ...originBinding(session) };
       this.#resetLocalState();
       this.#rememberProjection(session);
     } else if (this.session !== null && session.revision > this.session.revision) {
       if (this.dirty()) this.#reportConflict();
       else {
-        this.session = { viewSessionId: this.session.viewSessionId, revision: session.revision };
+        this.session = { ...this.session, revision: session.revision, ...originBinding(session) };
         this.#rememberProjection(session);
       }
     }
+    // Owner reads may refresh current connection identity at the same revision.
+    if (this.session && !changed) this.session = { ...this.session, ...originBinding(session) };
     return changed;
   }
 
@@ -766,7 +768,7 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
   }
 
   #setRevision(revision: number): void {
-    if (this.session !== null) this.session = { viewSessionId: this.session.viewSessionId, revision };
+    if (this.session !== null) this.session = { ...this.session, revision };
   }
 
   #resetLocalState(): void {
@@ -814,6 +816,7 @@ export class ViewPersistenceController<State extends JsonObject = JsonObject> {
 
   #rememberProjection(projection: ViewSessionIdentity | ViewSessionProjection<State>): void {
     if (!isProjection(projection)) return;
+    if (this.session?.viewSessionId === projection.viewSessionId) this.session = { ...this.session, ...originBinding(projection) };
     this.#savedState = clone(projection.state);
     this.#savedStatus = typeof projection.status === "string" ? projection.status : undefined;
     this.#savedBinding = projectionBinding(projection);
@@ -872,4 +875,11 @@ function randomUuid(): string {
 function persistenceError(error: unknown): PersistenceError {
   if (error instanceof Error) return error as PersistenceError;
   return new Error("The view state could not be saved.");
+}
+
+function originBinding(value: ViewSessionIdentity): Pick<ViewSessionIdentity, "originIdentity" | "currentOriginIdentity"> {
+  return {
+    ...(Object.hasOwn(value, "originIdentity") ? { originIdentity: structuredClone(value.originIdentity ?? null) } : {}),
+    ...(Object.hasOwn(value, "currentOriginIdentity") ? { currentOriginIdentity: structuredClone(value.currentOriginIdentity ?? null) } : {}),
+  };
 }

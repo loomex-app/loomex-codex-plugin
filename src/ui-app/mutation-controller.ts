@@ -1,6 +1,6 @@
 import mutationRecovery from "../../contracts/mutation-recovery.json" with { type: "json" };
 import { errorRecovery } from "../protocol.js";
-import type { JsonObject } from "./contracts.js";
+import type { JsonObject, MutationOriginIdentity } from "./contracts.js";
 import type { RpcResult, UiData } from "./page-models.js";
 import { normalizeUiRpcResult } from "./result-decoder.js";
 
@@ -105,12 +105,16 @@ export interface MutationSessionProjection {
   readonly entityType?: string;
   readonly entityId?: string;
   readonly operation?: Readonly<JsonObject>;
+  readonly originIdentity?: MutationOriginIdentity | null;
+  readonly currentOriginIdentity?: MutationOriginIdentity | null;
 }
 
 export type OperationStage = "not_journaled" | "journal_write_uncertain" | "journaled" | "dispatched" | "outcome_uncertain" | "settled";
 
 export interface MutationOperation {
   stage: OperationStage;
+  originIdentity?: MutationOriginIdentity | null;
+  dispatchOriginIdentity?: MutationOriginIdentity | null;
   readonly [MUTATION_OPERATION_BRAND]: true;
   readonly name: MutationToolName;
   readonly slot: string;
@@ -135,6 +139,7 @@ export interface MutationOperation {
 }
 
 export interface RestoredMutationOperation {
+  readonly originIdentity?: MutationOriginIdentity | null;
   readonly operationId: string;
   readonly method: string;
   readonly params: Readonly<JsonObject>;
@@ -258,6 +263,14 @@ function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
+/** Validate origin fields without filling absent legacy bindings from current identity. */
+export function mutationOriginIdentity(value: unknown): MutationOriginIdentity | null {
+  const supplied = object(value);
+  if (!supplied || typeof supplied.organizationId !== "string" || !supplied.organizationId.trim() || supplied.organizationId.length > 512 || !isUuid(supplied.installationId) ||
+      typeof supplied.accountSubject !== "string" || !supplied.accountSubject.trim() || supplied.accountSubject.length > 512) return null;
+  return immutableCopy({ organizationId: supplied.organizationId, accountSubject: supplied.accountSubject, installationId: supplied.installationId });
+}
+
 function defaultIdempotencyKey(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
   throw new Error("This host cannot generate a safe idempotency UUID.");
@@ -342,6 +355,8 @@ function projection(value: unknown): MutationSessionProjection {
     ...(typeof supplied?.entityType === "string" ? { entityType: supplied.entityType } : {}),
     ...(typeof supplied?.entityId === "string" ? { entityId: supplied.entityId } : {}),
     ...(operation !== undefined ? { operation: immutableCopy(operation) } : {}),
+    originIdentity: mutationOriginIdentity(supplied?.originIdentity),
+    currentOriginIdentity: mutationOriginIdentity(supplied?.currentOriginIdentity),
   };
 }
 
@@ -493,6 +508,8 @@ export class MutationController {
       [MUTATION_OPERATION_BRAND]: true,
       name,
       slot,
+      originIdentity: mutationOriginIdentity(record.originIdentity),
+      dispatchOriginIdentity: mutationOriginIdentity(session.currentOriginIdentity),
       arguments: immutableCopy({ ...record.params, idempotencyKey: record.idempotencyKey }),
       ...(options.label !== undefined ? { label: options.label } : {}),
       stage: record.status === "completed" ? "settled" : "outcome_uncertain",
@@ -556,7 +573,13 @@ export class MutationController {
 
   async #journalNow(operation: MutationOperation): Promise<MutationOperation> {
     this.#requireReady();
-    if (operation.operationId !== undefined) return operation;
+    if (operation.operationId !== undefined) {
+      // A legacy journal remains readable, but a fresh owner read cannot grant
+      // its missing original origin or revive it after account/install changes.
+      const current = projection(await this.#services.persistence.call(MUTATION_PERSISTENCE_TOOLS.get, { viewSessionId: operation.viewSessionId }));
+      operation.dispatchOriginIdentity = current.currentOriginIdentity ?? null;
+      return operation;
+    }
     if (this.#services.persistence.currentSession() === null) {
       throw new Error("This action cannot continue until durable view storage is verified.");
     }
@@ -598,6 +621,8 @@ export class MutationController {
     if (!operationId) throw new Error("The pending action was not durably recorded.");
     this.#services.persistence.acceptRevision(persisted.viewSessionId, persisted.revision);
     operation.operationId = operationId;
+    operation.originIdentity = mutationOriginIdentity(reference?.originIdentity ?? persisted.originIdentity);
+    operation.dispatchOriginIdentity = mutationOriginIdentity(persisted.currentOriginIdentity);
     operation.stage = "journaled";
     operation.journalStatus = stringValue(reference?.status, 40);
     operation.viewSessionId = attempt.viewSessionId;
@@ -817,6 +842,8 @@ export class MutationController {
           }));
           this.#assertSameJournalOperation(recorded, operation.journalAttempt.operation);
           operation.operationId = recorded.operationId;
+          operation.originIdentity = mutationOriginIdentity(recorded.originIdentity);
+          operation.dispatchOriginIdentity = mutationOriginIdentity(current.currentOriginIdentity);
           if (recorded.status !== undefined) operation.journalStatus = recorded.status;
           operation.viewSessionId = current.viewSessionId;
           operation.sessionRevision = current.revision;
@@ -931,6 +958,7 @@ export class MutationController {
     return {
       operationId,
       method,
+      originIdentity: mutationOriginIdentity(supplied?.originIdentity),
       params: immutableCopy(params),
       idempotencyKey,
       ...(typeof supplied?.status === "string" ? { status: supplied.status } : {}),
@@ -1120,6 +1148,9 @@ export function createMutationController(services: MutationControllerServices): 
 export async function dispatchJournaledOperation(operation: MutationOperation, dispatch: () => Promise<RpcResult>): Promise<RpcResult> {
   if (!operation.operationId || !operation.viewSessionId) throw new Error("The operation must be journaled before dispatch.");
   if (operation.successfulResult) return immutableCopy(operation.successfulResult);
+  if (!operation.originIdentity || !operation.dispatchOriginIdentity || !exactJsonEqual(operation.originIdentity, operation.dispatchOriginIdentity)) {
+    throw Object.assign(new Error("This saved action belongs to an earlier connection or cannot verify its original connection. Reopen this view from the conversation; the exact pending action remains saved for reconciliation."), { code: "MUTATION_ORIGIN_UNVERIFIED" });
+  }
   operation.stage = "dispatched";
   try {
     const result = await dispatch();

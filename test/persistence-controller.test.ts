@@ -454,3 +454,23 @@ test("late clean snapshot reads cannot adopt a replacement card or overwrite edi
     store.clear();
   }
 });
+
+test("owner projection retains original origin and refreshes current identity at the same revision", async () => {
+  const original = { organizationId: "org", accountSubject: "account", installationId: sessionId };
+  const current = { ...original, installationId: "10000000-0000-4000-8000-000000000001" };
+  const store = controller({ read: async () => ({ ...saved(0, {}), originIdentity: original, currentOriginIdentity: current }), write: async () => saved(1, {}) });
+  store.configure({ ...saved(0, {}), originIdentity: original, currentOriginIdentity: original });
+  await store.hydrate();
+  assert.deepEqual(store.session?.originIdentity, original);
+  assert.deepEqual(store.session?.currentOriginIdentity, current);
+  store.configure({ viewSessionId: sessionId, revision: 1 });
+  assert.deepEqual(store.session?.originIdentity, original, "revision updates do not erase the original binding");
+});
+
+test("a legacy owner projection never inherits current identity as its origin", async () => {
+  const current = { organizationId: "org", accountSubject: "account", installationId: sessionId };
+  const store = controller({ read: async () => ({ ...saved(0, {}), originIdentity: null, currentOriginIdentity: current }), write: async () => saved(1, {}) });
+  await store.hydrate();
+  assert.equal(store.session?.originIdentity, null);
+  assert.deepEqual(store.session?.currentOriginIdentity, current);
+});

@@ -40,6 +40,7 @@ import type { PageDefinition } from "./page-definitions.js";
 import {
   createMutationController,
   decodeMutationSessionProjection,
+  mutationOriginIdentity,
   exactJsonEqual,
   immutableCopy,
   type MutationOperation,
@@ -342,6 +343,8 @@ export function startLoomexRuntimeController(pageDefinitionFor: (mode: string | 
     return {
       viewSessionId,
       revision,
+      originIdentity: mutationOriginIdentity(supplied.originIdentity),
+      currentOriginIdentity: mutationOriginIdentity(supplied.currentOriginIdentity),
       ...(state !== null ? { state } : {}),
       ...(typeof supplied.status === "string" ? { status: supplied.status } : {}),
       ...(typeof supplied.kind === "string" ? { kind: supplied.kind } : {}),

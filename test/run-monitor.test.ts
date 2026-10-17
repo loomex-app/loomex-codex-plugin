@@ -12,7 +12,7 @@ const nextId='cecfb615-af58-48c3-8294-1e6ef4f03259';
 function fixture(){
  const flowStore:{flow:RunFlow|null}={flow:null};let latest:UiData|null=null;
  const host:RunMonitorServices={delivery:new ContinuationDeliveryController({available:()=>true,uuid:()=>"test-attempt",journal:deliveryJournalFixture(),send:async()=>({})}),flowStore,elements:{} as RunMonitorServices['elements'],forms:{} as RunMonitorServices['forms'],connected:()=>true,latest:()=>latest,setLatest:value=>{latest=value;},capabilities:()=>({}),canSendFollowUpMessage:()=>false,backendDraft:()=>null,detachInteractionDraft:()=>{},draftRequest:()=>undefined,requestSchemaDigest:request=>request.schemaDigest,humanRequest:data=>data?.humanRequest??undefined,humanRequestResolved:request=>['resolved','approved','rejected'].includes(request.status||''),executionId:data=>data?.execution?.id||'',interactionId:data=>data.humanRequest?.id||'',safeText:(value,max=4096)=>typeof value==='string'&&value.trim().length>0&&value.trim().length<=max?value.trim():undefined,workflowIdValid:(value):value is string=>typeof value==='string'&&/^[0-9a-f-]{36}$/.test(value),terminalRun:run=>['completed','failed','canceled'].includes(run.status||''),renderRun:()=>{},renderHumanPresentation:()=>true,humanPresentation:request=>request.presentation,formatStatus:value=>String(value),setAction:()=>{},setMutationAction:()=>{},setInteractionAction:()=>{},setError:()=>{},syncChrome:()=>{},onRender:()=>{},runFlowError:()=>{},renderRunSetup:()=>{},renderRunReview:()=>{},dataOf:result=>result.structuredContent?.data||{},send:async()=>({}),persistenceTool:async()=>({}),settleMutationOperation:async()=>({}),transitionSessionAfterSuccess:async()=>({}),uuid:()=>runId};
- return {view:createRunMonitorController(host),flowStore,latest:()=>latest};
+ return {host,view:createRunMonitorController(host),flowStore,latest:()=>latest};
 }
 function snapshot(sequence=1):UiData{return {execution:{id:runId,organizationId:org,status:'running'},latestSequence:sequence,humanRequest:{id:requestId,status:'pending',execution:{id:runId,organizationId:org},organizationId:org}};}
 
@@ -76,4 +76,16 @@ test('monitor queue captions use fixed worker vocabulary and reject foreign evid
  }
  assert.equal(queueObservation({...evidence,workerState:'unavailable',code:'WORKFLOW_WORKER_UNAVAILABLE',executionId:nextId},execution),undefined);
  assert.equal(queueObservation({...evidence,workerState:'unavailable',code:'WORKFLOW_WORKER_UNAVAILABLE'},{...execution,status:'completed'}),undefined);
+});
+
+test('resolved monitor requests detach only their matching local draft without deleting remote drafts',()=>{
+ const {host}=fixture();let detached=0;const calls:string[]=[];
+ host.backendDraft=()=>({requestId,revision:1,schemaDigest:'a'.repeat(64)});
+ host.detachInteractionDraft=()=>{detached++;};
+ host.persistenceTool=async name=>{calls.push(name);return {};};
+ const view=createRunMonitorController(host);
+ view.initializeRunMonitor(snapshot());
+ view.acceptRunSnapshot({...snapshot(2),humanRequest:{...snapshot().humanRequest,status:'resolved'}},runId);
+ assert.equal(detached,1);
+ assert.equal(calls.includes('loomex_interaction_draft_delete'),false);
 });

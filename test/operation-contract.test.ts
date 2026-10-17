@@ -4,6 +4,8 @@ import {readFile} from 'node:fs/promises';
 import {errorRecovery, safeErrorMessage} from '../src/protocol.js';
 import {createMutationOperation, dispatchJournaledOperation} from '../src/ui-app/mutation-controller.js';
 
+const originIdentity = {organizationId:'fixture-org',accountSubject:'fixture-account',installationId:'10000000-0000-4000-8000-000000000001'};
+
 test('unknown failures require reconciliation, not replay',()=>{
  assert.deepEqual(errorRecovery('UNRECOGNIZED_PROVIDER_FAILURE'),{recovery:'reconcile_outcome',outcome:'unknown'});
  assert.deepEqual(errorRecovery('OPERATION_PENDING'),{recovery:'reconcile_outcome',outcome:'not_dispatched'});
@@ -37,6 +39,8 @@ test('dispatch requires a journal and preserves a success across failed settleme
  let calls=0;const dispatch=async()=>{calls++;return {structuredContent:{ok:true,data:{preparationId:'fixture'}}};};
  await assert.rejects(()=>dispatchJournaledOperation(op,dispatch),/journaled/);assert.equal(calls,0);
  op.operationId='record';op.viewSessionId='session';op.stage='journaled';
+ // Model the immutable original and current owner identities returned by the runner journal.
+ op.originIdentity=originIdentity;op.dispatchOriginIdentity=originIdentity;
  const result = await dispatchJournaledOperation(op,dispatch);
  // Domain validation establishes the successful receipt before settlement.
  op.successfulResult = result;
@@ -45,7 +49,9 @@ test('dispatch requires a journal and preserves a success across failed settleme
 });
 test('lost response retains exact tuple and marks uncertain outcome',async()=>{
  const op=createMutationOperation('loomex_run_prepare','prepare',{workflowId:'fixture'});
- op.operationId='record';op.viewSessionId='session';const before=JSON.stringify(op.arguments);
+ op.operationId='record';op.viewSessionId='session';op.stage='journaled';
+ op.originIdentity=originIdentity;op.dispatchOriginIdentity=originIdentity;
+ const before=JSON.stringify(op.arguments);
  await assert.rejects(()=>dispatchJournaledOperation(op,async()=>{throw new Error('lost response');}));
  assert.equal(op.stage,'outcome_uncertain');assert.equal(JSON.stringify(op.arguments),before);
 });

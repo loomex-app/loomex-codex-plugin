@@ -1,6 +1,7 @@
 import type { ActionId } from "./shell.js";
 import { z } from 'zod';
-import type { JsonObject, ViewSessionProjection } from './contracts.js';
+import type { JsonObject, ViewSessionProjection, MutationOriginIdentity } from './contracts.js';
+import { mutationOriginIdentity, exactJsonEqual } from './mutation-controller.js';
 import { ViewPersistenceController, ViewRestorationCoordinator } from './persistence.js';
 import { clampPageIndex, createPagination, createUiElement as element } from './components.js';
 import { decodeUiResult, decodeUiError, UiResultDecodeError, UiTransportError } from './result-decoder.js';
@@ -10,15 +11,16 @@ type Action = () => void | Promise<void>;
 type Fault = {status:string; code:string; message:string; retryable?:boolean};
 const organizationSchema=z.object({id:z.uuid(),name:z.string().trim().min(1).max(240).nullable(),enrolled:z.boolean()});
 const loginSchema=z.object({flowId:z.string().min(1).max(128),authorizationUrl:z.string().url().nullable().optional(),expiresAt:z.number().int().nonnegative()});
-const projectionSchema=z.object({schemaVersion:z.literal('loomex.runner.connection/v2'),state:z.enum(['signed_out','browser_pending','authentication_completing','verification_expired','authenticated','recovery_pending','logout_pending','credential_store_unavailable']),activeWork:z.number().int().min(0).max(1000000),actions:z.array(z.enum(['auth.login','auth.cancel','auth.recover','auth.logout','organizations.list','organizations.select'])).max(8),organization:z.object({status:z.enum(['organization_required','connected']),selected:z.object({id:z.uuid(),name:z.string().trim().min(1).max(240).nullable()}).nullable()}),organizations:z.array(organizationSchema),login:loginSchema.nullable(),webAppUrl:z.unknown().optional()});
+const projectionSchema=z.object({schemaVersion:z.literal('loomex.runner.connection/v2'),state:z.enum(['signed_out','browser_pending','authentication_completing','verification_expired','authenticated','recovery_pending','logout_pending','credential_store_unavailable']),activeWork:z.number().int().min(0).max(1000000),actions:z.array(z.enum(['auth.login','auth.cancel','auth.recover','auth.logout','organizations.list','organizations.select'])).max(8),organization:z.object({status:z.enum(['organization_required','connected']),selected:z.object({id:z.uuid(),name:z.string().trim().min(1).max(240).nullable()}).nullable()}),organizations:z.array(organizationSchema),login:loginSchema.nullable(),recoveryRef:z.string().min(1).max(512).nullable().optional(),webAppUrl:z.unknown().optional()});
 type RawProjection=z.infer<typeof projectionSchema>;
 type Projection=Omit<RawProjection,'actions'|'organizations'|'webAppUrl'> & {actions:Set<string>;organizations:Array<{id:string;name:string}>; webAppUrl:string|undefined;credentialStoreCode:string|undefined};
-const attemptSchema=z.object({name:z.enum(['loomex_auth_start','loomex_auth_cancel','loomex_auth_recover','loomex_auth_logout','loomex_organization_select']),args:z.record(z.string(),z.unknown()),key:z.uuid()});
+const originSchema=z.object({organizationId:z.string().min(1).max(512),accountSubject:z.string().min(1).max(512),installationId:z.uuid()});
+const attemptSchema=z.object({originIdentity:originSchema.nullable().optional(),name:z.enum(['loomex_auth_start','loomex_auth_cancel','loomex_auth_recover','loomex_auth_logout','loomex_organization_select']),args:z.record(z.string(),z.unknown()),key:z.uuid()});
 // A proof-bound cancellation/logout fences an earlier credential attempt. Keep
 // that exact reference until revocation is verified, including across remounts.
 const pendingSchema=attemptSchema.extend({superseded:attemptSchema.optional()});
 type Pending=z.infer<typeof pendingSchema>;
-const sessionSchema=z.object({viewSessionId:z.uuid(),revision:z.number().int().nonnegative(),kind:z.enum(['connection','organizations']),state:z.record(z.string(),z.unknown()).default({})});
+const sessionSchema=z.object({viewSessionId:z.uuid(),revision:z.number().int().nonnegative(),kind:z.enum(['connection','organizations']),originIdentity:originSchema.nullable().default(null),currentOriginIdentity:originSchema.nullable().default(null),state:z.record(z.string(),z.unknown()).default({})});
 export interface ConnectionServices {
  persistenceStatus(status: import("./persistence.js").PersistenceStatus,error?: import("./persistence.js").PersistenceError):void;
  lifecycle?:ViewRestorationCoordinator;
@@ -120,11 +122,43 @@ function connectionProjection(value: unknown): Projection {
 function connectionChanged(previous:Projection|null,current:Projection):boolean {
   if (!previous) return true;
   const display=(projection:Projection)=>JSON.stringify({
-    state:projection.state,login:projection.login,actions:[...projection.actions].sort(),
+    state:projection.state,login:projection.login,recoveryRef:projection.recoveryRef,actions:[...projection.actions].sort(),
     organization:projection.organization,organizations:projection.organizations,
     activeWork:projection.activeWork,webAppUrl:projection.webAppUrl,credentialStoreCode:projection.credentialStoreCode,
   });
   return display(previous)!==display(current);
+}
+
+/** Historical pending actions never acquire a new installation binding on restore. */
+export function assertConnectionAttemptOrigin(origin: unknown, current: unknown): asserts origin is MutationOriginIdentity {
+  const original = mutationOriginIdentity(origin), active = mutationOriginIdentity(current);
+  if (!original || !active || !exactJsonEqual(original, active)) {
+    throw new Error("This saved connection action belongs to an earlier installation or cannot verify its original connection. Open a new Connection card; the exact pending action remains saved for reconciliation.");
+  }
+}
+
+/** Never replace a saved recovery binding with the current pending operation. */
+export function recoveryAttemptArguments(saved: JsonObject | undefined, projection: unknown): JsonObject {
+  if (saved !== undefined) return structuredClone(saved);
+  const recoveryRef = record(projection).recoveryRef;
+  if (typeof recoveryRef !== "string" || !recoveryRef || recoveryRef.length > 512) {
+    throw new Error("The pending connection recovery could not be verified. Refresh Connection before retrying.");
+  }
+  return { recoveryRef };
+}
+
+/** Only the exact owner-checked receipt retires a saved recovery attempt. */
+export async function dispatchAuthRecovery(
+  attempt: { readonly args: JsonObject; readonly key: string },
+  dispatch: (args: JsonObject) => Promise<JsonObject>,
+): Promise<void> {
+  const receipt = await dispatch({ ...structuredClone(attempt.args), idempotencyKey: attempt.key });
+  if (receipt.reconciled !== true || typeof receipt.authenticated !== "boolean" ||
+      !(receipt.activeOrganization === undefined || receipt.activeOrganization === null || typeof receipt.activeOrganization === "string") ||
+      typeof receipt.recoveryRef !== "string" || !receipt.recoveryRef ||
+      (attempt.args.recoveryRef !== undefined && receipt.recoveryRef !== attempt.args.recoveryRef)) {
+    throw new Error("The earlier connection recovery did not return its exact verified receipt. Retry the saved action to reconcile it.");
+  }
 }
 
 export function createConnectionController(host:ConnectionServices) {
@@ -330,7 +364,7 @@ export function createConnectionController(host:ConnectionServices) {
     if(disposed)return;
     if (connectionState.busy || !(lifecycle.permissions().mutate || lifecycle.permissions().retryPersistence)) return;
     const pending = connectionState.pending;
-    const sameAttempt = pending?.name === name && JSON.stringify(pending.args) === JSON.stringify(args);
+    const sameAttempt = pending?.name === name && (name === "loomex_auth_recover" || JSON.stringify(pending.args) === JSON.stringify(args));
     const mutationFence=lifecycle.request("connection-mutation");
     lifecycle.request("connection-authority"); lifecycle.request("organization-list");
     clearConnectionPoll();
@@ -350,13 +384,26 @@ export function createConnectionController(host:ConnectionServices) {
           throw new Error("An earlier action still needs to be reconciled. Retry that action first.");
         }
       }
+      if (name === "loomex_auth_recover") {
+        const current = sameAttempt ? undefined : connectionProjection(connectionData(await callTool("loomex_connection_get", {}, false, false)));
+        if (!mutationFence.current()) return;
+        args = recoveryAttemptArguments(sameAttempt && pending ? pending.args : undefined, current);
+      }
       const attempt:Pending = sameAttempt && pending ? pending : {
-        name, args: structuredClone(args), key: uuid(),
-        ...(pending ? {superseded:{name:pending.name,args:structuredClone(pending.args),key:pending.key}} : {}),
+        name, args: structuredClone(args), key: uuid(), originIdentity: mutationOriginIdentity(connectionState.persistence?.session?.originIdentity),
+        ...(pending ? {superseded:{name:pending.name,args:structuredClone(pending.args),key:pending.key,...(pending.originIdentity!==undefined?{originIdentity:pending.originIdentity}:{})}} : {}),
       };
       connectionState.pending = attempt;
       await saveConnectionView();
       if(!mutationFence.current())return;
+      const viewSessionId = connectionState.viewSession?.viewSessionId;
+      if (!viewSessionId) throw new Error("Open a new Connection card to verify this action; its pending reference has been retained.");
+      const verifiedSession = sessionSchema.parse(connectionData(await callTool("loomex_connection_view_get", {viewSessionId}, false, false)));
+      if (!mutationFence.current()) return;
+      if (verifiedSession.viewSessionId !== viewSessionId) throw new Error("The saved connection view could not be verified.");
+      // Recovery with a historical exact key is a protected receipt lookup;
+      // every other action must retain its original verified installation.
+      if (!(sameAttempt && name === "loomex_auth_recover")) assertConnectionAttemptOrigin(attempt.originIdentity, verifiedSession.currentOriginIdentity);
       let reconciled = false;
       if (pending) {
         const current = verifiedProjection ?? normalizedConnection(connectionData(await callTool("loomex_connection_get", {}, false, false)));
@@ -364,10 +411,11 @@ export function createConnectionController(host:ConnectionServices) {
         if (!current) throw new Error("The earlier action could not be verified. Try again.");
         reconciled = (name === "loomex_organization_select" && current.organization?.selected?.id === attempt.args.organizationId)
           || (name === "loomex_auth_logout" && current.state === "signed_out")
-          || (name === "loomex_auth_cancel" && current.state === "signed_out")
-          || (name === "loomex_auth_recover" && ["authenticated","signed_out"].includes(current.state));
+          || (name === "loomex_auth_cancel" && current.state === "signed_out");
       }
-      if (!reconciled) connectionData(await callTool(name, { ...attempt.args, idempotencyKey: attempt.key }, false, false));
+      if (name === "loomex_auth_recover") {
+        await dispatchAuthRecovery(attempt, async parameters => connectionData(await callTool(name, parameters, false, false)));
+      } else if (!reconciled) connectionData(await callTool(name, { ...attempt.args, idempotencyKey: attempt.key }, false, false));
       if(!mutationFence.current())return;
       connectionState.pending = null;
       await saveConnectionView();

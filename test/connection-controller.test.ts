@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { normalizedConnection, credentialStoreMessage } from '../src/ui-app/connection-controller.js';
+import { normalizedConnection, credentialStoreMessage, recoveryAttemptArguments, dispatchAuthRecovery, assertConnectionAttemptOrigin } from '../src/ui-app/connection-controller.js';
 import { safeErrorMessage } from '../src/protocol.js';
 const id='cecfb615-af58-48c3-8294-1e6ef4f03256';
 function projection() { return { schemaVersion:'loomex.runner.connection/v2',state:'authenticated',activeWork:0,actions:['organizations.list','organizations.select'],organization:{status:'connected',selected:{id,name:'Current'}},organizations:[{id,name:'Current',enrolled:false}],login:null }; }
@@ -53,4 +53,38 @@ test('credential store diagnostics retain only fixed categories with a neutral l
   assert.doesNotMatch(credentialStoreMessage(value?.credentialStoreCode),/Unlock|private|ACL/);
  }
  assert.equal(normalizedConnection({...projection(),details:{credentialStoreCode:'STORE_ACCESS_DENIED'}})?.credentialStoreCode,undefined);
+});
+
+test('recovery captures the fresh pending reference once and retains it across projection changes',()=>{
+ const original=recoveryAttemptArguments(undefined,{...projection(),recoveryRef:'recovery-original'});
+ assert.deepEqual(original,{recoveryRef:'recovery-original'});
+ assert.deepEqual(recoveryAttemptArguments(original,{...projection(),recoveryRef:'recovery-new'}),original);
+ assert.deepEqual(recoveryAttemptArguments({}, {recoveryRef:'recovery-new'}),{},'legacy exact keys never acquire a current reference');
+ assert.throws(()=>recoveryAttemptArguments(undefined,projection()),/could not be verified/);
+ assert.equal(normalizedConnection({...projection(),recoveryRef:'recovery-original'})?.recoveryRef,'recovery-original');
+});
+
+test('recovery requires its exact receipt even when current status is authenticated or signed out',async()=>{
+ const attempt={args:{recoveryRef:'recovery-original'},key:id};
+ for(const state of ['authenticated','signed_out'])await assert.rejects(dispatchAuthRecovery(attempt,async()=>({...projection(),state})),/exact verified receipt/);
+ await assert.rejects(dispatchAuthRecovery(attempt,async()=>({reconciled:true,authenticated:true,activeOrganization:id,recoveryRef:'recovery-new'})),/exact verified receipt/);
+ await dispatchAuthRecovery(attempt,async()=>({reconciled:true,authenticated:true,activeOrganization:id,recoveryRef:'recovery-original'}));
+ await dispatchAuthRecovery(attempt,async()=>({reconciled:true,authenticated:false,recoveryRef:'recovery-original'}));
+});
+
+test('lost recovery response retries the exact key and original reference instead of a newer pending operation',async()=>{
+ const attempt={args:recoveryAttemptArguments(undefined,{recoveryRef:'recovery-original'}),key:id};
+ const calls:unknown[]=[];
+ await assert.rejects(dispatchAuthRecovery(attempt,async args=>{calls.push(args);throw Object.assign(new Error('lost response'),{code:'HOST_TIMEOUT'});}));
+ const retained={...attempt,args:recoveryAttemptArguments(attempt.args,{recoveryRef:'newer'})};
+ await dispatchAuthRecovery(retained,async args=>{calls.push(args);return {reconciled:true,authenticated:false,activeOrganization:null,recoveryRef:'recovery-original'};});
+ assert.deepEqual(calls,[{recoveryRef:'recovery-original',idempotencyKey:id},{recoveryRef:'recovery-original',idempotencyKey:id}]);
+});
+
+test('old connection attempts cannot adopt a current installation after reinstall',()=>{
+ const origin={organizationId:'local-connection',accountSubject:'host-user',installationId:id};
+ assert.doesNotThrow(()=>assertConnectionAttemptOrigin(origin,origin));
+ assert.throws(()=>assertConnectionAttemptOrigin(undefined,origin),/earlier installation|original connection/);
+ assert.throws(()=>assertConnectionAttemptOrigin(null,origin),/earlier installation|original connection/);
+ assert.throws(()=>assertConnectionAttemptOrigin(origin,{...origin,installationId:'10000000-0000-4000-8000-000000000001'}),/earlier installation|original connection/);
 });

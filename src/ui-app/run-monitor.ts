@@ -65,7 +65,7 @@ function immutableCopy<T>(value:T):T {return structuredClone(value);}
 export function createRunMonitorController(host:RunMonitorServices) {
  const {context,form,summary,primary,secondary,refresh,errorDetails}=host.elements;
  const {typedForm,appendRequestCopy,hidePersistentBatchReview,answerActionLabel,submittedAnswerReview}=host.forms;
- const {draftRequest,requestSchemaDigest,humanRequest,humanRequestResolved,executionId,interactionId,safeText,workflowIdValid,terminalRun,renderRun,renderHumanPresentation,humanPresentation,formatStatus,setAction,setMutationAction,setInteractionAction,setError,syncChrome,runFlowError,renderRunSetup,renderRunReview,dataOf,send,persistenceTool,settleMutationOperation,transitionSessionAfterSuccess,uuid,detachInteractionDraft}=host;
+ const {draftRequest,requestSchemaDigest,humanRequest,humanRequestResolved,executionId,interactionId,safeText,workflowIdValid,terminalRun,renderRun,renderHumanPresentation,humanPresentation,formatStatus,setAction,setMutationAction,setInteractionAction,setError,syncChrome,runFlowError,renderRunSetup,renderRunReview,dataOf,send,settleMutationOperation,transitionSessionAfterSuccess,detachInteractionDraft}=host;
  let chatHandoff:RunChatHandoff|null=null;
  let disposed=false;
  const listeners=new AbortController();
@@ -156,12 +156,6 @@ export function createRunMonitorController(host:RunMonitorServices) {
     const draft = host.backendDraft();
     if (draft?.requestId === requestId && typeof draft.revision === "number") {
       detachInteractionDraft();
-      void persistenceTool("loomex_interaction_draft_delete", {
-        requestId,
-        expectedRevision: draft.revision,
-        ...(typeof draft.schemaDigest === "string" ? { expectedSchemaDigest: draft.schemaDigest } : {}),
-        idempotencyKey: uuid(),
-      }).catch(() => {});
     }
   }
 

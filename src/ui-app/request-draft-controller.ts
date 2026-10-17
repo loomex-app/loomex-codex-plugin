@@ -14,7 +14,6 @@ export interface AcceptedDraftCleanup {
   readonly requestId: string;
   readonly expectedRevision: number;
   readonly expectedSchemaDigest: string;
-  readonly idempotencyKey: string;
   readonly scopeKey: string;
 }
 
@@ -122,7 +121,7 @@ export class RequestDraftController {
     if (!this.#disposed) this.ensureInteractionDraftScope();
   }
 
-  /** Capture the exact deletion tuple before an accepted mutation can rerender this request. */
+  /** Capture the local request scope before acceptance can rerender it. */
   captureAcceptedDraft(requestId: unknown): AcceptedDraftCleanup | null {
     const scope = this.state.scope;
     const draft = this.state.draft;
@@ -134,26 +133,15 @@ export class RequestDraftController {
       requestId,
       expectedRevision: draft.revision,
       expectedSchemaDigest: draft.schemaDigest,
-      idempotencyKey: this.host.uuid(),
       scopeKey: scope.identity.key,
     };
   }
 
-  /** Delete a previously captured accepted draft without touching a replacement request. */
+  /** Acceptance retires the remote draft transactionally; only detach its local scope. */
   async deleteAcceptedDraft(cleanup: AcceptedDraftCleanup | null): Promise<boolean> {
     if (this.#disposed || !cleanup) return false;
     if (this.matchesAcceptedCleanup(cleanup)) this.detachInteractionDraft();
-    try {
-      await this.host.persistenceTool("loomex_interaction_draft_delete", {
-        requestId: cleanup.requestId,
-        expectedRevision: cleanup.expectedRevision,
-        expectedSchemaDigest: cleanup.expectedSchemaDigest,
-        idempotencyKey: cleanup.idempotencyKey,
-      });
-      return true;
-    } catch {
-      return false;
-    }
+    return true;
   }
 
   /** Explicitly rebase local answers only after a definite revision conflict. */

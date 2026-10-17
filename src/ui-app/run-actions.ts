@@ -74,7 +74,7 @@ function exactJsonEqual(left:unknown,right:unknown):boolean{
  if(typeof left!=="object"||Array.isArray(right))return false;const a=record(left),b=record(right);return !!a&&!!b&&Object.keys(a).length===Object.keys(b).length&&Object.keys(a).every(key=>Object.hasOwn(b,key)&&exactJsonEqual(a[key],b[key]));
 }
 function mutationSession(value:RuntimeViewSessionProjection):MutationSessionProjection {
- return {viewSessionId:value.viewSessionId,revision:value.revision,...(value.state?{state:value.state}:{}),...(value.status?{status:value.status}:{}),...(value.kind?{kind:value.kind}:{}),...(value.entityType?{entityType:value.entityType}:{}),...(value.entityId?{entityId:value.entityId}:{})};
+ return {viewSessionId:value.viewSessionId,revision:value.revision,...(value.originIdentity!==undefined?{originIdentity:value.originIdentity}:{}),...(value.currentOriginIdentity!==undefined?{currentOriginIdentity:value.currentOriginIdentity}:{}),...(value.state?{state:value.state}:{}),...(value.status?{status:value.status}:{}),...(value.kind?{kind:value.kind}:{}),...(value.entityType?{entityType:value.entityType}:{}),...(value.entityId?{entityId:value.entityId}:{})};
 }
 function jsonValue(value:unknown):value is JsonValue {
  if(value===null || typeof value==="string" || typeof value==="boolean")return true;
@@ -978,12 +978,6 @@ export function createRunActionsController(host:RunActionsServices){
     const draft = host.draft();
     if (draft?.requestId === request.requestId && typeof draft.revision === "number") {
       detachInteractionDraft();
-      void persistenceTool("loomex_interaction_draft_delete", {
-        requestId: request.requestId,
-        expectedRevision: draft.revision,
-        ...(typeof draft.schemaDigest === "string" ? { expectedSchemaDigest: draft.schemaDigest } : {}),
-        idempotencyKey: uuid(),
-      }).catch(() => {});
     }
     const completedRunId = data.executionId;
     return () => handoffRunToChat(completedRunId, { trigger: "interaction_accepted", acceptedInteraction: { requestId: data.requestId, status }, followContinuation: data.details?.followContinuation });

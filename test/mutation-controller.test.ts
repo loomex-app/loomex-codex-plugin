@@ -4,6 +4,7 @@ import type { JsonObject } from "../src/ui-app/contracts.js";
 import {
   createMutationController,
   createMutationOperation,
+  dispatchJournaledOperation,
   immutableCopy,
   type MutationControllerServices,
   type MutationOperation,
@@ -13,6 +14,7 @@ import {
 import type { RpcResult, UiData } from "../src/ui-app/page-models.js";
 
 const viewSessionId = "10000000-0000-4000-8000-000000000001";
+const originIdentity = { organizationId: viewSessionId, accountSubject: "owner", installationId: viewSessionId };
 const requestId = "20000000-0000-4000-8000-000000000002";
 const runId = "30000000-0000-4000-8000-000000000003";
 
@@ -52,7 +54,7 @@ function harness(initialResult: RpcResult): Harness {
   let advanceOnFlush = false;
   let revision = 0;
   let journal: JsonObject | undefined;
-  const session: MutationSessionProjection = { viewSessionId, revision: 0, state: { screen: "interaction" } };
+  const session: MutationSessionProjection = { viewSessionId, originIdentity, currentOriginIdentity: originIdentity, revision: 0, state: { screen: "interaction" } };
   const presentation: MutationPresentation = {
     authoritativeFailure: () => undefined,
     present: (incoming) => { presentations.push(incoming); },
@@ -101,6 +103,7 @@ function harness(initialResult: RpcResult): Harness {
             revision += 1;
             const attempted = record(update.operation);
             journal = {
+              originIdentity,
               operationId: "50000000-0000-4000-8000-000000000005",
               status: "pending",
               method: attempted.method,
@@ -112,12 +115,12 @@ function harness(initialResult: RpcResult): Harness {
               loseJournalResponse = false;
               throw Object.assign(new Error("lost response"), { code: "NETWORK_AMBIGUOUS" });
             }
-            return { viewSessionId, revision, state: update.state, operation: journal };
+            return { viewSessionId, originIdentity, currentOriginIdentity: originIdentity, revision, state: update.state, operation: journal };
           }
           return { viewSessionId, revision: ++revision, state: update.state, status: update.status };
         }
         if (name === "loomex_view_session_get") {
-          return { viewSessionId, revision, state: { screen: "interaction" }, ...(journal ? { operation: journal } : {}) };
+          return { viewSessionId, originIdentity, currentOriginIdentity: originIdentity, revision, state: { screen: "interaction" }, ...(journal ? { operation: journal } : {}) };
         }
         if (name === "loomex_view_operation_get") return journal ?? {};
         if (name === "loomex_view_operation_settle") {
@@ -374,4 +377,73 @@ test("an exact standalone interaction receipt is accepted without inventing run 
   assert.equal(outcome.resolution?.runId, undefined);
   assert.deepEqual(outcome.resolution?.acceptedInteraction, { requestId, status: "answered" });
   assert.equal(controller.size, 0);
+});
+
+test("restored unbound or foreign origin never adopts the current identity for redispatch", async () => {
+  for (const savedOrigin of [undefined, { ...originIdentity, installationId: requestId }, { ...originIdentity, accountSubject: "other" }, { ...originIdentity, organizationId: requestId }]) {
+    const state = harness({ structuredContent: { ok: true, data: {} } });
+    const controller = createMutationController(state.services);
+    const record = { operationId: runId, method: "runs.cancel", params: { runId, reason: "stop", idempotencyKey: requestId }, idempotencyKey: requestId, status: "pending", ...(savedOrigin ? { originIdentity: savedOrigin } : {}) };
+    const restored = controller.restore(record, state.session);
+    await assert.rejects(controller.callMutation("loomex_run_cancel", restored.slot, {}), /earlier connection|original connection/);
+    assert.equal(state.toolCalls.length, 0);
+    assert.equal(controller.get(restored.slot), restored);
+    assert.deepEqual(restored.originIdentity, savedOrigin ?? null);
+    assert.equal(restored.arguments.idempotencyKey, requestId);
+  }
+});
+
+test("same-origin restored action dispatches its exact retained arguments after a fresh owner read", async () => {
+  const state = harness({ structuredContent: { ok: true, data: {} } });
+  const controller = createMutationController(state.services);
+  const record = { originIdentity, operationId: runId, method: "runs.cancel", params: { runId, reason: "stop", idempotencyKey: requestId }, idempotencyKey: requestId, status: "pending" };
+  const restored = controller.restore(record, state.session);
+  await controller.callMutation("loomex_run_cancel", restored.slot, { reason: "changed" });
+  assert.deepEqual(state.toolCalls[0]?.arguments_, record.params);
+  assert.ok(state.persistenceCalls.some(call => call.name === "loomex_view_session_get"));
+});
+
+test("an unbound legacy action can still reconcile canonical accepted state without redispatch", async () => {
+  const state = harness({});
+  const controller = createMutationController(state.services);
+  const restored = controller.restore({ operationId: runId, method: "interactions.respond", params: { requestId, answer: {}, idempotencyKey: requestId }, idempotencyKey: requestId, status: "ambiguous" }, state.session);
+  const authoritative = { humanRequest: { id: requestId, status: "resolved", execution: { id: runId } } };
+  assert.equal((await controller.reconcile({ structuredContent: { ok: true, data: authoritative } }, restored, authoritative)).state, "completed");
+  assert.equal(state.toolCalls.length, 0);
+  assert.equal(controller.size, 0);
+});
+
+test("exact journal-conflict adoption preserves the recorded origin before dispatch", async () => {
+  for (const savedOrigin of [originIdentity, undefined, { ...originIdentity, installationId: requestId }]) {
+    const state = harness({ structuredContent: { ok: true, data: {} } });
+    const operation = createMutationOperation("loomex_run_cancel", `run:cancel:${runId}`, { runId, reason: "Stop requested" }, "cancellation", keyFactory());
+    let intended: JsonObject | undefined;
+    const current = { ...state.session, revision: 1, operation: { operationId: runId, status: "pending" } };
+    state.services.persistence.call = async (name, args) => {
+      if (name === "loomex_view_session_update") {
+        intended = record(args.operation);
+        throw Object.assign(new Error("An exact operation was recorded before the journal response."), { code: "OPERATION_PENDING" });
+      }
+      if (name === "loomex_view_session_get") return current;
+      if (name === "loomex_view_operation_get") {
+        assert.ok(intended);
+        return { ...intended, operationId: runId, status: "pending", ...(savedOrigin ? { originIdentity: savedOrigin } : {}) };
+      }
+      throw new Error(`Unexpected persistence call: ${name}`);
+    };
+    const controller = createMutationController(state.services);
+    await assert.rejects(controller.journal(operation), /exact operation was recorded/);
+    assert.equal(operation.originIdentity, undefined, "the factory has no origin before owner-checked journal adoption");
+    assert.equal(operation.journalConflict, true);
+    await controller.recoverOperationConflicts(operation);
+    assert.equal(operation.operationId, runId);
+    assert.deepEqual(operation.originIdentity, savedOrigin ?? null);
+    assert.deepEqual(operation.dispatchOriginIdentity, originIdentity);
+    assert.equal(operation.arguments.idempotencyKey, intended?.idempotencyKey);
+    let dispatches = 0;
+    const dispatch = () => { dispatches++; return Promise.resolve({ structuredContent: { ok: true, data: {} } }); };
+    if (savedOrigin === originIdentity) await dispatchJournaledOperation(operation, dispatch);
+    else await assert.rejects(dispatchJournaledOperation(operation, dispatch), /earlier connection|original connection/);
+    assert.equal(dispatches, savedOrigin === originIdentity ? 1 : 0);
+  }
 });

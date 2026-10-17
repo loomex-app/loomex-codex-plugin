@@ -381,7 +381,7 @@ const BASE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     title: "Recover Loomex authentication",
     description:
       "Reconcile the exact pending Loomex authentication operation. This never starts a new login or credential rotation.",
-    inputSchema: z.object({ idempotencyKey: IdempotencyKey }).strict(),
+    inputSchema: z.object({ idempotencyKey: IdempotencyKey, recoveryRef:z.string().min(1).max(512).optional() }).strict(),
     mutating: true,
     destructive: false,
   },
@@ -1226,5 +1226,6 @@ export const OPTIONAL_RUNNER_METHODS = new Set(
 export const OPTIONAL_RUNNER_CAPABILITIES_BY_METHOD: Readonly<Record<string, readonly string[]>> = Object.freeze({
   "workflows.patch": ["workflows.patch.notes-preserve/v1"],
   "builder.start": ["authoring.chat-native/v1"],
+  "auth.recover": ["auth.recovery-binding/v1"],
   "editor.start": ["authoring.chat-native/v1"],
 });

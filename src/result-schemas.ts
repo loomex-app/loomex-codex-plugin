@@ -11,6 +11,8 @@ const Objects = z.array(JsonObject);
 const NonNegativeInteger = z.number().int().nonnegative();
 const NullableString = z.string().nullable();
 const NullableOffset = NonNegativeInteger.nullable();
+const OriginIdentity = z.object({organizationId:z.string().min(1).max(512),accountSubject:z.string().min(1).max(512),installationId:z.uuid()}).strict();
+const OriginFields = {originIdentity:OriginIdentity.nullable().optional(),currentOriginIdentity:OriginIdentity.optional()} as const;
 const DeliveryContinuation = z.discriminatedUnion("kind", [
   PERSONA_CONTEXT_REFERENCE.extend({kind:z.literal("persona_chat")}).strict(),
   z.object({kind:z.literal("start"),schemaVersion:z.literal("loomex.start-continuation/v1"),handoffRef:z.uuid()}).strict(),
@@ -155,17 +157,19 @@ const InteractionResolutionResult = z
   .strict();
 
 const ViewSession = z.object({
+  ...OriginFields,
   viewSessionId: z.uuid(), kind: z.enum(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations", "personas"]),
   entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation", "personaRole", "persona", "personaConversation"]), entityId: z.uuid(),
   revision: NonNegativeInteger, state: JsonObject, status: z.string(), createdAt: NonNegativeInteger, updatedAt: NonNegativeInteger,
-  details: Details, expiresAt: NonNegativeInteger.nullable(), operation: z.object({operationId:z.uuid(),status:z.string()}).strict().nullable(),
+  details: Details, expiresAt: NonNegativeInteger.nullable(), operation: z.object({operationId:z.uuid(),status:z.string(),...OriginFields}).strict().nullable(),
 }).strict();
 const ViewSessionRestore = z.object({
+  ...OriginFields,
   restoreVersion: z.literal("presentation.sessions.restore/v1"),
   viewSessionId: z.uuid(), kind: z.enum(["browser", "runs", "authoring", "prepare", "monitor", "interaction", "connection", "organizations", "personas"]),
   entityType: z.enum(["catalog", "workflow", "request", "execution", "builderSession", "preparation", "personaRole", "persona", "personaConversation"]), entityId: z.uuid(),
   revision: NonNegativeInteger, state: JsonObject, status: z.enum(["active", "inactive", "resolved"]),
-  pendingOperation: z.object({operationId:z.uuid(),status:z.string()}).strict().nullable(), details: JsonObject,
+  pendingOperation: z.object({operationId:z.uuid(),status:z.string(),...OriginFields}).strict().nullable(), details: JsonObject,
 }).strict();
 
 const RecoveryBinding = z.object({
@@ -196,6 +200,7 @@ const ConnectionOrganization = z.object({
   selected: z.object({ id: z.uuid(), name: z.string().nullable() }).strict().nullable(),
 }).strict();
 const ConnectionProjection = z.object({
+  recoveryRef: z.string().min(1).max(512).nullable().optional(),
   webAppUrl: z.string().url().nullable().optional(),
   schemaVersion: z.literal("loomex.runner.connection/v2"),
   state: z.enum(["signed_out", "browser_pending", "authentication_completing", "verification_expired", "authenticated", "recovery_pending", "logout_pending", "credential_store_unavailable"]),
@@ -227,8 +232,8 @@ const primarySchemas = {
   "presentation.delivery.get": DeliveryProjection,
   "presentation.delivery.begin": DeliveryProjection,
   "presentation.delivery.settle": DeliveryProjection,
-  "presentation.operations.get": z.object({operationId:z.uuid(),viewSessionId:z.uuid(),method:z.string(),params:JsonObject,idempotencyKey:z.uuid(),reconciliation:z.union([z.object({method:z.string(),params:JsonObject}).strict(),z.object({}).strict()]),status:z.string(),createdAt:NonNegativeInteger,updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
-  "presentation.operations.settle": z.object({operationId:z.uuid(),viewSessionId:z.uuid(),status:z.enum(["completed","ambiguous"]),updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
+  "presentation.operations.get": z.object({...OriginFields,operationId:z.uuid(),viewSessionId:z.uuid(),method:z.string(),params:JsonObject,idempotencyKey:z.uuid(),reconciliation:z.union([z.object({method:z.string(),params:JsonObject}).strict(),z.object({}).strict()]),status:z.string(),createdAt:NonNegativeInteger,updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
+  "presentation.operations.settle": z.object({...OriginFields,operationId:z.uuid(),viewSessionId:z.uuid(),status:z.enum(["completed","ambiguous"]),updatedAt:NonNegativeInteger,resultReference:JsonObject.nullable(),details:Details}).strict(),
   "recovery.get": z.union([
     z.object({ found: z.literal(true), recovery: RecoveryRecord }).strict(),
     z.object({ found: z.literal(false), binding: RecoveryBinding }).strict(),
@@ -256,6 +261,7 @@ const primarySchemas = {
       authenticated: z.boolean(),
       code: z.string(),
       installationId: z.string().optional(),
+      recoveryRef: z.string().min(1).max(512).nullable().optional(),
       activeOrganization: NullableString.optional(),
       organizations: z.array(z.string()).optional(),
       loginPending: z.boolean().optional(),
@@ -276,7 +282,7 @@ const primarySchemas = {
   "auth.open_browser": z.object({status:z.literal("launch_requested"),flowId:z.string().min(1).max(160)}).strict(),
   "auth.cancel": z.object({ canceled:z.boolean(), details:Details }).strict(),
   "auth.recover": z.object({
-    reconciled: z.boolean(), authenticated: z.boolean(), activeOrganization: NullableString.optional(), details: Details,
+    reconciled: z.boolean(), authenticated: z.boolean(), activeOrganization: NullableString.optional(), recoveryRef:z.string().min(1).max(512).optional(), details: Details,
   }).strict(),
   "auth.logout": z
     .object({ revoked: z.boolean(), alreadyLoggedOut: z.boolean().optional(), details: Details })

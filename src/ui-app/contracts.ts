@@ -6,10 +6,19 @@ export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];
 /** Untrusted host payloads are narrowed at their own boundary. */
 export type JsonObject = Record<string, unknown>;
 
+/** Runner-owned immutable mutation origin; installation ID is its generation. */
+export interface MutationOriginIdentity {
+  readonly organizationId: string;
+  readonly accountSubject: string;
+  readonly installationId: string;
+}
+
 /** The persisted identity is a navigation key and cannot authorize a mutation. */
 export interface ViewSessionIdentity {
   viewSessionId: string;
   revision: number;
+  readonly originIdentity?: MutationOriginIdentity | null;
+  readonly currentOriginIdentity?: MutationOriginIdentity | null;
 }
 
 export interface ViewSessionProjection<State extends JsonObject = JsonObject> extends ViewSessionIdentity {

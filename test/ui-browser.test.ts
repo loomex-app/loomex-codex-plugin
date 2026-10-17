@@ -72,6 +72,13 @@ function expectedFollowMarkdown(runId: string, receipt = "A".repeat(16)): string
   return `$loomex-runs follow-existing-run ${runId}\n\n<!-- loomex-runs-follow-existing-run-continuation/v2 receipt=${receipt} -->\n\nFollow the exact existing Loomex run identified above: first call \`loomex_run_get\` with this run ID, then follow its authoritative \`nextAction\`.\n\nWhile the fresh authoritative \`nextAction\` is \`loomex_run_wait\` or \`loomex_run_events\`, do not final-answer: drain required event pages, then call the next action. Active progress, provider activity, and quiet timeouts require another bounded wait. Hooks and schedules are not prerequisites.\n\nFinal-answer only after presenting verified user input, retrieving the complete authoritative terminal result, an actionable observation failure, or an explicit user stop. Each wait is bounded; do not add hidden indefinite waits or UI polling.\n\nDo not start another run or resubmit an accepted response.`;
 }
 
+const fixtureOriginIdentity = {
+  organizationId: "10000000-0000-4000-8000-000000000001",
+  accountSubject: "fixture-owner",
+  installationId: "20000000-0000-4000-8000-000000000002",
+};
+const fixtureConnectionOriginIdentity = { ...fixtureOriginIdentity, organizationId: "local-connection", accountSubject: "host-user" };
+
 function connectionProjection(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     schemaVersion: "loomex.runner.connection/v2",
@@ -81,6 +88,7 @@ function connectionProjection(overrides: Record<string, unknown> = {}): Record<s
     activeWork: 0,
     actions: ["auth.login"],
     login: null,
+    recoveryRef: "fixture-auth-recovery",
     ...overrides,
   };
 }
@@ -126,12 +134,16 @@ async function mountApp(
     (typeof entity.entityId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(entity.entityId)));
   const generatedPersistenceMeta = validEntityId
     ? { "loomex/viewSession": viewSession(randomUUID(), mode as "browser" | "authoring" | "prepare" | "monitor" | "interaction", entity!.entityType, entity!.entityId, {}) }
-    : ["connection", "organizations"].includes(mode) ? {} : { "loomex/viewPersistence": { status: "unavailable" } };
+    : ["connection", "organizations"].includes(mode) ? { "loomex/viewSession": {
+        ...viewSession(randomUUID(), "browser", "catalog", "00000000-0000-0000-0000-000000000000", {}),
+        kind: mode, originIdentity: fixtureConnectionOriginIdentity, currentOriginIdentity: fixtureConnectionOriginIdentity,
+      } } : { "loomex/viewPersistence": { status: "unavailable" } };
   const hasExplicitPersistenceMeta = resultMeta !== undefined && (
     Object.keys(resultMeta).length === 0 ||
     Object.hasOwn(resultMeta, "loomex/viewSession") ||
     Object.hasOwn(resultMeta, "loomex/viewPersistence")
   );
+  const generatedConnectionView = ["connection", "organizations"].includes(mode) && !hasExplicitPersistenceMeta;
   const nativeResultMeta = resultMeta === undefined
     ? generatedPersistenceMeta
     : hasExplicitPersistenceMeta
@@ -155,7 +167,7 @@ async function mountApp(
       prior?.replaceWith(frame);
     });
   }
-  await page.evaluate(({ source, initialData, shouldFailFirst, shouldResolveOnRead, presentation, shouldFailUiMessage, resultMeta, hostCapabilities, workflowResponses, workflowDelayMs, preserveHostState, appCallableToolNames, initialMethod }: any) => {
+  await page.evaluate(({ source, initialData, shouldFailFirst, shouldResolveOnRead, presentation, shouldFailUiMessage, resultMeta, hostCapabilities, workflowResponses, workflowDelayMs, preserveHostState, appCallableToolNames, initialMethod, generatedConnectionView, fixtureOriginIdentity, fixtureConnectionOriginIdentity }: any) => {
     const frame = document.getElementById("app");
     if (!preserveHostState) {
       window.__loomexCalls = [];
@@ -270,6 +282,8 @@ async function mountApp(
         const session = {
           viewSessionId, kind: args.kind, entityType: args.entityType, entityId: args.entityId,
           revision: 0, state: structuredClone(args.state), status: "active",
+          originIdentity: structuredClone(["connection", "organizations"].includes(args.kind) ? fixtureConnectionOriginIdentity : fixtureOriginIdentity),
+          currentOriginIdentity: structuredClone(["connection", "organizations"].includes(args.kind) ? fixtureConnectionOriginIdentity : fixtureOriginIdentity),
           createdAt: now, updatedAt: now, expiresAt: null, operation: null,
         };
         persistenceStore.sessions[viewSessionId] = session;
@@ -297,13 +311,14 @@ async function mountApp(
           if (args.operation) {
             const operationId = crypto.randomUUID();
             const operation = {
+              originIdentity: structuredClone(session.originIdentity ?? null),
               operationId, viewSessionId: session.viewSessionId, method: args.operation.method,
               params: structuredClone(args.operation.params), idempotencyKey: args.operation.idempotencyKey,
               reconciliation: structuredClone(args.operation.reconciliation || {}), status: "pending",
               createdAt: session.updatedAt, updatedAt: session.updatedAt, resultReference: null,
             };
             persistenceStore.operations[operationId] = operation;
-            session.operation = { operationId, status: "pending" };
+            session.operation = { operationId, status: "pending", originIdentity: structuredClone(session.originIdentity ?? null) };
           }
           result = persistenceResult(structuredClone(session));
         }
@@ -525,7 +540,8 @@ async function mountApp(
             : message.params.name === "loomex_run_start_handoff_get"
               ? { structuredContent: { ok: true, data: handoffProjection } }
               : undefined;
-        const result = window.__personaMode && message.params.name === "loomex_connection_get" ? {structuredContent:{ok:true,data:{webAppUrl:window.__personaWebAppUrl ?? null,...(window.__personaOrganization?{organization:{selected:window.__personaOrganization}}:{})}}} : window.__personaMode && message.params.name === "loomex_persona_scope_status" && window.__personaScopes ? {structuredContent:{ok:true,data:{organizationId:window.__personaOrganization.id,status:"verified",scopes:window.__personaScopes,runnerId:crypto.randomUUID(),delegationId:crypto.randomUUID(),deviceId:crypto.randomUUID()}}} : window.__handoffResponses?.length && message.params.name.startsWith("loomex_run_start_handoff_") ? window.__handoffResponses.shift() : handoffResult || window.__workflowResponses?.length ? (handoffResult || window.__workflowResponses.shift()) : shouldFailFirst && callNumber === 1
+        const initialGeneratedConnectionRead = generatedConnectionView && callNumber === 1 && message.params.name === "loomex_connection_get";
+        const result = initialGeneratedConnectionRead ? {structuredContent:{ok:true,data:initialData}} : window.__personaMode && message.params.name === "loomex_connection_get" ? {structuredContent:{ok:true,data:{webAppUrl:window.__personaWebAppUrl ?? null,...(window.__personaOrganization?{organization:{selected:window.__personaOrganization}}:{})}}} : window.__personaMode && message.params.name === "loomex_persona_scope_status" && window.__personaScopes ? {structuredContent:{ok:true,data:{organizationId:window.__personaOrganization.id,status:"verified",scopes:window.__personaScopes,runnerId:crypto.randomUUID(),delegationId:crypto.randomUUID(),deviceId:crypto.randomUUID()}}} : window.__handoffResponses?.length && message.params.name.startsWith("loomex_run_start_handoff_") ? window.__handoffResponses.shift() : handoffResult || window.__workflowResponses?.length ? (handoffResult || window.__workflowResponses.shift()) : shouldFailFirst && callNumber === 1
           ? {
               isError: true,
               structuredContent: {
@@ -536,6 +552,10 @@ async function mountApp(
           : { structuredContent: { ok: true, data: resultData } };
         const returnedData = result?.structuredContent?.ok === true ? result.structuredContent.data : undefined;
         if(window.__personaBlockAcceptedSave && ["loomex_persona_role_create","loomex_persona_create"].includes(message.params.name) && returnedData)window.__blockedPersistenceTools=["loomex_view_session_update"];
+        if (returnedData?.requestId && ["resolved", "completed", "answered", "approved", "rejected"].includes(String(returnedData.requestStatus || "").toLowerCase())) {
+          // The acceptance transaction retires its answer draft before replying.
+          delete persistenceStore.drafts[returnedData.requestId];
+        }
         if (window.__retireAcceptedRequestViews && returnedData?.requestId &&
             ["resolved", "completed", "answered", "approved", "rejected"].includes(String(returnedData.requestStatus || "").toLowerCase())) {
           // Runner parity: an accepted response retires its request view and
@@ -586,6 +606,7 @@ async function mountApp(
     preserveHostState: reuseHost,
     appCallableToolNames,
     initialMethod,
+    generatedConnectionView, fixtureOriginIdentity, fixtureConnectionOriginIdentity,
   });
   try {
     await page.waitForFunction(() =>
@@ -648,6 +669,7 @@ function viewSession(
 ) {
   return {
     viewSessionId, kind, entityType, entityId, revision: 0, state, status: "active",
+    originIdentity: { ...fixtureOriginIdentity }, currentOriginIdentity: { ...fixtureOriginIdentity },
     createdAt: 1_700_000_000, updatedAt: 1_700_000_000, expiresAt: null, operation: null,
   };
 }
@@ -927,7 +949,7 @@ test("connection view renders fresh state without auto-starting authentication a
   const page = await browser.newPage();
   const app = await mountApp(page, "connection", connectionProjection());
   await app.getByRole("heading", { name: "Connection", exact: true }).waitFor();
-  assert.deepEqual(await page.evaluate(() => window.__loomexCalls), [], "mount only renders its supplied connection projection");
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls.map((call:any)=>call.name)), ["loomex_connection_get"], "mount verifies its supplied connection projection without starting authentication");
   await app.getByRole("button", { name: "Sign in", exact: true }).click();
   await waitForToolCount(page, "loomex_auth_start", 1);
   await waitForToolCount(page, "loomex_connection_get", 1);
@@ -1032,7 +1054,7 @@ test("browser sign-in displays one stable progress state and observes local auth
   const app = await mountApp(page, "connection", pending);
   await app.getByText("Waiting for browser approval…", { exact: true }).waitFor();
   assert.equal(await app.getByText("Waiting for browser approval…", { exact: true }).count(), 1);
-  assert.deepEqual(await page.evaluate(() => window.__loomexCalls), [], "background observation does not start immediately");
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls.map((call:any)=>call.name)), ["loomex_connection_get"], "restoration verifies authority once before background observation");
   await app.getByRole("button", { name: "Refresh", exact: true }).click();
   await waitForToolCount(page, "loomex_connection_get", 1);
   assert.equal(await page.evaluate(() => window.__loomexCalls.some((call: any) => call.name === "loomex_auth_cancel")), false);
@@ -1061,7 +1083,7 @@ test("browser approval advances the same connection card to organization selecti
   await app.getByRole("heading", { name: "Organizations", exact: true }).waitFor();
   await app.getByRole("radio", { name: "Loomex Studio", exact: true }).waitFor();
   assert.equal(await app.getByRole("button", { name: "Use organization", exact: true }).isDisabled(), true);
-  assert.deepEqual(await page.evaluate(() => window.__loomexCalls.map((call: {name:string}) => call.name)), ["loomex_connection_get", "loomex_organizations_list"]);
+  assert.deepEqual(await page.evaluate(() => window.__loomexCalls.map((call: {name:string}) => call.name)), ["loomex_connection_get", "loomex_connection_get", "loomex_organizations_list"]);
   assert.deepEqual(await page.evaluate(() => window.__loomexMessages), []);
 });
 
@@ -1113,6 +1135,11 @@ test("connection recovery offers exact reconciliation and explicit reconnect", a
   });
   const app = await mountApp(page, "connection", recovery);
   await app.getByText("A previous credential operation needs to be reconciled before Loomex can connect.", { exact: true }).waitFor();
+  await page.evaluate((recovery:unknown)=>{window.__workflowResponses=[
+    {structuredContent:{ok:true,data:recovery}},
+    {structuredContent:{ok:true,data:{reconciled:true,authenticated:false,activeOrganization:null,recoveryRef:"fixture-auth-recovery"}}},
+    {structuredContent:{ok:true,data:recovery}},
+  ];},recovery);
   await app.getByRole("button", { name: "Retry connection", exact: true }).click();
   await waitForToolCount(page, "loomex_auth_recover", 1);
   assert.equal(await app.getByRole("button", { name: "Reconnect", exact: true }).count(), 1);
@@ -1133,8 +1160,8 @@ test("expired sign-in can cancel an unresolved recovery and then start a fresh f
   const session={...viewSession(randomUUID(),"browser","catalog","00000000-0000-0000-0000-000000000000",{page:"connection"}),kind:"connection"};
   const app = await mountApp(page,"connection",recovery,false,false,null,false,{"loomex/viewSession":session},undefined,[result(recovery)]);
   await app.getByRole("button",{name:"Retry connection",exact:true}).waitFor();
-  await page.evaluate(() => {window.__workflowResponses=[{isError:true,structuredContent:{ok:false,
-    error:{code:"RUNNER_BROWSER_AUTH_INVALID",message:"Sign-in expired"}}}];});
+  await page.evaluate((recovery:unknown) => {window.__workflowResponses=[{structuredContent:{ok:true,data:recovery}},{isError:true,structuredContent:{ok:false,
+    error:{code:"RUNNER_BROWSER_AUTH_INVALID",message:"Sign-in expired"}}}];},recovery);
   await app.getByRole("button",{name:"Retry connection",exact:true}).click();
   await app.getByText("Sign-in expired",{exact:true}).waitFor();
   await page.evaluate((responses:unknown[])=>{window.__workflowResponses=responses;},[
@@ -1170,7 +1197,7 @@ test("reopening unresolved sign-in cancellation reconciles the same key and disp
     login:{flowId:"expired-flow",expiresAt:0,authorizationUrl:null}});
   const key=randomUUID(); const originalKey=randomUUID();
   const session={...viewSession(randomUUID(),"browser","catalog","00000000-0000-0000-0000-000000000000",{
-    page:"connection",pending:{name:"loomex_auth_cancel",args:{flowId:"expired-flow"},key,
+    page:"connection",pending:{originIdentity:fixtureOriginIdentity,name:"loomex_auth_cancel",args:{flowId:"expired-flow"},key,
       superseded:{name:"loomex_auth_recover",args:{},key:originalKey}},
   }),kind:"connection"};
   const result=(data:unknown)=>({structuredContent:{ok:true,data}});
@@ -1189,22 +1216,28 @@ test("reopening unresolved sign-in cancellation reconciles the same key and disp
   assert.equal(saved.state.pending,null);
 });
 
-test("a saved recovery made obsolete by completed cancellation settles without another credential mutation", async (t) => {
+test("a saved recovery made obsolete by completed cancellation settles only from its exact receipt", async (t) => {
   const available=await browserTools(); assert.ok(available,"Chromium required");
   const browser=await available.tools.chromium.launch({executablePath:available.executablePath,headless:true});
   t.after(()=>browser.close());
   const page=await browser.newPage();
   const signedOut=connectionProjection();
   const session={...viewSession(randomUUID(),"browser","catalog","00000000-0000-0000-0000-000000000000",{
-    page:"connection",pending:{name:"loomex_auth_recover",args:{},key:randomUUID()},
+    page:"connection",pending:{originIdentity:fixtureOriginIdentity,name:"loomex_auth_recover",args:{recoveryRef:"fixture-auth-recovery"},key:randomUUID()},
   }),kind:"connection"};
   const result=(data:unknown)=>({structuredContent:{ok:true,data}});
   const app=await mountApp(page,"connection",signedOut,false,false,null,false,{"loomex/viewSession":session},undefined,[result(signedOut)]);
   await app.getByRole("button",{name:"Retry previous action",exact:true}).waitFor();
+  await page.evaluate((responses:unknown[])=>{window.__workflowResponses=responses;},[
+    result(signedOut),result({reconciled:true,authenticated:false,activeOrganization:null,recoveryRef:"fixture-auth-recovery"}),result(signedOut),
+  ]);
   await app.getByRole("button",{name:"Retry previous action",exact:true}).click();
   await app.getByRole("button",{name:"Sign in",exact:true}).waitFor();
   const calls=await page.evaluate(()=>window.__loomexCalls);
-  assert.equal(calls.some((call:{name:string})=>["loomex_auth_start","loomex_auth_recover","loomex_auth_cancel"].includes(call.name)),false);
+  const recoveryCalls=calls.filter((call:{name:string})=>call.name==="loomex_auth_recover");
+  assert.equal(recoveryCalls.length,1);
+  assert.deepEqual(recoveryCalls[0].arguments,{...(session.state.pending as any).args,idempotencyKey:(session.state.pending as any).key});
+  assert.equal(calls.some((call:{name:string})=>["loomex_auth_start","loomex_auth_cancel"].includes(call.name)),false);
 });
 
 test("a fresh authenticated connection loads organizations separately before selection", async (t) => {
@@ -1234,11 +1267,11 @@ test("a fresh authenticated connection loads organizations separately before sel
     { structuredContent: { ok: true, data: { organizations: [{ id: organizationId, name: "Loomex Studio", enrolled: true }] } } },
   ]);
   await app.getByRole("radio", { name: "Loomex Studio" }).check();
-  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), ["loomex_organizations_list"]);
+  assert.deepEqual((await page.evaluate(() => window.__loomexCalls)).map((call: any) => call.name), ["loomex_connection_get", "loomex_organizations_list"]);
   await app.getByRole("button", { name: "Use organization", exact: true }).click();
   await waitForToolCount(page, "loomex_organization_select", 1);
   const calls = await page.evaluate(() => window.__loomexCalls);
-  assert.equal(calls[1].arguments.organizationId, organizationId);
+  assert.equal(calls.find((call:any)=>call.name==="loomex_organization_select").arguments.organizationId, organizationId);
   await app.getByText("Current", { exact: true }).waitFor();
   assert.equal(await app.getByRole("button", { name: "Sign out", exact: true }).count(), 0);
 
@@ -5269,7 +5302,7 @@ test("runner browser launch verifies the pending flow and never passes a URL fro
   const app = await mountApp(page, "connection", pending, false, false, null, false, undefined, { openLinks: {} });
   await app.getByRole("button", { name: "Open browser", exact: true }).click();
   await page.waitForFunction(() => window.__loomexBrowserLaunches.includes("flow-external"));
-  assert.equal((await page.evaluate(() => window.__loomexCalls)).filter((call: {name:string}) => call.name === "loomex_connection_get").length, 1);
+  assert.equal((await page.evaluate(() => window.__loomexCalls)).filter((call: {name:string}) => call.name === "loomex_connection_get").length, 2);
   const launch = (await page.evaluate(() => window.__loomexCalls)).find((call: {name:string}) => call.name === "loomex_auth_open_browser");
   assert.deepEqual(Object.keys(launch.arguments).sort(), ["flowId", "idempotencyKey"]);
   assert.equal(launch.arguments.flowId, "flow-external");
@@ -6373,7 +6406,7 @@ test("credential store connection diagnostics show fixed categories without star
     await app.getByRole("heading", { name: "Connection", exact: true }).waitFor();
     assert.equal((await app.locator("body").innerText()).includes(expected), true);
     assert.doesNotMatch(await app.locator("body").innerText(), /Unlock your|private-token|private\/keychain|ACL/);
-    assert.deepEqual(await page.evaluate(() => window.__loomexCalls), []);
+    assert.deepEqual(await page.evaluate(() => window.__loomexCalls.map((call:any)=>call.name)), ["loomex_connection_get"], "restoration only reads connection authority");
     assert.equal(await app.getByRole("button", { name: "Sign in", exact: true }).count(), 0);
     assert.equal(await app.getByRole("button", { name: "Reconnect", exact: true }).count(), 0);
     assert.equal(await app.getByRole("button", { name: "Sign out", exact: true }).count(), 0);
@@ -6693,4 +6726,28 @@ test("multi-directory setup carries the exact reviewed set and an override clear
  await override.getByRole("button",{name:"Change workspace",exact:true}).click();
  await override.getByLabel("Workspace directory *",{exact:true}).fill("/override");
  assert.equal(await override.locator("#run-additional-workspaces").inputValue(),"");
+});
+
+test("legacy or reinstalled connection remount preserves pending identity and blocks credential retry", async (t) => {
+  const available=await browserTools();assert.ok(available,"Chromium required");
+  const browser=await available.tools.chromium.launch({executablePath:available.executablePath,headless:true});t.after(()=>browser.close());
+  const authenticated=connectionProjection({state:"authenticated",actions:["auth.logout","organizations.list","organizations.select"]});
+  const response={structuredContent:{ok:true,data:authenticated}};
+  for(const legacy of [true,false]){
+    const page=await browser.newPage();
+    const key=randomUUID();
+    const pending={name:"loomex_auth_logout",args:{},key,...(!legacy?{originIdentity:fixtureConnectionOriginIdentity}:{})};
+    const session={...viewSession(randomUUID(),"browser","catalog","00000000-0000-0000-0000-000000000000",{page:"connection",pending}),kind:"connection",
+      originIdentity:legacy?null:fixtureConnectionOriginIdentity,
+      currentOriginIdentity:{...fixtureConnectionOriginIdentity,installationId:randomUUID()}};
+    const app=await mountApp(page,"connection",authenticated,false,false,null,false,{"loomex/viewSession":session},undefined,[response]);
+    await app.getByRole("button",{name:"Retry previous action",exact:true}).click();
+    await app.getByText(/This saved connection action belongs to an earlier installation.*Open a new Connection card/).waitFor();
+    assert.equal(await page.evaluate(()=>window.__loomexCalls.some((call:any)=>["loomex_auth_start","loomex_auth_cancel","loomex_auth_logout","loomex_organization_select"].includes(call.name))),false);
+    const saved=await page.evaluate((id:string)=>window.__loomexPersistenceStore.sessions[id],session.viewSessionId);
+    assert.deepEqual(saved.state.pending,pending,"the uncertain original tuple is retained without acquiring the current installation");
+    assert.deepEqual(saved.originIdentity,legacy?null:fixtureConnectionOriginIdentity);
+    assert.equal(await app.getByRole("button",{name:"Refresh",exact:true}).isEnabled(),true);
+    await page.close();
+  }
 });
