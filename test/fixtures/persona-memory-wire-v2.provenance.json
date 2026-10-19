@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "loomex.memory-wire-fixture-provenance/v1",
+  "fixtureSha256": "0158cf25822dd9d09d81fdb8c7499047ac6b1c1f22b46be474bfce543ba1afdc",
+  "producerArtifact": "planning/plugin-runner-integration/private-memory-discussion/phase5-backend-memory-wire-fixtures-final.json",
+  "producerSources": {
+    "backend/apps/memory/wire.py": "adc682bdf7b2f36d4bb5df04dd71534bdc2a0b1dcd570b4fcb20cafb7b53f592",
+    "backend/apps/memory/retrieval_v2.py": "0eae1da3bcf2b4edfbcfe31707eb6bc7588086960f47086e6c3b7009980216db",
+    "backend/apps/runner_control/presentation/persona_api.py": "022dbf438914f5321bd914f7a0b6e245e6782c996774cb3b04beba00bbfd9de4",
+    "backend/apps/runner_control/tests/presentation/test_phase5_wire_export.py": "2ee2ef290c8de626c137a76e7ff2217b1501dc29ef8d95e98395ae69eb99901f"
+  }
+}

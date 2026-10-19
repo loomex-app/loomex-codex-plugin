@@ -1,3 +1,4 @@
+import { discussionResults } from "./ui-app/discussion-presentation.js";
 import { z } from "zod";
 import { isDeepStrictEqual } from "node:util";
 import type { JsonValue } from "./protocol.js";
@@ -26,6 +27,13 @@ const SAFE_PROGRESS_SUMMARIES: Readonly<Record<string, string>> = {
   warning: "Provider reported a warning",
 };
 const SAFE_MILESTONE_SUMMARIES: Readonly<Record<string, string>> = {
+  "discussion.round_started": "Discussion round started",
+  "discussion.collection_started": "Independent discussion collection started",
+  "discussion.critique_started": "Independent critiques started",
+  "discussion.voting_started": "Independent voting started",
+  "discussion.moderation_started": "Completed discussion round is being evaluated",
+  "discussion.synthesis_started": "Discussion synthesis started",
+  "discussion.proposals_started": "Private memory proposals started",
   "node.started": "Workflow step started",
   "node.completed": "Workflow step completed",
   "node.failed": "Workflow step failed",
@@ -36,6 +44,13 @@ const SAFE_MILESTONE_SUMMARIES: Readonly<Record<string, string>> = {
   "draft.repair_started": "Workflow repair started",
 };
 const MILESTONE_EVENT_TYPES: Readonly<Record<string, string>> = {
+  "discussion.round_started": "workflow_runtime.discussion.turn.requested",
+  "discussion.collection_started": "workflow_runtime.discussion.turn.requested",
+  "discussion.critique_started": "workflow_runtime.discussion.turn.requested",
+  "discussion.voting_started": "workflow_runtime.discussion.turn.requested",
+  "discussion.moderation_started": "workflow_runtime.discussion.turn.requested",
+  "discussion.synthesis_started": "workflow_runtime.discussion.turn.requested",
+  "discussion.proposals_started": "workflow_runtime.discussion.turn.requested",
   "node.started": "workflow_runtime.node.started",
   "node.completed": "workflow_runtime.node.completed",
   "node.failed": "workflow_runtime.node.failed",
@@ -330,6 +345,25 @@ function completionResult(value: JsonValue | undefined): ObjectValue | undefined
     if (!valid) continue;
     if (sourceItems.length > inspected) truncated = true;
     if (items.length) result[key] = items;
+  }
+  const discussions=discussionResults(source.discussions);
+  if(discussions===undefined)result.discussionResultUnverified=true;
+  else if(discussions.length){
+    result.discussions=discussions.slice(0,MAX_RESULT_ITEMS).map(({nodeKey,nodeExecutionId,output})=>({
+      nodeKey:nodeKey.slice(0,MAX_RESULT_ITEM_CHARS),nodeExecutionId,
+      subject:String(output.subject).slice(0,MAX_RESULT_ITEM_CHARS),
+      synthesis:String(output.synthesis).slice(0,MAX_RESULT_SUMMARY_CHARS),
+      recommendation:output.recommendation===null?null:String(output.recommendation).slice(0,MAX_RESULT_ITEM_CHARS),
+      goalStatus:output.goalStatus as JsonValue,stopReason:output.stopReason as JsonValue,
+      participants:(output.participants as ObjectValue[]).map(p=>fields(p,["slotKey","roleId","personId"])),
+      messageCount:(output.messages as unknown[]).length,
+      disagreements:(output.disagreements as string[]).slice(0,MAX_RESULT_ITEMS).map(text=>text.slice(0,MAX_RESULT_ITEM_CHARS)),
+      openQuestions:(output.openQuestions as string[]).slice(0,MAX_RESULT_ITEMS).map(text=>text.slice(0,MAX_RESULT_ITEM_CHARS)),
+      tally:output.tally as JsonValue,
+      warningCount:(output.warnings as unknown[]).length,proposalReceiptCount:(output.proposalReceipts as unknown[]).length,
+      transcriptOmitted:true,
+    }));
+    result.discussionCount=discussions.length;truncated=true;
   }
   if (Object.keys(result).length === 1) return undefined;
   if (truncated) result.truncated = true;

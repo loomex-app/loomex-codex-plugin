@@ -24,6 +24,7 @@ import {
   NegotiationParamsSchema,
   NegotiationResultSchema,
   VALIDATION_ERRORS_CAPABILITY,
+  type JsonValue,
 } from "../src/protocol.js";
 import { renderUiHtml } from "../src/ui-template.js";
 import {
@@ -159,7 +160,7 @@ test("pinned runner contract hashes and strict method schemas cannot drift", asy
   );
   assert.deepEqual(
     [...catalog.capabilities].sort(),
-    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"workflows.patch.notes-preserve/v1", "authoring.chat-native/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1", "execution.workspace-set/v1", "presentation.continuation-resolution/v1", "auth.recovery-binding/v1", "operation-cache.retirement-fence/v1", "uninstall-work.generations/v1", "uninstall-work.inactive-failed-reconcile/v1"])].sort(),
+    [...new Set([...REQUIRED_RUNNER_CAPABILITIES,...[...OPTIONAL_RUNNER_METHODS].map(method=>`method:${method}`),"personas.memory-transport/v2", "workflows.patch.notes-preserve/v1", "authoring.chat-native/v1", "method:daemon.drain", "method:follow.session.lifecycle", "follow.session.lifecycle/v1", "error.recovery/v1", "diagnostics.fingerprint/v1", "auth:startup-observation/v1", "execution.workspace-set/v1", "presentation.continuation-resolution/v1", "auth.recovery-binding/v1", "operation-cache.retirement-fence/v1", "uninstall-work.generations/v1", "uninstall-work.inactive-failed-reconcile/v1"])].sort(),
   );
   const status = catalog.methods.find(method => method.name === "status.get");
   assert.ok(status);
@@ -356,6 +357,10 @@ test("SDK stdio discovery exposes only the focused tool catalog", async () => {
   for (const tool of tools.tools) {
     assert.equal(tool.inputSchema.type, "object");
     assert.equal(tool.inputSchema.additionalProperties, false);
+    if (["search", "read", "write", "update"].some(action => tool.name === `loomex_persona_memory_${action}`)) {
+      assert.equal(Object.hasOwn(tool, "outputSchema"), false, `${tool.name}: canonical memory content has no structured output contract`);
+      continue;
+    }
     assert.equal(tool.outputSchema?.type, "object");
     assert.equal(tool.outputSchema?.additionalProperties, false);
     const outputProperties = tool.outputSchema?.properties as
@@ -2657,4 +2662,121 @@ test("delivery closure capability is requested only after advertisement and befo
     await assert.rejects(new LocalControlClient().call("presentation.delivery.get", {identity}, {mutating:false, timeoutMs:500}),
       (error:unknown) => error instanceof LocalControlError && error.code === "COMPATIBILITY_ERROR");
   });
+});
+
+test("coexisting Persona contexts forward v2 cursors and preserve v1 gateway rejection",async()=>{
+ const personId="11111111-1111-4111-8111-111111111111",conversationId="22222222-2222-4222-8222-222222222222",v1="33333333-3333-4333-8333-333333333333",v2="44444444-4444-4444-8444-444444444444",memoryId="55555555-5555-4555-8555-555555555555";
+ const fragment='{"content":"فارسی 😀"}';
+ const result={ok:true,tool:"person_memory.read",schemaVersion:"ai.persona-memory/v2",memoryId,revision:2,page:{text:fragment,encoding:"application/json; fragment=unicode-codepoints",start:0,end:Array.from(fragment).length,totalChars:Array.from(fragment).length,documentSha256:createHash("sha256").update(fragment).digest("hex"),complete:true,nextCursor:null},budget:{accountingContract:"o200k_base/v1",maxTokens:2048,maxBytes:16384}};
+ const canonicalText=JSON.stringify(result,null,1);
+ let runner:FakeRunner;runner=new FakeRunner((request,socket):void=>{
+  if(request.method==="personas.memory.read"){
+   if(request.params.chatId===v1)return runner.respond(socket,request,{result:{ok:false,tool:"person_memory.read",message:"Cursor is unsupported for this context"}});
+   return runner.respond(socket,request,{result,canonicalText});
+  }
+  return runner.respond(socket,request,{});
+ },{capabilities:[...REQUIRED_RUNNER_CAPABILITIES,"method:personas.memory.read"]});
+ const client=await connect(runner);
+ const first=await client.callTool({name:"loomex_persona_memory_read",arguments:{personId,conversationId,chatId:v2,arguments:{memoryId,cursor:"original-cursor"}}});
+ assert.equal(first.isError,undefined);assert.deepEqual(first.content,[{type:"text",text:canonicalText}]);
+ assert.equal(Object.hasOwn(first,"structuredContent"),false);
+ const old=await client.callTool({name:"loomex_persona_memory_read",arguments:{personId,conversationId,chatId:v1,arguments:{memoryId,cursor:"original-cursor"}}});
+ assert.equal((old.structuredContent as any).data.result.ok,false);
+ assert.deepEqual(JSON.parse((old.content as Array<{text:string}>)[0]!.text),{ok:true,method:"personas.memory.read",requestId:(old.structuredContent as any).requestId});
+ assert.deepEqual(runner.requests.filter(r=>r.method==="personas.memory.read").map(r=>r.params),[{personId,conversationId,chatId:v2,arguments:{memoryId,cursor:"original-cursor"}},{personId,conversationId,chatId:v1,arguments:{memoryId,cursor:"original-cursor"}}]);
+});
+
+test("chat memory v2 offer is negotiated privately while old runner contexts remain v1",async()=>{
+ const personId="11111111-1111-4111-8111-111111111111",chatId="33333333-3333-4333-8333-333333333333",conversationId="22222222-2222-4222-8222-222222222222",organizationId="44444444-4444-4444-8444-444444444444",roleId="55555555-5555-4555-8555-555555555555",idempotencyKey="66666666-6666-4666-8666-666666666666";
+ const data={contractVersion:"loomex.ai-persona-chat/v1",person:{id:personId,organizationId,roleId},role:null,effectiveConfig:{},conversation:{conversationId,chatId},memory:{toolNamespace:"person_memory",toolCatalog:[],toolInstructions:"",policy:{}},configDigest:"a".repeat(64)};
+ for(const supported of [false,true]){
+  let runner:FakeRunner;runner=new FakeRunner((request,socket)=>{runner.respond(socket,request,data);},{capabilities:[...REQUIRED_RUNNER_CAPABILITIES,"method:personas.chat_context.create","method:personas.chat_context.get",...(supported?["personas.memory-transport/v2"]:[])]});
+  const client=await connect(runner);
+  const created=await client.callTool({name:"loomex_persona_context_create",arguments:{personId,chatId,idempotencyKey}});assert.equal(created.isError,undefined);
+  assert.deepEqual(runner.requests.find(r=>r.method==="personas.chat_context.create")?.params,{personId,chatId,idempotencyKey,...(supported?{transportMemoryContract:"ai.persona-memory/v2"}:{})});
+  const get=await client.callTool({name:"loomex_persona_context_get",arguments:{personId,conversationId,chatId}});assert.equal(get.isError,undefined);
+  assert.deepEqual(runner.requests.find(r=>r.method==="personas.chat_context.get")?.params,{personId,conversationId,chatId});
+ }
+});
+
+test("actual backend memory producer results cross native MCP without fabricated revision or retry actions",async(t)=>{
+ const fixtures=JSON.parse(await readFile("test/fixtures/persona-memory-wire-v2.json","utf8")) as {cases:Array<{name:string;method:string;result:Record<string,JsonValue>;canonicalText:string}>};
+ const context={personId:"11111111-1111-4111-8111-111111111111",conversationId:"22222222-2222-4222-8222-222222222222",chatId:"33333333-3333-4333-8333-333333333333"};
+ const keys=new Map<string,string>();for(const entry of fixtures.cases)keys.set(entry.name,crypto.randomUUID());
+ const dispatched:string[]=[];
+ for(const entry of fixtures.cases)await t.test(entry.name,async()=>{
+  let runner:FakeRunner;runner=new FakeRunner((request,socket)=>{
+   dispatched.push(request.method);
+   if(request.method==="personas.operations.get")runner.respond(socket,request,{operation:`memory.${entry.method}`,key:request.params.idempotencyKey!,status:"completed",requestDigest:"a".repeat(64),response:{result:entry.result}});
+   else runner.respond(socket,request,{result:entry.result,canonicalText:entry.canonicalText});
+  });
+  const client=await connect(runner);
+  const receipt=entry.name.endsWith("_receipt"),mutating=entry.method==="write"||entry.method==="update";
+  const memoryId=typeof entry.result.memoryId==="string"?entry.result.memoryId:"55555555-5555-4555-8555-555555555555";
+  const args=entry.method==="search"?{query:"concise review status"}:entry.method==="read"?{memoryId}:entry.method==="write"?{content:"The user prefers concise review status."}:{memoryId,content:"The user prefers a concise weekly review."};
+  const originalKey=keys.get(entry.name)!;
+  const response=await client.callTool({name:`loomex_persona_memory_${entry.method}`,arguments:{...context,arguments:args,...(mutating?{idempotencyKey:originalKey}:{})}});
+  assert.equal(response.isError,undefined);
+  assert.deepEqual(response.content,[{type:"text",text:entry.canonicalText}]);assert.equal(Object.hasOwn(response,"structuredContent"),false);
+  assert.equal(runner.requests.length,1,"each accepted or rejected result must dispatch exactly once");
+  assert.equal((response.structuredContent as any)?.data.nextAction,undefined);
+  if(receipt){
+   const lookup=await client.callTool({name:"loomex_persona_operation_get",arguments:{operation:`memory.${entry.method}`,idempotencyKey:originalKey}});
+   assert.equal((lookup.structuredContent as any).ok,true);assert.deepEqual((lookup.structuredContent as any).data.response.result,entry.result);assert.equal((lookup.structuredContent as any).data.status,"completed");
+   assert.deepEqual(runner.requests.map(request=>request.method),[`personas.memory.${entry.method}`,"personas.operations.get"]);
+   assert.equal(runner.requests[1]!.params.idempotencyKey,originalKey);
+  }
+ });
+ assert.equal(dispatched.length,12);
+});
+
+test("memory HTTP authority and tiny-budget failures remain RPC errors instead of semantic rejections",async()=>{
+ let code="AUTHORIZATION_FAILED";let runner:FakeRunner;runner=new FakeRunner((request,socket)=>runner.error(socket,request,code,"raw private service diagnostic",false));
+ const client=await connect(runner);
+ for(const failure of ["AUTHORIZATION_FAILED","MEMORY_BUDGET_EXCEEDED"]){code=failure;
+  const response=await client.callTool({name:"loomex_persona_memory_write",arguments:{personId:"11111111-1111-4111-8111-111111111111",conversationId:"22222222-2222-4222-8222-222222222222",chatId:"33333333-3333-4333-8333-333333333333",idempotencyKey:crypto.randomUUID(),arguments:{content:"Durable preference"}}});
+  assert.equal(response.isError,true);assert.equal((response.structuredContent as any).ok,false);assert.equal((response.structuredContent as any).error.code,failure);
+  assert.doesNotMatch(JSON.stringify(response),/raw private service diagnostic|canonicalContent|person_memory\.write/);
+ }
+ assert.equal(runner.requests.length,2);
+});
+
+test("content-only memory delivery still rejects malformed v2 responses and preserves mutation reconciliation keys",async(t)=>{
+ const fixtures=JSON.parse(await readFile("test/fixtures/persona-memory-wire-v2.json","utf8")) as {cases:Array<{name:string;method:string;result:Record<string,JsonValue>;canonicalText:string}>};
+ const context={personId:"11111111-1111-4111-8111-111111111111",conversationId:"22222222-2222-4222-8222-222222222222",chatId:"33333333-3333-4333-8333-333333333333"};
+ for(const method of ["search","read","write","update"])await t.test(method,async()=>{
+  const entry=fixtures.cases.find(entry=>entry.name===method)!,key=crypto.randomUUID(),mutating=method==="write"||method==="update";
+  let runner:FakeRunner;runner=new FakeRunner((request,socket)=>{
+   if(request.method==="personas.operations.get")return runner.respond(socket,request,{operation:`memory.${method}`,key,status:"processing",requestDigest:"a".repeat(64)});
+   const result={...entry.result,rawError:"private producer detail"};
+   runner.respond(socket,request,{result,canonicalText:JSON.stringify(result)});
+  });
+  const client=await connect(runner);
+  const memoryId="55555555-5555-4555-8555-555555555555",args=method==="search"?{query:"review"}:method==="read"?{memoryId}:method==="write"?{content:"Concise review"}:{memoryId,content:"Concise review"};
+  const response=await client.callTool({name:`loomex_persona_memory_${method}`,arguments:{...context,arguments:args,...(mutating?{idempotencyKey:key}:{})}});
+  assert.equal(response.isError,true);assert.equal((response.structuredContent as any).error.code,mutating?"NETWORK_AMBIGUOUS":"INVALID_RESPONSE");
+  assert.doesNotMatch(JSON.stringify(response),/private producer detail|canonicalContent|person_memory\./);
+  assert.equal(runner.requests.length,1);
+  if(mutating){
+   assert.equal((response.structuredContent as any).idempotencyKey,key);
+   const receipt=await client.callTool({name:"loomex_persona_operation_get",arguments:{operation:`memory.${method}`,idempotencyKey:key}});
+   assert.equal((receipt.structuredContent as any).data.status,"processing");
+   assert.deepEqual(runner.requests.map(request=>request.method),[`personas.memory.${method}`,"personas.operations.get"]);
+   assert.equal(runner.requests[1]!.params.idempotencyKey,key);
+  }
+ });
+});
+
+test("all four v1 memory actions preserve their structured and text shapes",async(t)=>{
+ const context={personId:"11111111-1111-4111-8111-111111111111",conversationId:"22222222-2222-4222-8222-222222222222",chatId:"33333333-3333-4333-8333-333333333333"};
+ for(const method of ["search","read","write","update"])await t.test(method,async()=>{
+  const memoryId="55555555-5555-4555-8555-555555555555",key=crypto.randomUUID(),mutating=method==="write"||method==="update",result={ok:true,tool:`person_memory.${method}`,memoryId};
+  let runner:FakeRunner;runner=new FakeRunner((request,socket)=>runner.respond(socket,request,{result}));
+  const client=await connect(runner),args=method==="search"?{query:"review"}:method==="read"?{memoryId}:method==="write"?{content:"Concise review"}:{memoryId,content:"Concise review"};
+  const response=await client.callTool({name:`loomex_persona_memory_${method}`,arguments:{...context,arguments:args,...(mutating?{idempotencyKey:key}:{})}});
+  assert.equal(response.isError,undefined);
+  const structured=response.structuredContent as Record<string,unknown>;
+  assert.deepEqual(structured,{ok:true,protocol:"loomex.local-control/v2",method:`personas.memory.${method}`,requestId:runner.requests[0]!.id,data:{result}});
+  assert.deepEqual(response.content,[{type:"text",text:JSON.stringify({ok:true,method:`personas.memory.${method}`,requestId:runner.requests[0]!.id,memoryId})}]);
+ });
 });

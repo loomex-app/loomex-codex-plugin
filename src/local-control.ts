@@ -490,6 +490,15 @@ export class LocalControlClient {
               delete legacyParams.includeFingerprintDiagnostics;
               requestFrame = `${JSON.stringify({ ...request, params: legacyParams })}\n`;
             }
+            // The fixed private offer is legal only after this runner advertises
+            // wire support. Older strict decoders receive the original v1 input.
+            // Reopening an existing context never negotiates a newer version.
+            if(method==="personas.chat_context.create"){
+              const offered={...params};delete offered.transportMemoryContract;
+              if(capabilities?.has("personas.memory-transport/v2"))offered.transportMemoryContract="ai.persona-memory/v2";
+              requestFrame=`${JSON.stringify({...request,params:offered})}\n`;
+              if(Buffer.byteLength(requestFrame)>MAX_FRAME_BYTES){finish(()=>reject(new LocalControlError({code:"FRAME_TOO_LARGE",requestId})));return;}
+            }
             if (!canProceed()) return;
             phase = "action";
             actionSent = true;

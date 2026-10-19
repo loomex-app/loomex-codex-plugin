@@ -653,3 +653,12 @@ test("restored preparation text and review metadata use only the exact bound wor
   assert.equal(JSON.stringify(text).includes("workflowClosureReview"),false);
   assert.equal(client.calls.every((call)=>call.options.mutating===false),true);
 });
+
+test("raw discussion closure provider review retains every selected participant model",()=>{
+ const snapshot={...dependency("discuss","persona_discussion"),discussion:{participants:[{slotKey:"a",modelResolution:{provider:"codex",runtimeModel:"model-a"}},{slotKey:"b",modelResolution:{provider:"codex",runtimeModel:"model-b"}}]}};
+ const data={preparationId:binding.preparationId,bindingDigest:binding.bindingDigest,binding:{workflowId:WORKFLOW_ID,versionId:VERSION_ID,organizationId:ORGANIZATION_ID,workspacePath:binding.workspacePath,workflowClosure:completeClosure({discuss:snapshot})}};
+ const review=preparationReviewBinding("runs.prepare",output("runs.prepare",data));
+ assert.deepEqual(review?.providers,[{name:"codex",model:"model-a"},{name:"codex",model:"model-b"}]);
+ const invalid={...snapshot,discussion:{participants:[{slotKey:"a",modelResolution:{provider:"codex",runtimeModel:"model-a"}},{slotKey:"b"}]}};
+ assert.equal(preparationReviewBinding("runs.prepare",output("runs.prepare",{...data,binding:{...data.binding,workflowClosure:completeClosure({discuss:invalid})}}))?.providers,null);
+});

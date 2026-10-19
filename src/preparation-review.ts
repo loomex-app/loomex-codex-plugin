@@ -76,7 +76,7 @@ function closureReviewProjection(value: JsonValue | undefined): ClosureProjectio
   return { providers, rootVersion };
 }
 
-const AGENT_NODE_TYPES = new Set(["ai_agent", "ai_prompt", "person"]);
+const AGENT_NODE_TYPES = new Set(["ai_agent", "ai_prompt", "person", "persona_discussion"]);
 const SUBWORKFLOW_NODE_TYPES = new Set(["sub_workflow", "subworkflow"]);
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -213,14 +213,20 @@ function closureProjection(
       if (target === undefined) return undefined;
       if (target !== null) targets.push(target);
       if (!AGENT_NODE_TYPES.has(nodeType)) continue;
-      const resolution = objectValue(snapshot.modelResolution);
-      const name = nonemptyString(resolution?.provider);
-      const model = nonemptyString(resolution?.runtimeModel);
-      if (resolution === undefined || name === undefined || model === undefined) return undefined;
-      const providerKey = `${name}\u0000${model}`;
-      if (seen.has(providerKey)) continue;
-      seen.add(providerKey);
-      providers.push({ name, model });
+      const participants=objectValue(snapshot.discussion)?.participants;
+      if(nodeType==="persona_discussion"&&(!Array.isArray(participants)||participants.length<2||participants.length>8))return undefined;
+      const resolutions=nodeType==="persona_discussion"&&Array.isArray(participants)
+        ? participants.map(value=>objectValue(value)?.modelResolution) : [snapshot.modelResolution];
+      for(const value of resolutions){
+        const resolution = objectValue(value);
+        const name = nonemptyString(resolution?.provider);
+        const model = nonemptyString(resolution?.runtimeModel);
+        if (resolution === undefined || name === undefined || model === undefined) return undefined;
+        const providerKey = `${name}\u0000${model}`;
+        if (seen.has(providerKey)) continue;
+        seen.add(providerKey);
+        providers.push({ name, model });
+      }
     }
 
     const parsed = { identity, workflowId, versionId, version, targets };

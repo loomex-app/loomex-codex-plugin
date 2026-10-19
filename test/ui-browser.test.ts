@@ -6751,3 +6751,31 @@ test("legacy or reinstalled connection remount preserves pending identity and bl
     await page.close();
   }
 });
+
+test("Persona Discussion preparation reviews exact participants and limits on narrow screens",async(t)=>{
+ const available=await browserTools();assert.ok(available,"Chromium required");const browser=await available.tools.chromium.launch({executablePath:available.executablePath,headless:true});t.after(()=>browser.close());
+ const page=await browser.newPage({viewport:{width:390,height:1100}});const workflowId=randomUUID(),versionId=randomUUID(),organizationId=randomUUID(),installationId=randomUUID(),a=randomUUID(),b=randomUUID(),roleId=randomUUID();
+ const discussion={workflowVersionId:versionId,nodeKey:"decision",mode:"independent_then_discuss",maxRounds:3,moderatorSlot:"review",synthesizerSlot:"review",contextBudget:{accountingContract:"o200k_base/v1",maxTokens:16384,maxBytes:131072},finalMemoryProposals:true,voting:{options:[],rule:"majority"},configDigest:"a".repeat(64),participants:[{slotKey:"research",selectionKey:"sealed/research",personId:a,personName:"Researcher",roleId,roleName:"Research",provider:"codex",model:"gpt-test",reasoningEffort:"high",configDigest:"a".repeat(64)},{slotKey:"review",selectionKey:"sealed/review",personId:b,personName:"Reviewer",roleId,roleName:"Research",provider:"codex",model:"gpt-test",reasoningEffort:null,configDigest:"b".repeat(64)}]};
+ const prepared={preparationId:randomUUID(),bindingDigest:"c".repeat(64),confirmationKey:randomUUID(),binding:{workflowId,versionId,organizationId,installationId,workspacePath:"/project",executionPolicy:"host_user/v1",inputs:{aiPersonaSelections:{"sealed/research":a,"sealed/review":b}},providerConfiguration:{},workflowClosureReview:{personas:[],discussions:[discussion]}}};
+ const presentation={schemaVersion:"loomex/preparation-review/v1",preparationId:prepared.preparationId,bindingDigest:prepared.bindingDigest,workflowId,versionId,organizationId,workflowName:"Discussion",workflowVersion:1,organizationName:"QA",providers:[{name:"codex",model:"gpt-test"}]};
+ const app=await mountApp(page,"prepare",prepared,false,false,presentation);
+ await app.getByRole("button",{name:"Start run",exact:true}).waitFor();assert.equal(await app.getByRole("button",{name:"Start run",exact:true}).isEnabled(),true);
+ await app.getByText("Independent then discuss · Up to 3 rounds",{exact:true}).waitFor();await app.getByText("Moderator: review · Synthesizer: review",{exact:true}).waitFor();
+ assert.equal(await app.locator("body").evaluate((node:any)=>node.scrollWidth<=node.clientWidth),true);
+ assert.equal(await page.evaluate(()=>window.__loomexCalls.some((call:any)=>/wait|commit|auth|upgrade/.test(call.name))),false);
+ const wrong=await browser.newPage();const bad=await mountApp(wrong,"prepare",{...prepared,binding:{...prepared.binding,workflowClosureReview:{personas:[],discussions:[{...discussion,moderatorSlot:"outsider"}]}}},false,false,presentation);
+ await bad.getByText("The frozen discussion binding could not be verified. Prepare a fresh review before starting.",{exact:true}).waitFor();assert.equal(await bad.getByRole("button",{name:"Start run",exact:true}).isEnabled(),false);
+});
+
+test("Persona Discussion final results preserve disagreement attribution abstention and no decision",async(t)=>{
+ const available=await browserTools();assert.ok(available,"Chromium required");const browser=await available.tools.chromium.launch({executablePath:available.executablePath,headless:true});t.after(()=>browser.close());
+ const page=await browser.newPage({viewport:{width:390,height:1200}}),personId=randomUUID(),peerId=randomUUID(),roleId=randomUUID(),runId=randomUUID(),nodeExecutionId=randomUUID();
+ const output={schemaVersion:"loomex.persona-discussion/v1",subject:"Choose a direction",goal:"Assess options",synthesis:"Unresolved tradeoffs remain.",recommendation:null,goalStatus:"undetermined",stopReason:"round_cap",agreements:[],disagreements:["Cost remains disputed"],openQuestions:["Which option meets the budget?"],messageReferences:["m1"],participants:[{slotKey:"research",roleId,personId},{slotKey:"review",roleId,personId:peerId}],messages:[{messageId:"m1",slotKey:"research",personId,phase:"ballot",round:1,output:{optionId:null,explanation:"Needs more evidence فارسی 😀"}}],moderation:[],proposalReceipts:[],warnings:[],tally:{round:1,rule:"majority",participantCount:2,ballotCount:2,abstentions:1,threshold:2,counts:{x:1},decision:null}};
+ const app=await mountApp(page,"monitor",{execution:{id:runId,status:"completed",organizationId:randomUUID(),workflowName:"Discussion",result:{version:1,summary:"Discussion complete",discussions:[{nodeKey:"decision",nodeExecutionId,output}]}},latestSequence:1,hasMoreEvents:false});
+ await app.getByText("No decision",{exact:true}).waitFor();await app.getByText("Goal status: undetermined · Stopped: round cap",{exact:true}).waitFor();
+ await app.getByText("disagreements",{exact:true}).click();await app.getByText("Cost remains disputed",{exact:true}).waitFor();
+ await app.getByText("Released messages (1)",{exact:true}).click();await app.getByText("research · Round 1 · ballot",{exact:true}).waitFor();await app.getByText("Abstained",{exact:true}).waitFor();await app.getByText("Needs more evidence فارسی 😀",{exact:true}).waitFor();
+ await app.getByText("Voting tally",{exact:true}).click();await app.getByText("majority · 2 / 2 ballots · 1 abstentions · threshold 2",{exact:true}).waitFor();
+ assert.equal(await app.locator("body").evaluate((node:any)=>node.scrollWidth<=node.clientWidth),true);
+ assert.equal(await page.evaluate(()=>window.__loomexCalls.some((call:any)=>/wait|commit|cancel/.test(call.name))),false);
+});

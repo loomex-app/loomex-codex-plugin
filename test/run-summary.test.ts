@@ -1251,3 +1251,14 @@ test("backend-shaped queued envelope preserves Python microseconds and null wait
     assert.equal(paged?.observationIssue, undefined);
   }
 });
+
+test("discussion milestones keep blind payloads private and preserve required event draining",()=>{
+ const kinds=["round","collection","critique","voting","moderation","synthesis","proposals"];
+ const events=kinds.map((kind,index)=>({eventType:"workflow_runtime.discussion.turn.requested",sequence:index+1,milestone:{kind:`discussion.${kind}_started`,nodeExecutionId:requestId,summary:"private ballot answer",messages:["blind reply"]}}));
+ const result=runSummary("runs.get",{execution:data.execution,events,latestSequence:9,hasMoreEvents:true});
+ assert.equal((result?.milestoneEvents as unknown[]).length,7);
+ assert.deepEqual(result?.nextAction,{tool:"loomex_run_events",arguments:{runId,afterSequence:7}});
+ assert.doesNotMatch(JSON.stringify(result),/private ballot|blind reply/);
+ const wrong=runSummary("runs.get",{execution:data.execution,events:[{...events[0],eventType:"ai.public-status.v1"}],latestSequence:1,hasMoreEvents:false});
+ assert.deepEqual(wrong?.milestoneEvents,[]);
+});

@@ -1,5 +1,6 @@
+import { appendDiscussionResults } from "./discussion-presentation.js";
 import {boundWorkspaceSetValid,additionalWorkspaceLabel} from "./workspace-context.js";
-import {preparedPersonaSummary} from "./persona-preparation.js";
+import {preparedPersonaSummary,preparedDiscussionSummary} from "./persona-preparation.js";
 import { createUiElement as element } from "./components.js";
 import type { HumanRequest, InputSpec, ExecutionProjection, PagedResponse, UiData, JsonSchema, PreparedRun, PreparationPresentation, RpcResult, RunPresentation } from "./page-models.js";
 import type { JsonObject } from "./contracts.js";
@@ -260,6 +261,7 @@ export function createRunPresentation(host: RunPresentationServices) {
       appendTextList(context, "Verification", presentation.verification);
       appendTextList(context, "Limitations", presentation.limitations);
       appendTextList(context, "Artifacts", presentation.artifacts);
+      if(terminalRun(run))appendDiscussionResults(context,presentation.discussions);
     }
   }
 
@@ -344,6 +346,17 @@ export function createRunPresentation(host: RunPresentationServices) {
     review.append(grid);
     const personas=preparedPersonaSummary(binding);
     if(personas?.length){const selected=element("section",{className:"ui-section","aria-label":"Selected AI Personas"});selected.append(element("h3",{className:"ui-label"},"Selected AI Personas"));for(const persona of personas){const row=element("div",{className:"provider-row"});row.append(element("p",{className:"ui-value"},persona.personName),element("p",{className:"ui-caption"},`${persona.roleName} · ${persona.nodeKey}`));selected.append(row);}selected.append(element("p",{className:"ui-caption"},"Persona configuration is frozen in this reviewed run."));review.append(selected);}else if(personas===undefined){review.append(element("p",{className:"ui-callout"},"The frozen Persona selection could not be verified. Prepare a fresh review before starting."));}
+    const discussions=preparedDiscussionSummary(binding);
+    for(const discussion of discussions??[]){
+      const section=element("section",{className:"ui-section","aria-label":`Persona Discussion: ${discussion.nodeKey}`});
+      const modes:Readonly<Record<string,string>>={ordered:"Ordered",independent_then_discuss:"Independent then discuss",proposal_critique:"Proposal and critique",voting:"Voting"};
+      section.append(element("h3",{className:"ui-label"},`Persona Discussion · ${discussion.nodeKey}`),element("p",{className:"ui-value"},`${modes[discussion.mode]} · Up to ${discussion.maxRounds} rounds`));
+      for(const [index,p] of discussion.participants.entries())section.append(element("p",{className:"ui-caption"},`${index+1}. ${p.personName} · ${p.roleName} · ${p.slotKey} · ${p.provider} / ${p.model}${p.reasoningEffort?` / ${p.reasoningEffort}`:""}`));
+      section.append(element("p",{className:"ui-caption"},`Moderator: ${discussion.moderatorSlot??"None"} · Synthesizer: ${discussion.synthesizerSlot}`),element("p",{className:"ui-caption"},`Discussion brief and released messages: ${discussion.contextBudget.maxTokens} o200k_base/v1 accounting units / ${discussion.contextBudget.maxBytes} UTF-8 bytes. Private memory and provider instructions use separate limits.`),element("p",{className:"ui-caption"},`Final private memory proposals: ${discussion.finalMemoryProposals?"Enabled under each Persona's policy":"Disabled"}`));
+      if(discussion.mode==="voting"){const voting=record(discussion.voting)!;section.append(element("p",{className:"ui-caption"},`Voting: ${String(voting.rule)} of all participants; abstention or insufficient support can leave no decision.`));for(const raw of voting.options as unknown[]){const option=record(raw)!;section.append(element("p",{className:"ui-caption"},`${String(option.label)} (${String(option.id)})`));}}
+      section.append(element("p",{className:"ui-caption"},"Each participant uses its own private memory. Released responses are shared and may contain information informed by memory."));review.append(section);
+    }
+    if(discussions===undefined)review.append(element("p",{className:"ui-callout"},"The frozen discussion binding could not be verified. Prepare a fresh review before starting."));
     if (binding.inputs && Object.keys(binding.inputs).length) {
       const inputs = element("section", { className: "ui-section", "aria-label": "Run inputs" });
       inputs.append(element("h3", { className: "ui-label" }, "Run inputs"), reviewValue(binding.inputs));

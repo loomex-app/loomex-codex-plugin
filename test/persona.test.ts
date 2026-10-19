@@ -82,3 +82,73 @@ test("Persona accepted entities require exact requested status including creatio
  assert.equal(personaCreatedResult(role,"role",{organizationId,name:"Reviewer"},key).status,"active");
  assert.throws(()=>personaCreatedResult({...role,status:"disabled"},"role",{organizationId,name:"Reviewer"},key),/requested status/);
 });
+
+test("Process-wide memory read carries a bounded cursor without accepting a caller-selected contract",()=>{
+ assert.ok(PERSONA_INPUTS.read.safeParse({...context,arguments:{memoryId:personId,cursor:"opaque-v2-cursor"}}).success);
+ for(const arguments_ of [{memoryId:personId,cursor:""},{memoryId:personId,cursor:"x".repeat(16385)},{memoryId:personId,contractVersion:2}])assert.equal(PERSONA_INPUTS.read.safeParse({...context,arguments:arguments_}).success,false);
+});
+
+test("V2 memory fragments preserve source documents and require canonical model text",async()=>{
+ const {personaMemoryContent}=await import("../src/persona-contracts.js");
+ const document=JSON.stringify({content:"English فارسی 😀",artifactSources:[{source:{artifactId:key,checksumSha256:digest},text:"source text"}]});
+ const result={ok:true,tool:"person_memory.read",schemaVersion:"ai.persona-memory/v2",memoryId:personId,revision:2,page:{text:document.slice(0,12),encoding:"application/json; fragment=unicode-codepoints",start:0,end:12,totalChars:Array.from(document).length,documentSha256:createHash("sha256").update(document).digest("hex"),complete:false,nextCursor:"opaque"},budget:{accountingContract:"o200k_base/v1",maxTokens:2048,maxBytes:16384}};
+ const canonicalText=JSON.stringify(result);const schema=PERSONA_RESULTS["personas.memory.read"]!;
+ assert.ok(schema.safeParse({result,canonicalText}).success);assert.equal(personaMemoryContent({result,canonicalText}),canonicalText);
+ assert.throws(()=>personaMemoryContent({result}),/canonical/);assert.throws(()=>personaMemoryContent({result,canonicalText:JSON.stringify({...result,revision:3})}),/canonical/);
+ for(const page of [{...result.page,complete:true},{...result.page,end:13},{...result.page,encoding:"text/plain"},{...result.page,nextCursor:null}])assert.equal(schema.safeParse({result:{...result,page},canonicalText}).success,false);
+ assert.equal(schema.safeParse({result:{...result,budget:{...result.budget,maxBytes:16385}},canonicalText}).success,false);
+ assert.equal(personaMemoryContent({result:{memory:{id:personId,content:"legacy"}}}),undefined);
+});
+
+test("Final discussion results require attributed released messages and honest deterministic tally",async()=>{
+ const {discussionResults}=await import("../src/ui-app/discussion-presentation.js");
+ const output={schemaVersion:"loomex.persona-discussion/v1",subject:"Choose a direction",goal:"Assess options",synthesis:"Unresolved tradeoffs",recommendation:null,goalStatus:"undetermined",stopReason:"round_cap",agreements:[],disagreements:["Cost remains disputed"],openQuestions:[],messageReferences:["m1"],participants:[{slotKey:"a",roleId,personId},{slotKey:"b",roleId,personId:chatId}],messages:[{messageId:"m1",slotKey:"a",personId,phase:"ballot",round:1,output:{optionId:null,explanation:"Needs more evidence"}}],moderation:[],proposalReceipts:[],warnings:[],tally:{rule:"majority",participantCount:2,ballotCount:2,abstentions:1,threshold:2,counts:{x:1},decision:null}};
+ const row={nodeKey:"discuss",nodeExecutionId:key,output};assert.deepEqual(discussionResults([row]),[row]);
+ for(const changed of [{...output,recommendation:"x"},{...output,messageReferences:["unknown"]},{...output,messages:[{...output.messages[0],personId:chatId}]}])assert.equal(discussionResults([{...row,output:changed}]),undefined);
+ assert.deepEqual(discussionResults(undefined),[]);
+});
+
+test("Reviewed discussion participants consume exact sealed selection keys and limits",async()=>{
+ const {preparedDiscussionSummary,preparedPersonaSummary}=await import("../src/ui-app/persona-preparation.js");
+ const row={workflowVersionId:key,nodeKey:"a/b",mode:"independent_then_discuss",maxRounds:3,moderatorSlot:"b",synthesizerSlot:"b",contextBudget:{accountingContract:"o200k_base/v1",maxTokens:16384,maxBytes:131072},finalMemoryProposals:true,voting:{options:[],rule:"majority"},configDigest:digest,participants:[{slotKey:"a",selectionKey:"exact:key/a",personId,personName:"Researcher",roleId,roleName:"Research",provider:"codex",model:"gpt-test",reasoningEffort:"high",configDigest:digest},{slotKey:"b",selectionKey:"exact:key/b",personId:chatId,personName:"Reviewer",roleId,roleName:"Research",provider:"codex",model:"gpt-test",reasoningEffort:null,configDigest:digest}]};
+ const binding={versionId:key,inputs:{aiPersonaSelections:{"exact:key/a":personId,"exact:key/b":chatId}},workflowClosureReview:{personas:[],discussions:[row]}};
+ assert.deepEqual(preparedDiscussionSummary(binding),[row]);assert.deepEqual(preparedPersonaSummary(binding),[]);
+ const poisoned={...row,prompt:"private peer prompt",participants:row.participants.map(p=>({...p,privateSnapshot:"private peer memory"})),contextBudget:{...row.contextBudget,privateContext:"private source"},voting:{...row.voting,privateBallot:"private ballot"}};
+ assert.deepEqual(preparedDiscussionSummary({...binding,workflowClosureReview:{discussions:[poisoned]}}),[row]);
+ for(const change of [{...row,maxRounds:11},{...row,moderatorSlot:"outsider"},{...row,participants:[row.participants[0],row.participants[0]]},{...row,contextBudget:{...row.contextBudget,maxBytes:524289}}])assert.equal(preparedDiscussionSummary({...binding,workflowClosureReview:{discussions:[change]}}),undefined);
+ assert.equal(preparedPersonaSummary({...binding,workflowClosureReview:{personas:[]}}),undefined);
+});
+
+test("V2 discovery retains canonical passage source revision and work ceilings",()=>{
+ const passage={id:personId,revision:2,type:"fact",summary:"Preference",matchedPassage:"فارسی 😀",passageStart:0,passageEnd:7,contentChars:7,truncated:false,score:1,provenance:{personId,workflowId:key},source:{type:"artifact",id:key,checksum:digest,artifactId:key,artifactVersionId:chatId,artifactVersion:1},chunkId:digest,chunkOrdinal:0,chunkerVersion:"memory-text/v1",generation:digest,title:"Section"};
+ const result={ok:true,tool:"person_memory.search",schemaVersion:"ai.persona-memory/v2",memoryIds:[personId],items:[passage],snapshotId:null,omittedCount:0,truncated:true,budget:{accountingContract:"o200k_base/v1",maxTokens:4096,maxBytes:32768},sourceWork:{limited:true,maxArtifactBytes:4194304,maxTextBytes:4194304,maxArtifacts:8}};
+ const schema=PERSONA_RESULTS["personas.memory.search"]!,canonicalText=JSON.stringify(result);
+ assert.deepEqual(schema.parse({result,canonicalText}),{result,canonicalText});
+ assert.equal(schema.safeParse({result:{...result,truncated:false},canonicalText:JSON.stringify({...result,truncated:false})}).success,false);
+ assert.equal(schema.safeParse({result:{...result,items:[{...passage,passageEnd:8}]},canonicalText}).success,false);
+ assert.equal(schema.safeParse({result:{...result,sourceWork:{...result.sourceWork,maxArtifacts:9}},canonicalText}).success,false);
+});
+
+test("V2 mutation acknowledgements keep content out of bounded receipts",()=>{
+ const result={ok:true,tool:"person_memory.write",schemaVersion:"ai.persona-memory/v2",memory:{id:personId,type:"fact",status:"needs_review"},budget:{accountingContract:"o200k_base/v1",maxTokens:4096,maxBytes:32768}};
+ const schema=PERSONA_RESULTS["personas.memory.write"]!,canonicalText=JSON.stringify(result);assert.deepEqual(schema.parse({result,canonicalText}),{result,canonicalText});
+ const expanded={...result,memory:{...result.memory,content:"private full content"}};assert.equal(schema.safeParse({result:expanded,canonicalText:JSON.stringify(expanded)}).success,false);
+ const inventedRevision={...result,memory:{...result.memory,revision:3}};assert.equal(schema.safeParse({result:inventedRevision,canonicalText:JSON.stringify(inventedRevision)}).success,false);
+ assert.equal(PERSONA_RESULTS["personas.memory.update"]!.safeParse({result,canonicalText}).success,false);
+});
+
+test("backend acknowledgement has only immutable identity type and status",()=>{
+ const result={ok:true,tool:"person_memory.write",schemaVersion:"ai.persona-memory/v2",memory:{id:personId,type:"fact",status:"needs_review"},budget:{accountingContract:"o200k_base/v1",maxTokens:4096,maxBytes:32768}};
+ assert.equal(PERSONA_RESULTS["personas.memory.write"]!.safeParse({result,canonicalText:JSON.stringify(result)}).success,true);
+});
+
+test("typed v2 rejection stays a bounded normal result for each exact memory operation",()=>{
+ for(const method of ["search","read","write","update"]){
+  const budget={accountingContract:"o200k_base/v1",maxTokens:method==="read"?2048:4096,maxBytes:method==="read"?16384:32768};
+  const result={ok:false,tool:`person_memory.${method}`,schemaVersion:"ai.persona-memory/v2",error:"Persona memory operation was rejected; inspect current context and policy.",budget};
+  assert.equal(PERSONA_RESULTS[`personas.memory.${method}`]!.safeParse({result,canonicalText:JSON.stringify(result)}).success,true,method);
+  const schema=PERSONA_RESULTS[`personas.memory.${method}`]!;
+  const invalid=[{...result,tool:"person_memory.peer"},{...result,error:"raw provider stderr secret"},{...result,error:{message:"raw private error"}},{...result,rawError:"private backend diagnostics"},{...result,budget:{...budget,extra:"private scope"}},{...result,budget:{...budget,maxBytes:1}},{...result,budget:{...budget,maxTokens:0}},{...result,budget:{...budget,maxTokens:budget.maxTokens+1}},{...result,budget:{...budget,maxBytes:budget.maxBytes+1}}];
+  for(const rejected of invalid)assert.equal(schema.safeParse({result:rejected,canonicalText:JSON.stringify(rejected)}).success,false,method);
+ }
+});
