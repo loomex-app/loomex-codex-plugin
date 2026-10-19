@@ -2876,10 +2876,20 @@ test("reopened run cards keep the workflow summary read-only", async (t) => {
     schemaVersion: 1, screen: "monitor", disclosures: {}, executionId: completedRunId,
   });
   const completedPage = await browser.newPage();
+  await completedPage.addInitScript(() => { window.__holdPersistence = true; });
   app = await mountApp(completedPage, "monitor", completedData, false, false, null, false, { "loomex/viewSession": completedSession });
   await waitForPersistenceToolCount(completedPage, "loomex_view_session_get", 1);
+  assert.equal(await completedPage.evaluate((id: string) => window.__loomexPersistenceStore.sessions[id].status, completedSession.viewSessionId), "active",
+    "receiving the session read does not imply verification and its terminal status save have completed");
+  await completedPage.evaluate(() => {
+    window.__holdPersistence = false;
+    for (const deliver of window.__heldPersistence || []) deliver();
+    window.__heldPersistence = [];
+  });
+  await completedPage.waitForFunction((id: string) => window.__loomexPersistenceStore.sessions[id]?.status === "resolved", completedSession.viewSessionId);
   app = await mountApp(completedPage, "monitor", completedData, false, false, null, false, { "loomex/viewSession": completedSession }, undefined, [], true);
   await waitForPersistenceToolCount(completedPage, "loomex_view_session_get", 2);
+  await waitForToolCount(completedPage, "loomex_run_get", 1);
   assert.equal(await app.getByText("Execution references", { exact: true }).count(), 0);
   assert.equal(await app.getByRole("button", { name: "Cancel run", exact: true }).count(), 0);
   await app.getByText("The durable result is ready.", { exact: true }).waitFor();
